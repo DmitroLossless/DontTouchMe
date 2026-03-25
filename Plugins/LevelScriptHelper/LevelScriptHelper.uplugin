@@ -1,0 +1,27 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0",
+  "FriendlyName": "LevelScriptHelper",
+  "Description": "LevelScriptHelper",
+  "Category": "Other",
+  "CreatedBy": "AtomTeam",
+  "CreatedByURL": "",
+  "DocsURL": "",
+  "MarketplaceURL": "",
+  "SupportURL": "",
+  "CanContainContent": true,
+  "IsBetaVersion": false,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "LevelScriptHelper",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+
+  "Plugins": [
+
+  ]
+}
