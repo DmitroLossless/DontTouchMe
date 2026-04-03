@@ -69,6 +69,9 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 		float ProjectileSpeed = 0.f,
 		TEnumAsByte<ECollisionChannel> TraceChannel = ECC_Visibility,
 		AActor* Owner = nullptr,
-		APawn* Instigator = nullptr);
+		APawn* Instigator = nullptr,
+		USoundBase* ShootSound = nullptr,
+		USoundAttenuation* AttenuationSettings = nullptr,
+		USoundConcurrency* ConcurrencySettings = nullptr);
 };
 

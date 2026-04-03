@@ -235,7 +235,10 @@ AActor* UTMGameplayStatics::Shoot(
 	float ProjectileSpeed,
 	TEnumAsByte<ECollisionChannel> TraceChannel,
 	AActor* Owner,
-	APawn* Instigator)
+	APawn* Instigator,
+	USoundBase* ShootSound,
+	USoundAttenuation* AttenuationSettings,
+	USoundConcurrency* ConcurrencySettings)
 {
 	if (!WorldContextObject || !ProjectileClass || Distance <= 0.f)
 	{
@@ -254,6 +257,23 @@ AActor* UTMGameplayStatics::Shoot(
 		return nullptr;
 	}
 
+	const FRotator SpawnRotation = TraceDirection.Rotation();
+
+	if (ShootSound)
+	{
+		SpawnSoundAtLocationDistanced(
+			WorldContextObject,
+			ShootSound,
+			Start,
+			SpawnRotation,
+			1.f,
+			1.f,
+			0.f,
+			AttenuationSettings,
+			ConcurrencySettings,
+			true);
+	}
+
 	const FVector End = Start + TraceDirection * Distance;
 
 	FHitResult HitResult;
@@ -266,7 +286,6 @@ AActor* UTMGameplayStatics::Shoot(
 		return nullptr;
 	}
 
-	const FRotator SpawnRotation = TraceDirection.Rotation();
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = Owner;
 	SpawnParams.Instigator = Instigator;
