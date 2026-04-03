@@ -32,6 +32,7 @@ class USoundAttenuation;
 class USoundBase;
 class USoundConcurrency;
 class UStaticMesh;
+class UProjectileMovementComponent;
 class FMemoryReader;
 class APlayerController;
 struct FDialogueContext;
@@ -57,5 +58,17 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 
 	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "5", UnsafeDuringActorConstruction = "true", Keywords = "play"))
 	static TOUCHME_API void MarketSoundRoom(bool enable);
+
+	UFUNCTION(BlueprintCallable, Category="TM|Projectile", meta=(WorldContext="WorldContextObject"))
+	static TOUCHME_API AActor* Shoot(
+		const UObject* WorldContextObject,
+		TSubclassOf<AActor> ProjectileClass,
+		FVector Start,
+		FVector Direction,
+		float Distance,
+		float ProjectileSpeed = 0.f,
+		TEnumAsByte<ECollisionChannel> TraceChannel = ECC_Visibility,
+		AActor* Owner = nullptr,
+		APawn* Instigator = nullptr);
 };
 

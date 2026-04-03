@@ -53,6 +53,7 @@
 #include "Audio/ActorSoundParameterInterface.h"
 #include "Audio/AudioTraceUtil.h"
 #include "Engine/DamageEvents.h"
+#include "GameFramework/ProjectileMovementComponent.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TMGameplayStatics)
 
@@ -224,5 +225,73 @@ void UTMGameplayStatics::MarketSoundRoom(bool enable)
 {
 	
 }
+
+AActor* UTMGameplayStatics::Shoot(
+	const UObject* WorldContextObject,
+	TSubclassOf<AActor> ProjectileClass,
+	FVector Start,
+	FVector Direction,
+	float Distance,
+	float ProjectileSpeed,
+	TEnumAsByte<ECollisionChannel> TraceChannel,
+	AActor* Owner,
+	APawn* Instigator)
+{
+	if (!WorldContextObject || !ProjectileClass || Distance <= 0.f)
+	{
+		return nullptr;
+	}
+
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	const FVector TraceDirection = Direction.GetSafeNormal();
+	if (TraceDirection.IsNearlyZero())
+	{
+		return nullptr;
+	}
+
+	const FVector End = Start + TraceDirection * Distance;
+
+	FHitResult HitResult;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(UTMGameplayStatics_Shoot), true);
+	QueryParams.AddIgnoredActor(Owner);
+	QueryParams.AddIgnoredActor(Instigator);
+
+	if (World->LineTraceSingleByChannel(HitResult, Start, End, TraceChannel, QueryParams))
+	{
+		return nullptr;
+	}
+
+	const FRotator SpawnRotation = TraceDirection.Rotation();
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = Owner;
+	SpawnParams.Instigator = Instigator;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	AActor* Projectile = World->SpawnActor<AActor>(ProjectileClass, End, SpawnRotation, SpawnParams);
+	if (!Projectile)
+	{
+		return nullptr;
+	}
+
+	if (UProjectileMovementComponent* ProjectileMovement = Projectile->FindComponentByClass<UProjectileMovementComponent>())
+	{
+		if (ProjectileSpeed > 0.f)
+		{
+			ProjectileMovement->InitialSpeed = ProjectileSpeed;
+			ProjectileMovement->MaxSpeed = FMath::Max(ProjectileMovement->MaxSpeed, ProjectileSpeed);
+		}
+
+		ProjectileMovement->Velocity = TraceDirection * (ProjectileSpeed > 0.f ? ProjectileSpeed : ProjectileMovement->InitialSpeed);
+		ProjectileMovement->Activate(true);
+	}
+
+	return Projectile;
+}
+
 #undef LOCTEXT_NAMESPACE
 
