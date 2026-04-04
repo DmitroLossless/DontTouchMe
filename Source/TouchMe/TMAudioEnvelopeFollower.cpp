@@ -3,10 +3,15 @@
 #include "TMAudioEnvelopeFollower.h"
 
 #include "Components/AudioComponent.h"
-#include "Kismet/GameplayStatics.h"
-#include "Sound/SoundBase.h"
-#include "Sound/SoundConcurrency.h"
 #include "Sound/SoundWave.h"
+
+#if __has_include("LoudnessNRT.h")
+#include "LoudnessNRT.h"
+#elif __has_include("AudioSynesthesia/Public/LoudnessNRT.h")
+#include "AudioSynesthesia/Public/LoudnessNRT.h"
+#else
+#error Unable to locate LoudnessNRT.h. Verify the AudioSynesthesia plugin is enabled.
+#endif
 
 UTMAudioEnvelopeFollower::UTMAudioEnvelopeFollower()
 {
@@ -40,47 +45,37 @@ UTMAudioEnvelopeFollower* UTMAudioEnvelopeFollower::CreateAudioEnvelopeFollower(
 	return Analyzer;
 }
 
-bool UTMAudioEnvelopeFollower::PlayAndAnalyzeSound2D(
-	const UObject* InWorldContextObject,
-	USoundBase* Sound,
-	float VolumeMultiplier,
-	float PitchMultiplier,
-	float StartTime,
-	USoundConcurrency* ConcurrencySettings,
-	bool bPersistAcrossLevelTransition,
-	bool bAutoDestroy)
+bool UTMAudioEnvelopeFollower::PlayAndAnalyzeSound2D(UAudioComponent* InAudioComponent, ULoudnessNRT* InLoudnessAnalyzer)
 {
-	if (!InWorldContextObject || !Sound)
-	{
-		return false;
-	}
-
-	WorldContextObject = InWorldContextObject;
-
-	UAudioComponent* SpawnedComponent = UGameplayStatics::SpawnSound2D(
-		InWorldContextObject,
-		Sound,
-		VolumeMultiplier,
-		PitchMultiplier,
-		StartTime,
-		ConcurrencySettings,
-		bPersistAcrossLevelTransition,
-		bAutoDestroy);
-
-	return AnalyzeAudioComponent(SpawnedComponent);
+	return AnalyzeAudioComponent(InAudioComponent, InLoudnessAnalyzer);
 }
 
-bool UTMAudioEnvelopeFollower::AnalyzeAudioComponent(UAudioComponent* InAudioComponent)
+bool UTMAudioEnvelopeFollower::AnalyzeAudioComponent(UAudioComponent* InAudioComponent, ULoudnessNRT* InLoudnessAnalyzer)
 {
-	if (!InAudioComponent)
+	if (!InAudioComponent || !InLoudnessAnalyzer)
 	{
 		return false;
 	}
+
+	WorldContextObject = InAudioComponent;
+	LoudnessAnalyzer = InLoudnessAnalyzer;
 
 	UnregisterAudioComponent();
 	RegisterAudioComponent(InAudioComponent);
 	ResetAnalysisState();
+	AnalysisStartTimeSeconds = GetCurrentTimeSeconds();
 	bIsAnalyzing = true;
+
+	if (UWorld* World = InAudioComponent->GetWorld())
+	{
+		World->GetTimerManager().SetTimer(
+			AnalysisTimerHandle,
+			this,
+			&UTMAudioEnvelopeFollower::PollAudioAnalysis,
+			AnalysisIntervalSeconds,
+			true);
+	}
+
 	return true;
 }
 
@@ -102,17 +97,39 @@ UAudioComponent* UTMAudioEnvelopeFollower::GetAudioComponent() const
 	return AudioComponent;
 }
 
-void UTMAudioEnvelopeFollower::HandleSingleEnvelopeValue(const USoundWave* PlayingSoundWave, const float EnvelopeValue)
+void UTMAudioEnvelopeFollower::PollAudioAnalysis()
 {
-	if (!bIsAnalyzing || !AudioComponent)
+	if (!bIsAnalyzing || !AudioComponent || !LoudnessAnalyzer)
 	{
 		return;
 	}
 
-	const float SafeEnvelope = FMath::Max(EnvelopeValue, 0.0f);
-	const float RiseOrFallAlpha = SafeEnvelope >= SmoothedEnvelopeValue ? EnvelopeRiseAlpha : EnvelopeFallAlpha;
-	LastEnvelopeValue = SafeEnvelope;
-	SmoothedEnvelopeValue = FMath::Lerp(SmoothedEnvelopeValue, SafeEnvelope, RiseOrFallAlpha);
+	const USoundWave* PlayingSoundWave = Cast<USoundWave>(AudioComponent->GetSound());
+	if (!PlayingSoundWave)
+	{
+		return;
+	}
+
+	if (!AudioComponent->IsPlaying())
+	{
+		HandleAudioFinished();
+		return;
+	}
+
+	CurrentPlaybackTimeSeconds = FMath::Max(GetCurrentTimeSeconds() - AnalysisStartTimeSeconds, 0.0f);
+
+	if (PlayingSoundWave->Duration > 0.0f)
+	{
+		CurrentPlaybackTimeSeconds = FMath::Min(CurrentPlaybackTimeSeconds, PlayingSoundWave->Duration);
+	}
+
+	float LoudnessValue = 0.0f;
+	LoudnessAnalyzer->GetNormalizedLoudnessAtTime(CurrentPlaybackTimeSeconds, LoudnessValue);
+	LoudnessValue = FMath::Max(LoudnessValue, 0.0f);
+	const float RiseOrFallAlpha = LoudnessValue >= SmoothedEnvelopeValue ? EnvelopeRiseAlpha : EnvelopeFallAlpha;
+
+	LastEnvelopeValue = LoudnessValue;
+	SmoothedEnvelopeValue = FMath::Lerp(SmoothedEnvelopeValue, LoudnessValue, RiseOrFallAlpha);
 
 	const float NoiseAlpha = SmoothedEnvelopeValue <= AdaptiveNoiseFloor ? NoiseFloorFallAlpha : NoiseFloorRiseAlpha;
 	AdaptiveNoiseFloor = FMath::Lerp(AdaptiveNoiseFloor, SmoothedEnvelopeValue, NoiseAlpha);
@@ -168,12 +185,22 @@ void UTMAudioEnvelopeFollower::HandleSingleEnvelopeValue(const USoundWave* Playi
 
 void UTMAudioEnvelopeFollower::HandleAudioFinished()
 {
+	if (AudioComponent)
+	{
+		if (UWorld* World = AudioComponent->GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(AnalysisTimerHandle);
+		}
+	}
+
 	bIsAnalyzing = false;
 	UnregisterAudioComponent();
 }
 
 void UTMAudioEnvelopeFollower::ResetAnalysisState()
 {
+	CurrentPlaybackTimeSeconds = 0.0f;
+	AnalysisStartTimeSeconds = 0.0f;
 	LastEnvelopeValue = 0.0f;
 	SmoothedEnvelopeValue = 0.0f;
 	NormalizedEnvelopeValue = 0.0f;
@@ -195,9 +222,6 @@ void UTMAudioEnvelopeFollower::RegisterAudioComponent(UAudioComponent* InAudioCo
 		return;
 	}
 
-	AudioComponent->EnvelopeFollowerAttackTime = EnvelopeFollowerAttackTimeMs;
-	AudioComponent->EnvelopeFollowerReleaseTime = EnvelopeFollowerReleaseTimeMs;
-	AudioComponent->OnAudioSingleEnvelopeValue.AddDynamic(this, &UTMAudioEnvelopeFollower::HandleSingleEnvelopeValue);
 	AudioComponent->OnAudioFinished.AddDynamic(this, &UTMAudioEnvelopeFollower::HandleAudioFinished);
 }
 
@@ -208,7 +232,11 @@ void UTMAudioEnvelopeFollower::UnregisterAudioComponent()
 		return;
 	}
 
-	AudioComponent->OnAudioSingleEnvelopeValue.RemoveDynamic(this, &UTMAudioEnvelopeFollower::HandleSingleEnvelopeValue);
+	if (UWorld* World = AudioComponent->GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(AnalysisTimerHandle);
+	}
+
 	AudioComponent->OnAudioFinished.RemoveDynamic(this, &UTMAudioEnvelopeFollower::HandleAudioFinished);
 	AudioComponent = nullptr;
 }

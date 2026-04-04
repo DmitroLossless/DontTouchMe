@@ -3,12 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "UObject/Object.h"
 #include "TMAudioEnvelopeFollower.generated.h"
 
 class UAudioComponent;
-class USoundBase;
-class USoundConcurrency;
+class ULoudnessNRT;
 class USoundWave;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FTMOnEnvelopeValueSignature, float, EnvelopeValue, float, NormalizedValue);
@@ -83,28 +83,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TM|Audio Analysis|Smoothing", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float NoiseFloorFallAlpha = 0.08f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TM|Audio Analysis|Playback", meta = (ClampMin = "0"))
-	int32 EnvelopeFollowerAttackTimeMs = 10;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TM|Audio Analysis|Playback", meta = (ClampMin = "0"))
-	int32 EnvelopeFollowerReleaseTimeMs = 80;
-
 	UFUNCTION(BlueprintCallable, Category = "TM|Audio Analysis", meta = (WorldContext = "WorldContextObject"))
 	static UTMAudioEnvelopeFollower* CreateAudioEnvelopeFollower(const UObject* WorldContextObject);
 
-	UFUNCTION(BlueprintCallable, Category = "TM|Audio Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "4"))
-	bool PlayAndAnalyzeSound2D(
-		const UObject* WorldContextObject,
-		USoundBase* Sound,
-		float VolumeMultiplier = 1.0f,
-		float PitchMultiplier = 1.0f,
-		float StartTime = 0.0f,
-		USoundConcurrency* ConcurrencySettings = nullptr,
-		bool bPersistAcrossLevelTransition = false,
-		bool bAutoDestroy = true);
+	UFUNCTION(BlueprintCallable, Category = "TM|Audio Analysis")
+	bool PlayAndAnalyzeSound2D(UAudioComponent* InAudioComponent, ULoudnessNRT* InLoudnessAnalyzer);
 
 	UFUNCTION(BlueprintCallable, Category = "TM|Audio Analysis")
-	bool AnalyzeAudioComponent(UAudioComponent* InAudioComponent);
+	bool AnalyzeAudioComponent(UAudioComponent* InAudioComponent, ULoudnessNRT* InLoudnessAnalyzer);
 
 	UFUNCTION(BlueprintCallable, Category = "TM|Audio Analysis")
 	void StopAnalyzing(bool bStopPlayback = true);
@@ -114,11 +100,9 @@ public:
 
 protected:
 	UFUNCTION()
-	void HandleSingleEnvelopeValue(const USoundWave* PlayingSoundWave, const float EnvelopeValue);
-
-	UFUNCTION()
 	void HandleAudioFinished();
 
+	void PollAudioAnalysis();
 	void ResetAnalysisState();
 	void RegisterAudioComponent(UAudioComponent* InAudioComponent);
 	void UnregisterAudioComponent();
@@ -128,8 +112,15 @@ protected:
 	TObjectPtr<UAudioComponent> AudioComponent;
 
 	UPROPERTY(Transient)
+	TObjectPtr<ULoudnessNRT> LoudnessAnalyzer;
+
+	UPROPERTY(Transient)
 	TWeakObjectPtr<const UObject> WorldContextObject;
 
+	FTimerHandle AnalysisTimerHandle;
+	float AnalysisIntervalSeconds = 1.0f / 60.0f;
+	float AnalysisStartTimeSeconds = 0.0f;
+	float CurrentPlaybackTimeSeconds = 0.0f;
 	float LastBeatTimeSeconds = -1.0f;
 	bool bAboveThreshold = false;
 	int32 BeatCounter = 0;
