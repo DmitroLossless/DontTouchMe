@@ -35,7 +35,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
-	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gun")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -60,6 +60,7 @@ protected:
 
 private:
 	void ApplyFakeMode();
+	void RestoreFromFakeMode();
 	USkeletalMeshComponent* ResolveMainSkeletalMesh() const;
 
 	static const FName MainSkeletalMeshComponentName;

@@ -33,10 +33,14 @@ void AGun::BeginPlay()
 	ApplyFakeMode();
 }
 
-void AGun::OnConstruction(const FTransform& Transform)
+void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	Super::OnConstruction(Transform);
-	ApplyFakeMode();
+	if (bFakeModeApplied)
+	{
+		RestoreFromFakeMode();
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void AGun::SetFakeMode(const bool bEnabled)
@@ -84,6 +88,11 @@ void AGun::ApplyFakeMode()
 		return;
 	}
 
+	RestoreFromFakeMode();
+}
+
+void AGun::RestoreFromFakeMode()
+{
 	FakeSkeletalMeshComponent->SetVisibility(false, false);
 	FakeSkeletalMeshComponent->SetAnimInstanceClass(nullptr);
 	FakeSkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
@@ -93,9 +102,13 @@ void AGun::ApplyFakeMode()
 
 	if (bFakeModeApplied)
 	{
-		MainMesh->VisibilityBasedAnimTickOption =
-			static_cast<EVisibilityBasedAnimTickOption>(MainMeshPreviousAnimTickOption);
-		MainMesh->SetVisibility(bMainMeshWasVisible, false);
+		if (USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh())
+		{
+			MainMesh->VisibilityBasedAnimTickOption =
+				static_cast<EVisibilityBasedAnimTickOption>(MainMeshPreviousAnimTickOption);
+			MainMesh->SetVisibility(bMainMeshWasVisible, false);
+		}
+
 		bFakeModeApplied = false;
 	}
 }
