@@ -2,6 +2,8 @@
 
 #include "Gun.h"
 
+#include "FakeGunAnimInstance.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "NiagaraFunctionLibrary.h"
@@ -9,12 +11,107 @@
 #include "Particles/ParticleSystem.h"
 #include "../Projectile/ProjectileImpactData.h"
 
+const FName AGun::MainSkeletalMeshComponentName(TEXT("Item"));
+
 AGun::AGun()
 {
 	PrimaryActorTick.bCanEverTick = false;
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
+
+	FakeSkeletalMeshComponent = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("FakeSkeletalMeshComponent"));
+	FakeSkeletalMeshComponent->SetupAttachment(SceneRoot);
+	FakeSkeletalMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	FakeSkeletalMeshComponent->SetGenerateOverlapEvents(false);
+	FakeSkeletalMeshComponent->SetVisibility(false);
+}
+
+void AGun::BeginPlay()
+{
+	Super::BeginPlay();
+	ApplyFakeMode();
+}
+
+void AGun::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+	ApplyFakeMode();
+}
+
+void AGun::SetFakeMode(const bool bEnabled)
+{
+	bFakeMode = bEnabled;
+	ApplyFakeMode();
+}
+
+UFakeGunAnimInstance* AGun::GetFakeAnimInstance() const
+{
+	return FakeSkeletalMeshComponent
+		? Cast<UFakeGunAnimInstance>(FakeSkeletalMeshComponent->GetAnimInstance())
+		: nullptr;
+}
+
+void AGun::ApplyFakeMode()
+{
+	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	if (!MainMesh)
+	{
+		FakeSkeletalMeshComponent->SetVisibility(false, false);
+		return;
+	}
+
+	if (bFakeMode)
+	{
+		if (!bFakeModeApplied)
+		{
+			bMainMeshWasVisible = MainMesh->IsVisible();
+			MainMeshPreviousAnimTickOption = static_cast<uint8>(MainMesh->VisibilityBasedAnimTickOption);
+		}
+
+		MainMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+		MainMesh->SetVisibility(false, false);
+
+		FakeSkeletalMeshComponent->AttachToComponent(
+			MainMesh,
+			FAttachmentTransformRules::SnapToTargetIncludingScale);
+		FakeSkeletalMeshComponent->SetRelativeTransform(FakeSkeletalMeshOffset);
+		FakeSkeletalMeshComponent->SetSkeletalMeshAsset(FakeSkeletalMesh);
+		FakeSkeletalMeshComponent->SetAnimInstanceClass(FakeAnimInstanceClass);
+		FakeSkeletalMeshComponent->SetVisibility(FakeSkeletalMesh != nullptr, false);
+
+		bFakeModeApplied = true;
+		return;
+	}
+
+	FakeSkeletalMeshComponent->SetVisibility(false, false);
+	FakeSkeletalMeshComponent->SetAnimInstanceClass(nullptr);
+	FakeSkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
+	FakeSkeletalMeshComponent->AttachToComponent(
+		SceneRoot,
+		FAttachmentTransformRules::SnapToTargetIncludingScale);
+
+	if (bFakeModeApplied)
+	{
+		MainMesh->VisibilityBasedAnimTickOption =
+			static_cast<EVisibilityBasedAnimTickOption>(MainMeshPreviousAnimTickOption);
+		MainMesh->SetVisibility(bMainMeshWasVisible, false);
+		bFakeModeApplied = false;
+	}
+}
+
+USkeletalMeshComponent* AGun::ResolveMainSkeletalMesh() const
+{
+	TInlineComponentArray<USkeletalMeshComponent*> SkeletalMeshes(this);
+	for (USkeletalMeshComponent* SkeletalMesh : SkeletalMeshes)
+	{
+		if (SkeletalMesh && SkeletalMesh->GetFName() == MainSkeletalMeshComponentName)
+		{
+			return SkeletalMesh;
+		}
+	}
+
+	return nullptr;
 }
 
 void AGun::Impact(
