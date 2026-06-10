@@ -36,11 +36,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Gun")
 	bool IsGunInFakeMode() const { return bFakeMode; }
 
-#if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
-#endif
-
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Gun|Bones")
 	TArray<FGunBoneOffset> BoneOffsets;
@@ -53,8 +48,4 @@ protected:
 
 private:
 	void RefreshGunOwnerState();
-
-#if WITH_EDITOR
-	void RefreshDefaultBoneOffsets();
-#endif
 };

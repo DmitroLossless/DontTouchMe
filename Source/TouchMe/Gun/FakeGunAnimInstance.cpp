@@ -25,7 +25,6 @@ bool UFakeGunAnimInstance::SetBoneOffset(const FName BoneName, const FTransform&
 	if (FFakeGunBoneOffset* BoneReference = BoneReferences.Find(BoneName))
 	{
 		BoneReference->CurrentOffset = Offset;
-		UE_LOG(LogTemp, Log, TEXT("Fake gun bone offset [%s]: %s"), *BoneName.ToString(), *Offset.ToHumanReadableString());
 		return true;
 	}
 

@@ -87,6 +87,7 @@ bool UTMSettingsSaveGuardSubsystem::SanitizeMouseSensitivity(UObject* Object) co
 		return false;
 	}
 
+	bool bChanged = false;
 	for (TFieldIterator<FProperty> PropertyIt(Object->GetClass()); PropertyIt; ++PropertyIt)
 	{
 		FNumericProperty* SensitivityProperty = CastField<FNumericProperty>(*PropertyIt);
@@ -102,7 +103,7 @@ bool UTMSettingsSaveGuardSubsystem::SanitizeMouseSensitivity(UObject* Object) co
 
 		if (FMath::IsFinite(Sensitivity) && Sensitivity > UE_KINDA_SMALL_NUMBER)
 		{
-			return false;
+			continue;
 		}
 
 		if (SensitivityProperty->IsFloatingPoint())
@@ -114,10 +115,10 @@ bool UTMSettingsSaveGuardSubsystem::SanitizeMouseSensitivity(UObject* Object) co
 			SensitivityProperty->SetIntPropertyValue(SensitivityData, static_cast<int64>(DefaultMouseSensitivity));
 		}
 
-		return true;
+		bChanged = true;
 	}
 
-	return false;
+	return bChanged;
 }
 
 void UTMSettingsSaveGuardSubsystem::EnsureValidSettingsSave() const
@@ -177,8 +178,6 @@ void UTMSettingsSaveGuardSubsystem::EnsureValidSettingsSave() const
 
 			bNeedsSave = true;
 		}
-
-		break;
 	}
 
 	if (bNeedsSave && !UGameplayStatics::SaveGameToSlot(SettingsSave, SettingsSlotName, SettingsUserIndex))

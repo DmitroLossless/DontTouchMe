@@ -61,11 +61,15 @@ void AGun::ApplyFakeMode()
 	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
 	if (!MainMesh)
 	{
-		FakeSkeletalMeshComponent->SetVisibility(false, false);
+		RestoreFromFakeMode();
 		return;
 	}
 
-	if (bFakeMode)
+	const bool bCanApplyFakeMode = bFakeMode
+		&& IsValid(FakeSkeletalMesh)
+		&& FakeAnimInstanceClass != nullptr;
+
+	if (bCanApplyFakeMode)
 	{
 		if (!bFakeModeApplied)
 		{
@@ -82,7 +86,7 @@ void AGun::ApplyFakeMode()
 		FakeSkeletalMeshComponent->SetRelativeTransform(FakeSkeletalMeshOffset);
 		FakeSkeletalMeshComponent->SetSkeletalMeshAsset(FakeSkeletalMesh);
 		FakeSkeletalMeshComponent->SetAnimInstanceClass(FakeAnimInstanceClass);
-		FakeSkeletalMeshComponent->SetVisibility(FakeSkeletalMesh != nullptr, false);
+		FakeSkeletalMeshComponent->SetVisibility(true, false);
 
 		bFakeModeApplied = true;
 		return;
