@@ -13,4 +13,16 @@ class TOUCHME_API ATMCharacter : public ACharacter
 
 public:
 	ATMCharacter();
+
+	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
+	virtual void PossessedBy(AController* NewController) override;
+	virtual void UnPossessed() override;
+	virtual void OnRep_Controller() override;
+
+protected:
+	UPROPERTY(BlueprintReadOnly, Category = "TouchMe|Character")
+	bool bIsLocalPlayerControlled = false;
+
+	void UpdateLocalPlayerControlledFlag();
 };
