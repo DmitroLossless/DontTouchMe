@@ -13,7 +13,6 @@ USTRUCT()
 struct TOUCHME_API FGunBoneOffset
 {
 	GENERATED_BODY()
-
 	UPROPERTY(EditDefaultsOnly, Category = "Gun|Bones")
 	FBoneReference Bone;
 
