@@ -1,0 +1,30 @@
+Imported MPS: E:\DTM\_Reskin\MPS_Player.fbx
+  MPS_Player type=EMPTY parent=None
+  MPS_Player.001 type=MESH parent=root
+  root type=ARMATURE parent=MPS_Player
+Imported Urban: E:\DTM\_Reskin\SKM_Urban_Soldier_02.fbx
+  root.001 type=ARMATURE parent=SKM_Urban_Soldier_02
+  SKM_Urban_Soldier_02 type=EMPTY parent=None
+  SKM_Urban_Soldier_02.001 type=MESH parent=root.001
+MPS armature=root, bones=69
+Urban armature=root.001, bones=351
+Urban meshes=[('SKM_Urban_Soldier_02.001', 188422, 28, 67)]
+Removing MPS source mesh MPS_Player.001
+Remap for SKM_Urban_Soldier_02.001: 13 non-direct mappings total so far
+  rebuilt SKM_Urban_Soldier_02.001 vertex groups: 67 -> 54
+  remap index_metacarpal_l -> hand_l
+  remap index_metacarpal_r -> hand_r
+  remap lowerarm_twist_02_l -> lowerarm_twist_01_l
+  remap lowerarm_twist_02_r -> lowerarm_twist_01_r
+  remap middle_metacarpal_l -> hand_l
+  remap middle_metacarpal_r -> hand_r
+  remap neck_02 -> neck_01
+  remap pinky_metacarpal_l -> hand_l
+  remap pinky_metacarpal_r -> hand_r
+  remap ring_metacarpal_l -> hand_l
+  remap ring_metacarpal_r -> hand_r
+  remap spine_04 -> spine_03
+  remap spine_05 -> spine_03
+Detaching MPS armature from Blender scene empty before FBX export
+Exporting without Blender scene empty
+Exported E:\DTM\_Reskin\SKM_Urban_Soldier_02_MPS_NoEmpty_GS001.fbx: exists=True size=12230812

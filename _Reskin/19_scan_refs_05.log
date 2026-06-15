@@ -1,0 +1,12 @@
+TARGET_ASSET=/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_05.SKM_Urban_Soldier_05
+FINAL_ASSET=/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS.SKM_Urban_Soldier_02_MPS
+ASSET_REGISTRY_REFERENCERS:
+get_referencers failed: 'NoneType' object is not iterable
+AssetRegistry methods: get_dependencies, get_referencers
+EAL_REFERENCERS:
+ASSET_COUNT=4
+full scan failed: Traceback (most recent call last):
+  File "E:/DTM/_Codex/scan_refs_05.py", line 129, in main
+    obj = str(ad.object_path)
+              ^^^^^^^^^^^^^^
+AttributeError: 'AssetData' object has no attribute 'object_path'

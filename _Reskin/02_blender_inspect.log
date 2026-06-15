@@ -1,0 +1,16 @@
+IMPORT MPS: E:\DTM\_Reskin\MPS_Player.fbx
+  obj MPS_Player type=EMPTY parent=None loc=(0.0, 0.0, 0.0) scale=(0.01, 0.01, 0.01)
+  obj MPS_Player.001 type=MESH parent=root loc=(0.0, 0.0, 0.0) scale=(1.0, 1.0, 1.0)
+    verts=25582 polys=41052 mats=2 vgroups=60
+    mat_names=['M_UE4Man_Body', 'M_UE4Man_ChestLogo']
+    vg_first=['pelvis', 'spine_01', 'spine_02', 'spine_03', 'clavicle_l', 'upperarm_l', 'lowerarm_l', 'hand_l', 'index_01_l', 'index_02_l', 'index_03_l', 'middle_01_l', 'middle_02_l', 'middle_03_l', 'pinky_01_l', 'pinky_02_l', 'pinky_03_l', 'ring_01_l', 'ring_02_l', 'ring_03_l', 'thumb_01_l', 'thumb_02_l', 'thumb_03_l', 'lowerarm_twist_01_l', 'upperarm_twist_01_l']
+  obj root type=ARMATURE parent=MPS_Player loc=(0.0, 0.0, 0.0) scale=(1.0, 1.0, 1.0)
+    bones=69 first=['pelvis', 'spine_01', 'spine_02', 'spine_03', 'clavicle_l', 'upperarm_l', 'lowerarm_l', 'hand_l', 'index_01_l', 'index_02_l', 'index_03_l', 'middle_01_l', 'middle_02_l', 'middle_03_l', 'pinky_01_l', 'pinky_02_l', 'pinky_03_l', 'ring_01_l', 'ring_02_l', 'ring_03_l']
+IMPORT URBAN: E:\DTM\_Reskin\SKM_Urban_Soldier_02.fbx
+  obj root.001 type=ARMATURE parent=SKM_Urban_Soldier_02 loc=(0.0, 0.0, 0.0) scale=(1.0, 1.0, 1.0)
+    bones=351 first=['pelvis', 'spine_01', 'spine_02', 'spine_03', 'spine_04', 'spine_05', 'neck_01', 'neck_02', 'head', 'clavicle_l', 'upperarm_l', 'lowerarm_l', 'lowerarm_twist_02_l', 'lowerarm_twist_01_l', 'hand_l', 'index_metacarpal_l', 'index_01_l', 'index_02_l', 'index_03_l', 'index_03_half_l']
+  obj SKM_Urban_Soldier_02 type=EMPTY parent=None loc=(0.0, 0.0, 0.0) scale=(0.01, 0.01, 0.01)
+  obj SKM_Urban_Soldier_02.001 type=MESH parent=root.001 loc=(0.0, 0.0, 0.0) scale=(1.0, 1.0, 1.0)
+    verts=188422 polys=294765 mats=28 vgroups=67
+    mat_names=['M_Heavy_Armor_Black', 'M_Pants_Gorka_Green', 'M_Gloves_Tactical_Gray', 'M_Arms_Afro', 'M_Drops_Tactical_Black', 'M_Bags_Black', 'M_Granade_Red', 'M_Heavy_Belt_Black', 'M_Headphones_Green', 'MI_lacrimal_fluid_Inst', 'M_Goggles_Green', 'MI_EyeOcclusion_Inst', 'M_Teeth', 'M_Bulletpruf_Tactic_Black', 'M_Jacket_Outdoor_Green_2', 'M_Bags_Black_15', 'M_Drops_Tactical_Black_16', 'M_Granade_Red_17', 'M_Gogles_Glass', 'M_Cartilage', 'M_Raspirator', 'M_Balaclava_Single_Eye', 'M_Holster_Hard_Black', 'M_Pistol', 'MI_EyeRefractive_Inst']
+    vg_first=['pelvis', 'spine_01', 'spine_02', 'spine_03', 'spine_04', 'spine_05', 'neck_01', 'neck_02', 'head', 'clavicle_l', 'upperarm_l', 'lowerarm_l', 'lowerarm_twist_02_l', 'lowerarm_twist_01_l', 'hand_l', 'index_metacarpal_l', 'index_01_l', 'index_02_l', 'index_03_l', 'middle_metacarpal_l', 'middle_01_l', 'middle_02_l', 'middle_03_l', 'thumb_01_l', 'thumb_02_l']

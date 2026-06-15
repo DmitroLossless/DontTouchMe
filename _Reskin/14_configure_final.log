@@ -1,0 +1,36 @@
+Final mesh=<Object '/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS.SKM_Urban_Soldier_02_MPS' (0x0000028D3AE04600) Class 'SkeletalMesh'>
+Final skeleton=<Object '/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player_Skeleton.MPS_Player_Skeleton' (0x0000028CF1F0C800) Class 'Skeleton'>
+Final bounds before materials=<Struct 'BoxSphereBounds' (0x0000028D3CEDE8C0) {origin: {x: 0.000023, y: 1.805049, z: 91.617017}, box_extent: {x: 55.959427, y: 26.549788, z: 91.760332}, sphere_radius: 110.708208}>
+Original bounds=<Struct 'BoxSphereBounds' (0x0000028D3CEDE8C0) {origin: {x: 0.000010, y: 1.805063, z: 91.617032}, box_extent: {x: 55.959440, y: 26.549776, z: 91.760349}, sphere_radius: 110.708225}>
+orig materials=28
+  orig[0] slot=M_Heavy_Armor iface=<Object '/Game/UrbanMilChar/Materials/Chest/Armor/M_Heavy_Armor_Black.M_Heavy_Armor_Black' (0x0000028D48F76200) Class 'Material'>
+  orig[1] slot=M_Pants_Inboots iface=<Object '/Game/UrbanMilChar/Materials/Pants/Pants_Inboots/M_Pants_Gorka_Green.M_Pants_Gorka_Green' (0x0000028D08602A00) Class 'Material'>
+  orig[2] slot=M_Arms_Gloves_Tactical iface=<Object '/Game/UrbanMilChar/Materials/Arms/Gloves_Tactical/M_Gloves_Tactical_Gray.M_Gloves_Tactical_Gray' (0x0000028D48F74600) Class 'Material'>
+  orig[3] slot=M_Arms iface=<Object '/Game/UrbanMilChar/Materials/Arms/Arms/M_Arms_Afro.M_Arms_Afro' (0x0000028D48F73800) Class 'Material'>
+  orig[4] slot=T_Drops_Tactical1 iface=<Object '/Game/UrbanMilChar/Materials/Chest/Drops/M_Drops_Tactical_Black.M_Drops_Tactical_Black' (0x0000028D48F7B600) Class 'Material'>
+final_before materials=28
+  final_before[0] slot=M_Heavy_Armor_Black iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x0000028CE202D200) Class 'Material'>
+  final_before[1] slot=M_Pants_Gorka_Green iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x0000028CE202D200) Class 'Material'>
+  final_before[2] slot=M_Gloves_Tactical_Gray iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x0000028CE202D200) Class 'Material'>
+  final_before[3] slot=M_Arms_Afro iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x0000028CE202D200) Class 'Material'>
+  final_before[4] slot=M_Drops_Tactical_Black iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x0000028CE202D200) Class 'Material'>
+final_after materials=28
+  final_after[0] slot=M_Heavy_Armor iface=<Object '/Game/UrbanMilChar/Materials/Chest/Armor/M_Heavy_Armor_Black.M_Heavy_Armor_Black' (0x0000028D48F76200) Class 'Material'>
+  final_after[1] slot=M_Pants_Inboots iface=<Object '/Game/UrbanMilChar/Materials/Pants/Pants_Inboots/M_Pants_Gorka_Green.M_Pants_Gorka_Green' (0x0000028D08602A00) Class 'Material'>
+  final_after[2] slot=M_Arms_Gloves_Tactical iface=<Object '/Game/UrbanMilChar/Materials/Arms/Gloves_Tactical/M_Gloves_Tactical_Gray.M_Gloves_Tactical_Gray' (0x0000028D48F74600) Class 'Material'>
+  final_after[3] slot=M_Arms iface=<Object '/Game/UrbanMilChar/Materials/Arms/Arms/M_Arms_Afro.M_Arms_Afro' (0x0000028D48F73800) Class 'Material'>
+  final_after[4] slot=T_Drops_Tactical1 iface=<Object '/Game/UrbanMilChar/Materials/Chest/Drops/M_Drops_Tactical_Black.M_Drops_Tactical_Black' (0x0000028D48F7B600) Class 'Material'>
+DT before Default.SecondaryMesh=/Script/Engine.SkeletalMesh'/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_05.SKM_Urban_Soldier_05'
+fill_data_table_from_json_string=True
+DT after:
+[
+	{
+		"Name": "Default",
+		"MainMesh": "/Script/Engine.SkeletalMesh'/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player.MPS_Player'",
+		"SecondaryMesh": "/Script/Engine.SkeletalMesh'/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS.SKM_Urban_Soldier_02_MPS'",
+		"MainMaterial": "/Script/Engine.MaterialInstanceConstant'/Game/MP_System_V3/Game/Commons/Materials/MaterialInstances/MI_NoRender.MI_NoRender'"
+	}
+]
+Temp exists /Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS_CodexTest: False
+Temp exists /Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS_NoEmptyTest: False
+Temp exists /Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS_GS001Test: False

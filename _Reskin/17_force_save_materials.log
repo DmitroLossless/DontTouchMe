@@ -1,0 +1,3 @@
+before first=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x0000018A4AFFD200) Class 'Material'>
+saved=True
+after first=<Object '/Game/UrbanMilChar/Materials/Chest/Armor/M_Heavy_Armor_Black.M_Heavy_Armor_Black' (0x0000018AAFCA7000) Class 'Material'> slot=M_Heavy_Armor

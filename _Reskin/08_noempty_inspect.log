@@ -1,0 +1,4 @@
+root type=ARMATURE parent=None loc=(0.0, 0.0, 0.0) scale=(0.01, 0.01, 0.01)
+  bones=69 first=['pelvis', 'spine_01', 'spine_02', 'spine_03', 'clavicle_l', 'upperarm_l', 'lowerarm_l', 'hand_l', 'index_01_l', 'index_02_l', 'index_03_l', 'middle_01_l', 'middle_02_l', 'middle_03_l', 'pinky_01_l', 'pinky_02_l', 'pinky_03_l', 'ring_01_l', 'ring_02_l', 'ring_03_l', 'thumb_01_l', 'thumb_02_l', 'thumb_03_l', 'lowerarm_twist_01_l', 'upperarm_twist_01_l']
+SKM_Urban_Soldier_02_MPS type=MESH parent=root loc=(0.0, 0.0, 0.0) scale=(100.0, 100.0, 100.0)
+  verts=188422 mats=28 vgroups=54 bounds_size=[111.91885757446289, 53.099605560302734, 183.52068695425987]

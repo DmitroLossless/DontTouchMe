@@ -1,0 +1,207 @@
+﻿Diagnose log at 2026-06-07T15:54:22Z
+
+AppPath: C:\Program Files\Git\mingw64\bin\git-credential-manager.exe
+InstallDir: C:\Program Files\Git\mingw64\bin\
+Version: 2.6.1+786ab03440ddc82e807a97c0e540f5247e44cec6
+
+------------
+Diagnostic: Environment
+Skipped: False
+Success: True
+Exception: None
+Log:
+OSType: Windows
+OSVersion: 10.0 (build 26200)
+Reading environment variables... OK
+ Variables:
+HOMEPATH=\Users\User
+DriverData=C:\Windows\System32\Drivers\DriverData
+COMPUTERNAME=JOBER
+GIT_TRACE2_PARENT_SID=b788400f-033c-4723-a8d6-7a31fa3cc036
+CommonProgramFiles(x86)=C:\Program Files (x86)\Common Files
+OneDrive=C:\Users\User\OneDrive
+CODEX_THREAD_ID=019ea169-ea3e-7c02-a223-3123def213ef
+GIT_LFS_PATH=C:\Program Files\Git LFS
+UE_EditorUIPid=11008
+UE_DesktopUnrealProcess=1
+TMP=C:\Users\User\AppData\Local\Temp
+LC_CTYPE=C.UTF-8
+PATHEXT=.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL
+DOTNET_ROOT=C:\Program Files\dotnet
+GIT_EXEC_PATH=C:/Program Files/Git/mingw64/libexec/git-core
+TEMP=C:\Users\User\AppData\Local\Temp
+LOCALAPPDATA=C:\Users\User\AppData\Local
+MSYSTEM=MINGW64
+TERM=xterm-256color
+ProgramData=C:\ProgramData
+USERDOMAIN=JOBER
+PROCESSOR_REVISION=7100
+Path=C:/Program Files/Git/mingw64/libexec/git-core;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Users\User\bin;C:\Users\User\AppData\Local\JetBrains\Rider2025.3\aia\codex\tmp\arg0\codex-arg0s4cUCa;C:\Program Files\Microsoft\jdk-11.0.16.101-hotspot\bin;C:\Program Files\Eclipse Foundation\jdk-8.0.302.8-hotspot\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files\Microsoft SQL Server\150\Tools\Binn\;C:\Program Files\Git LFS;C:\Program Files\NVIDIA Corporation\NVIDIA app\NvDLISR;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files\Perforce\;C:\Program Files\dotnet\;C:\Program Files\Git\cmd;C:\Program Files\TortoiseGit\bin;C:\Program Files\PuTTY\;C:\Users\User\.dotnet\tools;C:\Users\User\AppData\Local\Microsoft\WindowsApps;C:\Users\User\AppData\Local\GitHubDesktop\bin;C:\Users\User\AppData\Local\Programs\Ollama
+PROCESSOR_LEVEL=23
+PROCESSOR_IDENTIFIER=AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD
+TMPDIR=C:\Users\User\AppData\Local\Temp
+EOS_LAUNCHED_BY_EPIC=0
+PROMPT=$P$G
+CODEX_HOME=C:\Users\User\AppData\Local\JetBrains\Rider2025.3\aia\codex
+UE-ZenSubprocessDataPath=C:/Users/User/AppData/Local/UnrealEngine/Common/Zen/Data
+ProgramFiles(x86)=C:\Program Files (x86)
+PUBLIC=C:\Users\Public
+NUMBER_OF_PROCESSORS=24
+FPS_BROWSER_USER_PROFILE_STRING=Default
+CommonProgramFiles=C:\Program Files (x86)\Common Files
+USERPROFILE=C:\Users\User
+asl.log=Destination=file
+CODEX_SANDBOX_NETWORK_DISABLED=1
+DOTNET_MULTILEVEL_LOOKUP=1
+COLORTERM=truecolor
+ProgramW6432=C:\Program Files
+ACSvcPort=17532
+ProgramFiles=C:\Program Files (x86)
+PLINK_PROTOCOL=ssh
+PXR_MTLX_STDLIB_SEARCH_PATHS=E:/EpicEngine/UE_5.7/Engine/Binaries/ThirdParty/MaterialX/libraries
+RlsSvcPort=22112
+SystemRoot=C:\WINDOWS
+VS140COMNTOOLS=C:\Program Files (x86)\Microsoft Visual Studio 14.0\Common7\Tools\
+HOME=C:\Users\User
+CommonProgramW6432=C:\Program Files\Common Files
+LOGONSERVER=\\JOBER
+CODEX_PATH=C:\Users\User\AppData\Local\JetBrains\Rider2025.3\aia\codex\bin\codex-x86_64-pc-windows-msvc.exe
+LPP_PROCESS_RESTART_ID=11008
+QtMsBuild=C:\Users\User\AppData\Local\QtMsBuild
+USERDOMAIN_ROAMINGPROFILE=JOBER
+APPDATA=C:\Users\User\AppData\Roaming
+HOMEDRIVE=C:
+ACSetupSvcPort=23210
+PSModulePath=C:\Users\User\Documents\WindowsPowerShell\Modules;C:\Program Files\WindowsPowerShell\Modules;C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules
+USERNAME=User
+PROCESSOR_ARCHITEW6432=AMD64
+FPS_BROWSER_APP_PROFILE_STRING=Internet Explorer
+PROCESSOR_ARCHITECTURE=x86
+OS=Windows_NT
+ComSpec=C:\WINDOWS\system32\cmd.exe
+SystemDrive=C:
+windir=C:\WINDOWS
+OneDriveConsumer=C:\Users\User\OneDrive
+ALLUSERSPROFILE=C:\ProgramData
+
+
+------------
+Diagnostic: File system
+Skipped: False
+Success: True
+Exception: None
+Log:
+Temporary directory is 'C:\Users\User\AppData\Local\Temp\'...
+Checking basic file I/O...
+Writing to temporary file 'C:\Users\User\AppData\Local\Temp\32ff407c8f09852a6deb19fe'... OK
+Reading from temporary file 'C:\Users\User\AppData\Local\Temp\32ff407c8f09852a6deb19fe'... OK
+Deleting temporary file 'C:\Users\User\AppData\Local\Temp\32ff407c8f09852a6deb19fe'... OK
+Testing IFileSystem instance...
+UserHomePath: C:\Users\User
+UserDataDirectoryPath: C:\Users\User\.gcm
+GetCurrentDirectory(): E:\DTM
+
+------------
+Diagnostic: Networking
+Skipped: False
+Success: True
+Exception: None
+Log:
+Checking networking and HTTP stack...
+Creating HTTP client... OK
+IsNetworkAvailable: True
+Sending HEAD request to http://example.com...Sending HEAD request to https://example.com... OK
+ OK
+Acquiring free TCP port... OK
+Testing local HTTP loopback connections...
+Creating new HTTP listener for http://localhost:59895/... OK
+Waiting for loopback connection... OK
+Writing response... OK
+Waiting for response data... OK
+Loopback connection data OK
+
+------------
+Diagnostic: Git
+Skipped: False
+Success: True
+Exception: None
+Log:
+Getting Git version... OK
+Git version is '2.52.0.windows.1'
+Locating current repository...Git repository at 'E:/DTM/.git'
+ OK
+Listing all Git configuration... OK
+Git configuration:
+file:C:/Program Files/Git/etc/gitconfig	diff.astextplain.textconv=astextplain
+file:C:/Program Files/Git/etc/gitconfig	filter.lfs.clean=git-lfs clean -- %f
+file:C:/Program Files/Git/etc/gitconfig	filter.lfs.smudge=git-lfs smudge -- %f
+file:C:/Program Files/Git/etc/gitconfig	filter.lfs.process=git-lfs filter-process
+file:C:/Program Files/Git/etc/gitconfig	filter.lfs.required=true
+file:C:/Program Files/Git/etc/gitconfig	http.sslbackend=schannel
+file:C:/Program Files/Git/etc/gitconfig	core.autocrlf=true
+file:C:/Program Files/Git/etc/gitconfig	core.fscache=true
+file:C:/Program Files/Git/etc/gitconfig	core.symlinks=true
+file:C:/Program Files/Git/etc/gitconfig	pull.rebase=false
+file:C:/Program Files/Git/etc/gitconfig	credential.helper=manager
+file:C:/Program Files/Git/etc/gitconfig	credential.https://dev.azure.com.usehttppath=true
+file:C:/Program Files/Git/etc/gitconfig	init.defaultbranch=master
+file:C:/Users/User/.gitconfig	filter.lfs.clean=git-lfs clean -- %f
+file:C:/Users/User/.gitconfig	filter.lfs.smudge=git-lfs smudge -- %f
+file:C:/Users/User/.gitconfig	filter.lfs.process=git-lfs filter-process
+file:C:/Users/User/.gitconfig	filter.lfs.required=true
+file:C:/Users/User/.gitconfig	user.name=dmitrolossless
+file:C:/Users/User/.gitconfig	user.email=dmitrolossless@gmail.com
+file:C:/Users/User/.gitconfig	core.autocrlf=true
+file:C:/Users/User/.gitconfig	difftool.sourcetree.cmd='' 
+file:C:/Users/User/.gitconfig	mergetool.sourcetree.cmd='' 
+file:C:/Users/User/.gitconfig	mergetool.sourcetree.trustexitcode=false
+file:C:/Users/User/.gitconfig	mergetool.sourcetree.keepbackup=false
+file:.git/config	core.repositoryformatversion=0
+file:.git/config	core.filemode=false
+file:.git/config	core.bare=false
+file:.git/config	core.logallrefupdates=true
+file:.git/config	core.symlinks=false
+file:.git/config	core.ignorecase=true
+file:.git/config	lfs.repositoryformatversion=0
+file:.git/config	remote.origin.url=https://github.com/DmitroLossless/DontTouchMe.git
+file:.git/config	remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*
+file:.git/config	lfs.https://github.com/DmitroLossless/DontTouchMe.git/info/lfs.access=basic
+file:.git/config	branch.main.remote=origin
+file:.git/config	branch.main.merge=refs/heads/main
+
+
+------------
+Diagnostic: Credential storage
+Skipped: False
+Success: True
+Exception: None
+Log:
+ICredentialStore instance is of type: CredentialStore
+Writing test credential... OK
+Reading test credential... OK
+Deleting test credential... OK
+
+------------
+Diagnostic: Microsoft authentication (AAD/MSA)
+Skipped: False
+Success: True
+Exception: None
+Log:
+Broker is not enabled.
+Flow type is: Auto
+Gathering MSAL token cache data... OK
+CacheDirectory: C:\Users\User\AppData\Local\.IdentityService
+CacheFileName: msal.cache
+CacheFilePath: C:\Users\User\AppData\Local\.IdentityService\msal.cache
+Creating cache helper... OK
+Verifying MSAL token cache persistence... OK
+
+------------
+Diagnostic: GitHub API
+Skipped: False
+Success: True
+Exception: None
+Log:
+Using 'https://github.com/' as API target.
+Querying '/meta' endpoint... OK
+

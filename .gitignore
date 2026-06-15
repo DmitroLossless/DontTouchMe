@@ -18,3 +18,8 @@ Saved/
 *.pdb
 *.obj
 *.dll
+
+# Codex local diagnostics & backups
+_Codex/
+*.codex-backup-*/
+*[Cc]odex*

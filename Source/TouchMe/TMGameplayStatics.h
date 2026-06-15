@@ -35,6 +35,7 @@ class UStaticMesh;
 class UProjectileMovementComponent;
 class FMemoryReader;
 class APlayerController;
+class ACharacter;
 struct FDialogueContext;
 
 
@@ -58,6 +59,9 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 
 	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "5", UnsafeDuringActorConstruction = "true", Keywords = "play"))
 	static TOUCHME_API void MarketSoundRoom(bool enable);
+
+	UFUNCTION(BlueprintCallable, Category="TM|Animation")
+	static TOUCHME_API bool ApplyMPSOverlayPose(ACharacter* Character, UObject* ActiveWeapon);
 
 	UFUNCTION(BlueprintCallable, Category="TM|Projectile", meta=(WorldContext="WorldContextObject"))
 	static TOUCHME_API AActor* Shoot(

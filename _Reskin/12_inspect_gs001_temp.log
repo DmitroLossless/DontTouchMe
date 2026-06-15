@@ -1,0 +1,8 @@
+ASSET /Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02.SKM_Urban_Soldier_02: <Object '/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02.SKM_Urban_Soldier_02' (0x00000249F795F000) Class 'SkeletalMesh'>
+  skeleton=<Object '/Game/UrbanMilChar/Mesh/SK_Military_Body_Full_Skeleton.SK_Military_Body_Full_Skeleton' (0x00000249F5EC2800) Class 'Skeleton'>
+  bounds=<Struct 'BoxSphereBounds' (0x00000249F97C24C0) {origin: {x: 0.000010, y: 1.805063, z: 91.617032}, box_extent: {x: 55.959440, y: 26.549776, z: 91.760349}, sphere_radius: 110.708225}>
+  materials_count=28 first_iface=<Object '/Game/UrbanMilChar/Materials/Chest/Armor/M_Heavy_Armor_Black.M_Heavy_Armor_Black' (0x00000249F6FF6200) Class 'Material'>
+ASSET /Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS_GS001Test.SKM_Urban_Soldier_02_MPS_GS001Test: <Object '/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS_GS001Test.SKM_Urban_Soldier_02_MPS_GS001Test' (0x00000249F97F2800) Class 'SkeletalMesh'>
+  skeleton=<Object '/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player_Skeleton.MPS_Player_Skeleton' (0x00000249F5ECD700) Class 'Skeleton'>
+  bounds=<Struct 'BoxSphereBounds' (0x00000249F97C1B40) {origin: {x: 0.000023, y: 1.805049, z: 91.617017}, box_extent: {x: 55.959427, y: 26.549788, z: 91.760332}, sphere_radius: 110.708208}>
+  materials_count=28 first_iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000002499BFED200) Class 'Material'>

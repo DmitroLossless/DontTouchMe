@@ -1,0 +1,13 @@
+Unreal export FBX start
+asset MPS_Player: <Object '/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player.MPS_Player' (0x00000187FE22C800) Class 'SkeletalMesh'>
+  export option ascii=False
+  export option collision=False
+  export option level_of_detail=False
+  export option vertex_color=True
+export MPS_Player: ok=True, file=E:\DTM\_Reskin\MPS_Player.fbx, exists=True, errors=[]
+asset SKM_Urban_Soldier_02: <Object '/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02.SKM_Urban_Soldier_02' (0x000001884F556E00) Class 'SkeletalMesh'>
+  export option ascii=False
+  export option collision=False
+  export option level_of_detail=False
+  export option vertex_color=True
+export SKM_Urban_Soldier_02: ok=True, file=E:\DTM\_Reskin\SKM_Urban_Soldier_02.fbx, exists=True, errors=[]

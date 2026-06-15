@@ -1,0 +1,72 @@
+ASSET=<Object '/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02.SKM_Urban_Soldier_02' (0x000001DE1F23DC00) Class 'SkeletalMesh'>
+  skeleton=<Object '/Game/UrbanMilChar/Mesh/SK_Military_Body_Full_Skeleton.SK_Military_Body_Full_Skeleton' (0x000001DE1AD5FA00) Class 'Skeleton'>
+  materials_count=28
+    mat[0] slot=M_Heavy_Armor iface=<Object '/Game/UrbanMilChar/Materials/Chest/Armor/M_Heavy_Armor_Black.M_Heavy_Armor_Black' (0x000001DE1ADD7E00) Class 'Material'>
+    mat[1] slot=M_Pants_Inboots iface=<Object '/Game/UrbanMilChar/Materials/Pants/Pants_Inboots/M_Pants_Gorka_Green.M_Pants_Gorka_Green' (0x000001DE1F0B4600) Class 'Material'>
+    mat[2] slot=M_Arms_Gloves_Tactical iface=<Object '/Game/UrbanMilChar/Materials/Arms/Gloves_Tactical/M_Gloves_Tactical_Gray.M_Gloves_Tactical_Gray' (0x000001DE1ADD6200) Class 'Material'>
+    mat[3] slot=M_Arms iface=<Object '/Game/UrbanMilChar/Materials/Arms/Arms/M_Arms_Afro.M_Arms_Afro' (0x000001DE1ADD5400) Class 'Material'>
+    mat[4] slot=T_Drops_Tactical1 iface=<Object '/Game/UrbanMilChar/Materials/Chest/Drops/M_Drops_Tactical_Black.M_Drops_Tactical_Black' (0x000001DE1ADDD200) Class 'Material'>
+    mat[5] slot=T_Tactical_Bags1 iface=<Object '/Game/UrbanMilChar/Materials/Chest/Bags/M_Bags_Black.M_Bags_Black' (0x000001DE1ADD8C00) Class 'Material'>
+    mat[6] slot=M_Granate iface=<Object '/Game/UrbanMilChar/Materials/Weapon/Granade/M_Granade_Red.M_Granade_Red' (0x000001DE1F0B5400) Class 'Material'>
+    mat[7] slot=T_Heavy_Belt iface=<Object '/Game/UrbanMilChar/Materials/Chest/Belt_Heavy/M_Heavy_Belt_Black.M_Heavy_Belt_Black' (0x000001DE1ADDA800) Class 'Material'>
+    mat[8] slot=M_Head iface=<Object '/Game/UrbanMilChar/Materials/Head_Modul/Headphones/M_Headphones_Green.M_Headphones_Green' (0x000001DE1F0B2A00) Class 'Material'>
+    mat[9] slot=M_Eyeball iface=<Object '/Game/UrbanMilChar/Materials/Body/Eye/Eye_Detals/MI_lacrimal_fluid_Inst.MI_lacrimal_fluid_Inst' (0x000001DD9E1EA000) Class 'MaterialInstanceConstant'>
+    mat[10] slot=M_Sclera iface=<Object '/Game/UrbanMilChar/Materials/Face_Modul/Goggles/M_Goggles_Green.M_Goggles_Green' (0x000001DE1F0B0000) Class 'Material'>
+    mat[11] slot=M_Eyelashesh iface=<Object '/Game/UrbanMilChar/Materials/Body/Eye/Eye_Detals/MI_EyeOcclusion_Inst.MI_EyeOcclusion_Inst' (0x000001DD9E1E7000) Class 'MaterialInstanceConstant'>
+    mat[12] slot=M_Teeth iface=<Object '/Game/UrbanMilChar/Materials/Body/M_Teeth.M_Teeth' (0x000001DE1ADD7000) Class 'Material'>
+    mat[13] slot=M_Bulletproof_Tactic1 iface=<Object '/Game/UrbanMilChar/Materials/Chest/Bulletpruf_Tactic/M_Bulletpruf_Tactic_Black.M_Bulletpruf_Tactic_Black' (0x000001DE1ADDC400) Class 'Material'>
+    mat[14] slot=M_Tactical_Jacket iface=<Object '/Game/UrbanMilChar/Materials/Cloth/Jacket_Hood/M_Jacket_Outdoor_Green_2.M_Jacket_Outdoor_Green_2' (0x000001DE1ADDE000) Class 'Material'>
+    mat[15] slot=M_Bags_Tactical2 iface=<Object '/Game/UrbanMilChar/Materials/Chest/Bags/M_Bags_Black.M_Bags_Black' (0x000001DE1ADD8C00) Class 'Material'>
+    mat[16] slot=M_Drops_Tactical2 iface=<Object '/Game/UrbanMilChar/Materials/Chest/Drops/M_Drops_Tactical_Black.M_Drops_Tactical_Black' (0x000001DE1ADDD200) Class 'Material'>
+    mat[17] slot=Granate iface=<Object '/Game/UrbanMilChar/Materials/Weapon/Granade/M_Granade_Red.M_Granade_Red' (0x000001DE1F0B5400) Class 'Material'>
+    mat[18] slot=M_Googles iface=<Object '/Game/UrbanMilChar/Materials/Face_Modul/Goggles/M_Gogles_Glass.M_Gogles_Glass' (0x000001DE1F0B0E00) Class 'Material'>
+    mat[19] slot=M_Googles_Glass iface=<Object '/Game/UrbanMilChar/Materials/Body/Eye/Eye_Detals/M_Cartilage.M_Cartilage' (0x000001DE1ADD2A00) Class 'Material'>
+    mat[20] slot=M_Raspirator iface=<Object '/Game/UrbanMilChar/Materials/Face_Modul/Raspirator/M_Raspirator.M_Raspirator' (0x000001DE1F0B1C00) Class 'Material'>
+    mat[21] slot=M_Balaclava_Single_Eye iface=<Object '/Game/UrbanMilChar/Materials/Face_Modul/Balaclava_Single_Eye/M_Balaclava_Single_Eye.M_Balaclava_Single_Eye' (0x000001DE1ADDEE00) Class 'Material'>
+    mat[22] slot=M_Holster_Hard2 iface=<Object '/Game/UrbanMilChar/Materials/Hips_Modul/Holster_Hard/M_Holster_Hard_Black.M_Holster_Hard_Black' (0x000001DE1F0B3800) Class 'Material'>
+    mat[23] slot=M_Pistol2 iface=<Object '/Game/UrbanMilChar/Materials/Weapon/Pistol/M_Pistol.M_Pistol' (0x000001DE1F0B6200) Class 'Material'>
+    mat[24] slot=M_EyeRight iface=<Object '/Game/UrbanMilChar/Materials/Body/Eye/MI_EyeRefractive_Inst.MI_EyeRefractive_Inst' (0x000001DD9E1EC000) Class 'MaterialInstanceConstant'>
+    mat[25] slot=M_EyeLeft iface=<Object '/Game/UrbanMilChar/Materials/Body/Eye/MI_EyeRefractive_Inst.MI_EyeRefractive_Inst' (0x000001DD9E1EC000) Class 'MaterialInstanceConstant'>
+    mat[26] slot=M_Quantum_Body_Facial_Details iface=<Object '/Game/UrbanMilChar/Materials/Body/Facial_Details/MI_Hair_Inst.MI_Hair_Inst' (0x000001DD9E1ED800) Class 'MaterialInstanceConstant'>
+    mat[27] slot=M_Quantum_Body_Head_Afro iface=<Object '/Game/UrbanMilChar/Materials/Body/MI_Head_Quantum_Afro.MI_Head_Quantum_Afro' (0x000001DD9E1EF000) Class 'MaterialInstanceConstant'>
+  positive_bounds_extension=<Struct 'Vector' (0x000001DE1F23DDD8) {x: 0.000000, y: 0.000000, z: 0.000000}>
+  negative_bounds_extension=<Struct 'Vector' (0x000001DE1F23DDF0) {x: 0.000000, y: 0.000000, z: 0.000000}>
+  get_bounds=<Struct 'BoxSphereBounds' (0x000001DE1F6C3E00) {origin: {x: 0.000010, y: 1.805063, z: 91.617032}, box_extent: {x: 55.959440, y: 26.549776, z: 91.760349}, sphere_radius: 110.708225}>
+  get_name=SKM_Urban_Soldier_02
+  get_path_name=/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02.SKM_Urban_Soldier_02
+ASSET=<Object '/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS_NoEmptyTest.SKM_Urban_Soldier_02_MPS_NoEmptyTest' (0x000001DE20FE3200) Class 'SkeletalMesh'>
+  skeleton=<Object '/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player_Skeleton.MPS_Player_Skeleton' (0x000001DE1F597300) Class 'Skeleton'>
+  materials_count=28
+    mat[0] slot=M_Heavy_Armor_Black iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[1] slot=M_Pants_Gorka_Green iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[2] slot=M_Gloves_Tactical_Gray iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[3] slot=M_Arms_Afro iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[4] slot=M_Drops_Tactical_Black iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[5] slot=M_Bags_Black iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[6] slot=M_Granade_Red iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[7] slot=M_Heavy_Belt_Black iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[8] slot=M_Headphones_Green iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[9] slot=MI_lacrimal_fluid_Inst iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[10] slot=M_Goggles_Green iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[11] slot=MI_EyeOcclusion_Inst iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[12] slot=M_Teeth iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[13] slot=M_Bulletpruf_Tactic_Black iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[14] slot=M_Jacket_Outdoor_Green_2 iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[15] slot=M_Bags_Black_15 iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[16] slot=M_Drops_Tactical_Black_16 iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[17] slot=M_Granade_Red_17 iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[18] slot=M_Gogles_Glass iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[19] slot=M_Cartilage iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[20] slot=M_Raspirator iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[21] slot=M_Balaclava_Single_Eye iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[22] slot=M_Holster_Hard_Black iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[23] slot=M_Pistol iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[24] slot=MI_EyeRefractive_Inst iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[25] slot=MI_EyeRefractive_Inst_25 iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[26] slot=MI_Hair_Inst iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+    mat[27] slot=MI_Head_Quantum_Afro iface=<Object '/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial' (0x000001DDEF7FD200) Class 'Material'>
+  positive_bounds_extension=<Struct 'Vector' (0x000001DE20FE33D8) {x: 0.000000, y: 0.000000, z: 0.000000}>
+  negative_bounds_extension=<Struct 'Vector' (0x000001DE20FE33F0) {x: 0.000000, y: 0.000000, z: 0.000000}>
+  get_bounds=<Struct 'BoxSphereBounds' (0x000001DE1F6C33C0) {origin: {x: 0.002441, y: 180.506104, z: 9161.703376}, box_extent: {x: 5595.942871, y: 2654.978271, z: 9176.034905}, sphere_radius: 11070.822139}>
+  get_name=SKM_Urban_Soldier_02_MPS_NoEmptyTest
+  get_path_name=/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS_NoEmptyTest.SKM_Urban_Soldier_02_MPS_NoEmptyTest

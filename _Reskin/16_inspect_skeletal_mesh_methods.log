@@ -1,0 +1,10 @@
+_post_init
+get_overlay_material
+get_overlay_material_max_draw_distance
+materials
+modify
+overlay_material
+overlay_material_max_draw_distance
+post_process_anim_blueprint
+set_overlay_material
+set_overlay_material_max_draw_distance

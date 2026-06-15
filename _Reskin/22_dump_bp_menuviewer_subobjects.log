@@ -1,0 +1,19 @@
+BP=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer
+handles=24
+OBJ name=Default__BP_MenuViewer_C class=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.Default__BP_MenuViewer_C
+OBJ name=Glow_R1_GEN_VARIABLE class=/Script/Engine.StaticMeshComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Glow_R1_GEN_VARIABLE
+OBJ name=Glow_R_GEN_VARIABLE class=/Script/Engine.StaticMeshComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Glow_R_GEN_VARIABLE
+OBJ name=Light_GEN_VARIABLE class=/Script/Engine.PointLightComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Light_GEN_VARIABLE
+OBJ name=Character_GEN_VARIABLE class=/Script/Engine.SkeletalMeshComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Character_GEN_VARIABLE
+  SKINNED mesh=/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player.MPS_Player leader=None hidden=True visible=True mats=['/Game/MP_System_V3/Game/Characters/Mannequin/Materials/MI_MPS.MI_MPS', '/Game/MP_System_V3/Game/Commons/Materials/Masters/M_NoRender.M_NoRender']
+OBJ name=Arrow_GEN_VARIABLE class=/Script/Engine.ArrowComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Arrow_GEN_VARIABLE
+OBJ name=Camera_GEN_VARIABLE class=/Script/Engine.CameraComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Camera_GEN_VARIABLE
+OBJ name=Glow_R2_GEN_VARIABLE class=/Script/Engine.StaticMeshComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Glow_R2_GEN_VARIABLE
+OBJ name=Glow_L2_GEN_VARIABLE class=/Script/Engine.StaticMeshComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Glow_L2_GEN_VARIABLE
+OBJ name=DefaultSceneRoot_GEN_VARIABLE class=/Script/Engine.SceneComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:DefaultSceneRoot_GEN_VARIABLE
+OBJ name=ParticleSystem_GEN_VARIABLE class=/Script/Engine.ParticleSystemComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:ParticleSystem_GEN_VARIABLE
+OBJ name=Glow_L1_GEN_VARIABLE class=/Script/Engine.StaticMeshComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Glow_L1_GEN_VARIABLE
+OBJ name=Glow_L_GEN_VARIABLE class=/Script/Engine.StaticMeshComponent path=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer_C:Glow_L_GEN_VARIABLE
+CDO=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.Default__BP_MenuViewer_C
+  CDO_PROP Character=None
+CDO skinned comps=0

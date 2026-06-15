@@ -1,0 +1,15 @@
+old02 refs=[]
+old05 refs=[]
+final refs=["/Game/MP_System_V3/Game/Blueprints/DataTables/DT_PlayerData", "/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer"]
+final refs_sorted=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer,/Game/MP_System_V3/Game/Blueprints/DataTables/DT_PlayerData
+BP=/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer
+SUBOBJ Character_GEN_VARIABLE mesh=/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player.MPS_Player
+SUBOBJ Character_GEN_VARIABLE mesh=/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player.MPS_Player
+DT=[
+	{
+		"Name": "Default",
+		"MainMesh": "/Script/Engine.SkeletalMesh'/Game/MP_System_V3/Game/Characters/Mannequin/Mesh/MPS_Player.MPS_Player'",
+		"SecondaryMesh": "/Script/Engine.SkeletalMesh'/Game/UrbanMilChar/Mesh/Preset/SKM_Urban_Soldier_02_MPS.SKM_Urban_Soldier_02_MPS'",
+		"MainMaterial": "/Script/Engine.MaterialInstanceConstant'/Game/MP_System_V3/Game/Commons/Materials/MaterialInstances/MI_NoRender.MI_NoRender'"
+	}
+]
