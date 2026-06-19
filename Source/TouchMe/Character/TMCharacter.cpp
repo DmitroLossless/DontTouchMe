@@ -390,11 +390,6 @@ namespace
 	FRotator TMGetCameraFloorLockedRotation(const ATMCharacter* Character)
 	{
 		FRotator CameraRotation = Character ? Character->GetViewRotation() : FRotator::ZeroRotator;
-		if (const UCameraComponent* CameraComponent = Character ? Character->FindComponentByClass<UCameraComponent>() : nullptr)
-		{
-			CameraRotation = CameraComponent->GetComponentRotation();
-		}
-
 		CameraRotation.Roll = 0.f;
 		return CameraRotation.GetNormalized();
 	}
@@ -1162,7 +1157,6 @@ namespace
 		if (const UCameraComponent* CameraComponent = Character->FindComponentByClass<UCameraComponent>())
 		{
 			CameraLocation = CameraComponent->GetComponentLocation();
-			CameraRotation = CameraComponent->GetComponentRotation();
 		}
 
 		CameraRotation.Roll = 0.f;
@@ -1269,21 +1263,28 @@ namespace
 
 		const FTransform CameraWeaponOffset = ActiveGun->GetCameraWeaponOffset();
 		const FVector TargetLocation = CameraWeaponOffset.GetLocation();
+		UCameraComponent* CameraComponent = Character && Character->IsLocallyControlled()
+			? Character->FindComponentByClass<UCameraComponent>()
+			: nullptr;
+		if (CameraComponent && CameraComponent->IsUsingAbsoluteRotation())
+		{
+			CameraComponent->SetAbsolute(
+				CameraComponent->IsUsingAbsoluteLocation(),
+				false,
+				CameraComponent->IsUsingAbsoluteScale());
+		}
+
 		if (FPCameraSocket->RelativeLocation.Equals(TargetLocation, KINDA_SMALL_NUMBER))
 		{
 			return;
 		}
 
-		AController* Controller = Character && Character->IsLocallyControlled() ? Character->GetController() : nullptr;
-		UCameraComponent* CameraComponent = Character && Character->IsLocallyControlled()
-			? Character->FindComponentByClass<UCameraComponent>()
-			: nullptr;
 		bool bHasViewTarget = false;
 		FVector ViewTarget = FVector::ZeroVector;
 		if (Character && CameraComponent)
 		{
 			const FVector ViewLocation = CameraComponent->GetComponentLocation();
-			const FRotator ViewRotation = CameraComponent->GetComponentRotation();
+			const FRotator ViewRotation = Character->GetViewRotation();
 			const FVector TraceEnd = ViewLocation + ViewRotation.Vector() * 100000.0f;
 
 			FHitResult HitResult;
@@ -1313,12 +1314,12 @@ namespace
 			FRotator TargetViewRotation = (ViewTarget - UpdatedViewLocation).Rotation().GetNormalized();
 			TargetViewRotation.Roll = 0.0f;
 
-			if (Controller)
+			if (AController* Controller = Character->GetController())
 			{
 				Controller->SetControlRotation(TargetViewRotation);
 			}
 
-			if (!Controller || !CameraComponent->bUsePawnControlRotation)
+			if (!Character->GetController() || !CameraComponent->bUsePawnControlRotation)
 			{
 				CameraComponent->SetWorldRotation(TargetViewRotation, false, nullptr, ETeleportType::TeleportPhysics);
 			}
@@ -1495,6 +1496,7 @@ namespace
 			TMUpdateRightHandIKTargetGuard(LinkedAnimInstance, Mesh);
 		}
 	}
+
 }
 
 ATMCharacter::ATMCharacter()
