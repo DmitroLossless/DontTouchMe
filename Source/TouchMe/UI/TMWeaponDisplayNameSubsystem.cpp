@@ -46,6 +46,32 @@ namespace
 		return Key;
 	}
 
+	FString GetClassDisplayNameForMatching(const UClass* Class)
+	{
+		if (!Class)
+		{
+			return FString();
+		}
+
+#if WITH_EDITORONLY_DATA
+		const FString DisplayName = Class->GetDisplayNameText().ToString();
+		if (!DisplayName.IsEmpty())
+		{
+			return DisplayName;
+		}
+#endif
+
+#if WITH_METADATA
+		const FString MetadataDisplayName = Class->GetMetaData(TEXT("DisplayName"));
+		if (!MetadataDisplayName.IsEmpty())
+		{
+			return MetadataDisplayName;
+		}
+#endif
+
+		return CleanWeaponClassName(Class->GetName());
+	}
+
 	bool DoesWeaponIdentifierMatch(const FString& Candidate, const UClass* Class)
 	{
 		if (!Class)
@@ -57,7 +83,7 @@ namespace
 		const FString ClassName = Class->GetName();
 		const FString CleanClassName = CleanWeaponClassName(ClassName);
 		const FString StrippedClassName = StripBlueprintPrefix(ClassName);
-		const FString ClassDisplayName = Class->GetDisplayNameText().ToString();
+		const FString ClassDisplayName = GetClassDisplayNameForMatching(Class);
 
 		return TrimmedCandidate.Equals(ClassName, ESearchCase::IgnoreCase)
 			|| TrimmedCandidate.Equals(CleanClassName, ESearchCase::IgnoreCase)

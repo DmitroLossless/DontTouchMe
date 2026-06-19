@@ -7,6 +7,7 @@ UTMCharacterAnimInstance::UTMCharacterAnimInstance()
 		FRotator::ZeroRotator,
 		FVector(0.0f, 0.0f, -35.0f),
 		FVector::OneVector)
+	, CameraWeaponOffsetAiming(CameraWeaponOffset)
 {
 	UpdateCameraWeaponOffsetCorrection();
 }

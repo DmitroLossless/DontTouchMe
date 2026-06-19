@@ -2,6 +2,7 @@
 
 #include "Gun.h"
 
+#include "Animation/AnimInstance.h"
 #include "FakeGunAnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneComponent.h"
@@ -13,7 +14,9 @@
 #include "NiagaraSystem.h"
 #include "Particles/ParticleSystem.h"
 #include "TimerManager.h"
+#include "UObject/UnrealType.h"
 #include "../Projectile/ProjectileImpactData.h"
+#include "../TouchMe.h"
 
 const FName AGun::MainSkeletalMeshComponentName(TEXT("Item"));
 
@@ -27,6 +30,239 @@ namespace
 		ClassName.RemoveFromStart(TEXT("REINST_"));
 		ClassName.RemoveFromEnd(TEXT("_C"));
 		return ClassName;
+	}
+
+	bool ShouldTraceGunFunction(const UFunction* Function)
+	{
+		if (!IsTouchMeRuntimeTraceEnabled())
+		{
+			return false;
+		}
+
+		if (!Function)
+		{
+			return false;
+		}
+
+		const FString Name = Function->GetName();
+		if (Name.Contains(TEXT("Tick"))
+			|| Name.Contains(TEXT("UpdateAnimation"))
+			|| Name.Contains(TEXT("EvaluateGraphExposedInputs"))
+			|| Name.Contains(TEXT("AnimGraph")))
+		{
+			return false;
+		}
+
+		const FString Path = Function->GetPathName();
+		return Name.Contains(TEXT("BeginPlay"))
+			|| Name.Contains(TEXT("ReceiveBeginPlay"))
+			|| Name.Contains(TEXT("UserConstructionScript"))
+			|| Name.Contains(TEXT("ExecuteUbergraph"))
+			|| Name.Contains(TEXT("SetActive"))
+			|| Name.Contains(TEXT("Activate"))
+			|| Name.Contains(TEXT("Weapon"))
+			|| Name.Contains(TEXT("Gun"))
+			|| Name.Contains(TEXT("Item"))
+			|| Name.Contains(TEXT("Equip"))
+			|| Name.Contains(TEXT("Draw"))
+			|| Name.Contains(TEXT("Holster"))
+			|| Name.Contains(TEXT("Active"))
+			|| Name.Contains(TEXT("Attach"))
+			|| Name.Contains(TEXT("Firemode"))
+			|| Name.Contains(TEXT("Reload"))
+			|| Name.Contains(TEXT("Slot"))
+			|| Name.Contains(TEXT("Select"))
+			|| Name.Contains(TEXT("Switch"))
+			|| Name.Contains(TEXT("Primary"))
+			|| Name.Contains(TEXT("Secondary"))
+			|| Name.Contains(TEXT("Use"))
+			|| Name.Contains(TEXT("MPS"))
+			|| Name.Contains(TEXT("Anim"))
+			|| Name.Contains(TEXT("Montage"))
+			|| Name.Contains(TEXT("Fake"))
+			|| Path.Contains(TEXT("BP_Weapon_Master"))
+			|| Path.Contains(TEXT("BP_Kriss"))
+			|| Path.Contains(TEXT("BP_SMG"))
+			|| Path.Contains(TEXT("MP_System_V3"));
+	}
+
+	void AppendFunctionParameters(const UFunction* Function, void* Parameters, FString& Out)
+	{
+		if (!Function || !Parameters)
+		{
+			return;
+		}
+
+		for (TFieldIterator<FProperty> It(Function); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (!Property || !Property->HasAnyPropertyFlags(CPF_Parm))
+			{
+				continue;
+			}
+
+			const FString PropertyName = Property->GetName();
+			const void* ValueAddress = Property->ContainerPtrToValuePtr<void>(Parameters);
+			if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+			{
+				const UObject* Value = ObjectProperty->GetObjectPropertyValue(ValueAddress);
+				Out += FString::Printf(TEXT(" %s=[%s];"), *PropertyName, Value ? *Value->GetPathName() : TEXT("None"));
+			}
+			else if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+			{
+				Out += FString::Printf(TEXT(" %s=%d;"), *PropertyName, BoolProperty->GetPropertyValue(ValueAddress) ? 1 : 0);
+			}
+			else if (const FNameProperty* NameProperty = CastField<FNameProperty>(Property))
+			{
+				Out += FString::Printf(TEXT(" %s=%s;"), *PropertyName, *NameProperty->GetPropertyValue(ValueAddress).ToString());
+			}
+			else if (const FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property))
+			{
+				if (NumericProperty->IsFloatingPoint())
+				{
+					Out += FString::Printf(TEXT(" %s=%.3f;"), *PropertyName, NumericProperty->GetFloatingPointPropertyValue(ValueAddress));
+				}
+				else if (NumericProperty->IsInteger())
+				{
+					Out += FString::Printf(TEXT(" %s=%lld;"), *PropertyName, NumericProperty->GetSignedIntPropertyValue(ValueAddress));
+				}
+			}
+		}
+	}
+
+	FString EnumValueToString(const UEnum* Enum, const int64 Value)
+	{
+		if (!Enum)
+		{
+			return FString::Printf(TEXT("%lld"), static_cast<long long>(Value));
+		}
+
+		FString DisplayName = Enum->GetDisplayNameTextByValue(Value).ToString();
+		if (DisplayName.IsEmpty())
+		{
+			DisplayName = Enum->GetNameStringByValue(Value);
+		}
+
+		return FString::Printf(TEXT("%lld/%s"), static_cast<long long>(Value), *DisplayName);
+	}
+
+	void AppendSimplePropertyValue(const FProperty* Property, const void* ValueAddress, FString& Out)
+	{
+		if (!Property || !ValueAddress)
+		{
+			Out += TEXT("None");
+			return;
+		}
+
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			const UObject* Value = ObjectProperty->GetObjectPropertyValue(ValueAddress);
+			Out += Value ? Value->GetPathName() : TEXT("None");
+		}
+		else if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+		{
+			Out += BoolProperty->GetPropertyValue(ValueAddress) ? TEXT("1") : TEXT("0");
+		}
+		else if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+		{
+			const int64 Value = EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValueAddress);
+			Out += EnumValueToString(EnumProperty->GetEnum(), Value);
+		}
+		else if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+		{
+			Out += EnumValueToString(ByteProperty->Enum, ByteProperty->GetPropertyValue(ValueAddress));
+		}
+		else if (const FNameProperty* NameProperty = CastField<FNameProperty>(Property))
+		{
+			Out += NameProperty->GetPropertyValue(ValueAddress).ToString();
+		}
+		else if (const FStrProperty* StringProperty = CastField<FStrProperty>(Property))
+		{
+			Out += StringProperty->GetPropertyValue(ValueAddress);
+		}
+		else if (const FTextProperty* TextProperty = CastField<FTextProperty>(Property))
+		{
+			Out += TextProperty->GetPropertyValue(ValueAddress).ToString();
+		}
+		else if (const FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property))
+		{
+			if (NumericProperty->IsFloatingPoint())
+			{
+				Out += FString::Printf(TEXT("%.3f"), NumericProperty->GetFloatingPointPropertyValue(ValueAddress));
+			}
+			else if (NumericProperty->IsInteger())
+			{
+				Out += FString::Printf(TEXT("%lld"), NumericProperty->GetSignedIntPropertyValue(ValueAddress));
+			}
+		}
+		else
+		{
+			Out += Property->GetCPPType();
+		}
+	}
+
+	void AppendGunBlueprintState(const AGun* Gun, FString& Out)
+	{
+		if (!Gun)
+		{
+			return;
+		}
+
+		for (TFieldIterator<FProperty> It(Gun->GetClass()); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (!Property)
+			{
+				continue;
+			}
+
+			const FString PropertyName = Property->GetName();
+			if (!PropertyName.Contains(TEXT("Active"))
+				&& !PropertyName.Contains(TEXT("Current"))
+				&& !PropertyName.Contains(TEXT("Equipped"))
+				&& !PropertyName.Contains(TEXT("Selected"))
+				&& !PropertyName.Contains(TEXT("Weapon"))
+				&& !PropertyName.Contains(TEXT("Gun"))
+				&& !PropertyName.Contains(TEXT("Item"))
+				&& !PropertyName.Contains(TEXT("Slot"))
+				&& !PropertyName.Contains(TEXT("Inventory"))
+				&& !PropertyName.Contains(TEXT("Holster"))
+				&& !PropertyName.Contains(TEXT("Draw"))
+				&& !PropertyName.Contains(TEXT("First"))
+				&& !PropertyName.Contains(TEXT("Anim"))
+				&& !PropertyName.Contains(TEXT("Fake")))
+			{
+				continue;
+			}
+
+			Out += FString::Printf(TEXT(" %s="), *PropertyName);
+			AppendSimplePropertyValue(Property, Property->ContainerPtrToValuePtr<void>(Gun), Out);
+			Out += TEXT(";");
+		}
+	}
+
+	FString DescribeSceneComponent(const USceneComponent* Component)
+	{
+		if (!Component)
+		{
+			return TEXT("None");
+		}
+
+		const USceneComponent* Parent = Component->GetAttachParent();
+		return FString::Printf(
+			TEXT("%s Parent=%s Socket=%s Visible=%d Rel=%s World=%s"),
+			*Component->GetName(),
+			Parent ? *Parent->GetName() : TEXT("None"),
+			*Component->GetAttachSocketName().ToString(),
+			Component->IsVisible() ? 1 : 0,
+			*Component->GetRelativeTransform().ToHumanReadableString(),
+			*Component->GetComponentTransform().ToHumanReadableString());
+	}
+
+	FString DescribeAnimClass(const USkeletalMeshComponent* Mesh)
+	{
+		const UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
+		return AnimInstance ? AnimInstance->GetClass()->GetPathName() : TEXT("None");
 	}
 }
 
@@ -42,6 +278,9 @@ AGun::AGun()
 	FakeSkeletalMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	FakeSkeletalMeshComponent->SetGenerateOverlapEvents(false);
 	FakeSkeletalMeshComponent->SetVisibility(false);
+
+	ADSSocketComponent = CreateDefaultSubobject<USceneComponent>(TEXT("ADS_Eye"));
+	ADSSocketComponent->SetupAttachment(SceneRoot);
 }
 
 FText AGun::GetWeaponDisplayName() const
@@ -78,7 +317,22 @@ void AGun::PostLoad()
 void AGun::BeginPlay()
 {
 	Super::BeginPlay();
+
+	if (IsTouchMeRuntimeTraceEnabled())
+	{
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[GunBeginPlay] Gun=%s Class=%s Owner=%s FakeMode=%d Root={%s}"),
+			*GetPathName(),
+			*GetClass()->GetPathName(),
+			GetOwner() ? *GetOwner()->GetPathName() : TEXT("None"),
+			bFakeMode ? 1 : 0,
+			*DescribeSceneComponent(GetRootComponent()));
+	}
+
 	ApplyFakeMode();
+	RefreshADSSocket();
 	RequestDeferredAttachmentSanitize();
 }
 
@@ -94,8 +348,21 @@ void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void AGun::SetFakeMode(const bool bEnabled)
 {
+	if (IsTouchMeRuntimeTraceEnabled())
+	{
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[GunSetFakeMode] Gun=%s Class=%s Old=%d New=%d"),
+			*GetPathName(),
+			*GetClass()->GetPathName(),
+			bFakeMode ? 1 : 0,
+			bEnabled ? 1 : 0);
+	}
+
 	bFakeMode = bEnabled;
 	ApplyFakeMode();
+	RefreshADSSocket();
 	RequestDeferredAttachmentSanitize();
 }
 
@@ -108,11 +375,55 @@ UFakeGunAnimInstance* AGun::GetFakeAnimInstance() const
 
 void AGun::ProcessEvent(UFunction* Function, void* Parameters)
 {
+	const bool bTrace = ShouldTraceGunFunction(Function);
+	if (bTrace)
+	{
+		FString Params;
+		AppendFunctionParameters(Function, Parameters, Params);
+		FString BlueprintState;
+		AppendGunBlueprintState(this, BlueprintState);
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[GunProcessEvent:Before] Gun=%s Class=%s Function=%s Params={%s} BlueprintState={%s} Root={%s}"),
+			*GetPathName(),
+			*GetClass()->GetPathName(),
+			Function ? *Function->GetPathName() : TEXT("None"),
+			*Params,
+			*BlueprintState,
+			*DescribeSceneComponent(GetRootComponent()));
+	}
+
 	Super::ProcessEvent(Function, Parameters);
 
 	if (ShouldRequestAttachmentSanitizeForFunction(Function))
 	{
 		RequestDeferredAttachmentSanitize();
+		RefreshADSSocket();
+	}
+
+	if (bTrace)
+	{
+		USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+		FString BlueprintState;
+		AppendGunBlueprintState(this, BlueprintState);
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[GunProcessEvent:After] Gun=%s Class=%s Function=%s BlueprintState={%s} Root={%s} MainMesh={%s Anim=%s Asset=%s} FakeMesh={%s Anim=%s Asset=%s}"),
+			*GetPathName(),
+			*GetClass()->GetPathName(),
+			Function ? *Function->GetPathName() : TEXT("None"),
+			*BlueprintState,
+			*DescribeSceneComponent(GetRootComponent()),
+			*DescribeSceneComponent(MainMesh),
+			*DescribeAnimClass(MainMesh),
+			MainMesh && MainMesh->GetSkeletalMeshAsset() ? *MainMesh->GetSkeletalMeshAsset()->GetPathName() : TEXT("None"),
+			*DescribeSceneComponent(FakeSkeletalMeshComponent),
+			*DescribeAnimClass(FakeSkeletalMeshComponent),
+			FakeSkeletalMeshComponent && FakeSkeletalMeshComponent->GetSkeletalMeshAsset()
+				? *FakeSkeletalMeshComponent->GetSkeletalMeshAsset()->GetPathName()
+				: TEXT("None"));
 	}
 }
 
@@ -154,6 +465,70 @@ int32 AGun::SanitizeInvalidAttachmentComponents()
 	return DestroyedCount;
 }
 
+void AGun::RefreshADSSocket()
+{
+	if (!ADSSocketComponent || HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return;
+	}
+
+	USceneComponent* AttachParent = nullptr;
+	FName AttachSocketName = NAME_None;
+	bADSSocketResolved = ResolveADSSocketAttachTarget(AttachParent, AttachSocketName);
+
+	if (!AttachParent)
+	{
+		AttachParent = SceneRoot;
+		AttachSocketName = NAME_None;
+	}
+
+	if (ADSSocketComponent->GetAttachParent() != AttachParent
+		|| ADSSocketComponent->GetAttachSocketName() != AttachSocketName)
+	{
+		ADSSocketComponent->AttachToComponent(
+			AttachParent,
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+		AttachSocketName);
+	}
+
+	ADSSocketComponent->SetRelativeTransform(
+		bUseSecondaryADSSocket ? SecondaryADSSocketOffset : ADSSocketOffset);
+}
+
+void AGun::SetUseSecondaryADSSocket(const bool bUseSecondary)
+{
+	if (bUseSecondaryADSSocket == bUseSecondary)
+	{
+		return;
+	}
+
+	bUseSecondaryADSSocket = bUseSecondary;
+	RefreshADSSocket();
+}
+
+bool AGun::GetADSSocketWorldTransform(FTransform& OutTransform) const
+{
+	if (!ADSSocketComponent || !bADSSocketResolved)
+	{
+		OutTransform = FTransform::Identity;
+		return false;
+	}
+
+	OutTransform = ADSSocketComponent->GetComponentTransform();
+	return true;
+}
+
+FVector AGun::GetADSSocketForwardVector() const
+{
+	FTransform ADSTransform;
+	if (!GetADSSocketWorldTransform(ADSTransform))
+	{
+		return FVector::ForwardVector;
+	}
+
+	return ADSTransform.GetUnitAxis(EAxis::X);
+}
+
 void AGun::RequestDeferredAttachmentSanitize()
 {
 	if (bAttachmentSanitizeRequested || bSanitizingAttachmentComponents || HasAnyFlags(RF_ClassDefaultObject))
@@ -175,6 +550,7 @@ void AGun::RunDeferredAttachmentSanitize()
 {
 	bAttachmentSanitizeRequested = false;
 	SanitizeInvalidAttachmentComponents();
+	RefreshADSSocket();
 }
 
 bool AGun::IsInvalidWeaponAttachmentComponent(const UStaticMeshComponent* Component) const
@@ -211,6 +587,61 @@ bool AGun::IsWeaponAttachmentMesh(const UStaticMeshComponent* Component)
 	return StaticMesh && StaticMesh->GetPathName().Contains(WeaponAttachmentMeshPathToken);
 }
 
+bool AGun::IsLikelyOpticComponent(const UStaticMeshComponent* Component)
+{
+	if (!Component)
+	{
+		return false;
+	}
+
+	const UStaticMesh* StaticMesh = Component->GetStaticMesh();
+	const FString MeshPath = StaticMesh ? StaticMesh->GetPathName() : FString();
+	const FString ComponentName = Component->GetName();
+	const FString AttachSocketName = Component->GetAttachSocketName().ToString();
+
+	if (MeshPath.Contains(TEXT("Laser"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("Laser"), ESearchCase::IgnoreCase))
+	{
+		return false;
+	}
+
+	return MeshPath.Contains(WeaponAttachmentMeshPathToken)
+		|| MeshPath.Contains(TEXT("/Optics/"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("Optic"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("Scope"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("Sight"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("RDS"), ESearchCase::IgnoreCase)
+		|| AttachSocketName.Contains(TEXT("Optic"), ESearchCase::IgnoreCase)
+		|| AttachSocketName.Contains(TEXT("Sight"), ESearchCase::IgnoreCase);
+}
+
+bool AGun::IsLikelySecondaryOpticComponent(const UStaticMeshComponent* Component)
+{
+	if (!Component)
+	{
+		return false;
+	}
+
+	const UStaticMesh* StaticMesh = Component->GetStaticMesh();
+	const FString MeshPath = StaticMesh ? StaticMesh->GetPathName() : FString();
+	const FString ComponentName = Component->GetName();
+	const FString AttachSocketName = Component->GetAttachSocketName().ToString();
+
+	return AttachSocketName.Equals(TEXT("AT_Backup"), ESearchCase::IgnoreCase)
+		|| AttachSocketName.Contains(TEXT("Backup"), ESearchCase::IgnoreCase)
+		|| AttachSocketName.Contains(TEXT("Canted"), ESearchCase::IgnoreCase)
+		|| AttachSocketName.Contains(TEXT("Side"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("Backup"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("Canted"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("Side"), ESearchCase::IgnoreCase)
+		|| ComponentName.Contains(TEXT("Offset"), ESearchCase::IgnoreCase)
+		|| MeshPath.Contains(TEXT("Backup"), ESearchCase::IgnoreCase)
+		|| MeshPath.Contains(TEXT("Canted"), ESearchCase::IgnoreCase)
+		|| MeshPath.Contains(TEXT("Side"), ESearchCase::IgnoreCase)
+		|| MeshPath.Contains(TEXT("Offset"), ESearchCase::IgnoreCase)
+		|| MeshPath.Contains(TEXT("45"), ESearchCase::IgnoreCase);
+}
+
 bool AGun::ShouldRequestAttachmentSanitizeForFunction(const UFunction* Function)
 {
 	if (!Function)
@@ -233,6 +664,16 @@ void AGun::ApplyFakeMode()
 	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
 	if (!MainMesh)
 	{
+		if (IsTouchMeRuntimeTraceEnabled())
+		{
+			UE_LOG(
+				LogTouchMeRuntimeTrace,
+				Warning,
+				TEXT("[GunApplyFakeMode] Gun=%s no Item skeletal mesh. FakeMode=%d"),
+				*GetPathName(),
+				bFakeMode ? 1 : 0);
+		}
+
 		RestoreFromFakeMode();
 		return;
 	}
@@ -240,6 +681,22 @@ void AGun::ApplyFakeMode()
 	const bool bCanApplyFakeMode = bFakeMode
 		&& IsValid(FakeSkeletalMesh)
 		&& FakeAnimInstanceClass != nullptr;
+
+	if (IsTouchMeRuntimeTraceEnabled())
+	{
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[GunApplyFakeMode] Gun=%s CanApply=%d FakeMode=%d FakeMeshAsset=%s FakeAnimClass=%s MainMesh={%s Anim=%s Asset=%s}"),
+			*GetPathName(),
+			bCanApplyFakeMode ? 1 : 0,
+			bFakeMode ? 1 : 0,
+			FakeSkeletalMesh ? *FakeSkeletalMesh->GetPathName() : TEXT("None"),
+			FakeAnimInstanceClass ? *FakeAnimInstanceClass->GetPathName() : TEXT("None"),
+			*DescribeSceneComponent(MainMesh),
+			*DescribeAnimClass(MainMesh),
+			MainMesh->GetSkeletalMeshAsset() ? *MainMesh->GetSkeletalMeshAsset()->GetPathName() : TEXT("None"));
+	}
 
 	if (bCanApplyFakeMode)
 	{
@@ -301,6 +758,288 @@ USkeletalMeshComponent* AGun::ResolveMainSkeletalMesh() const
 	}
 
 	return nullptr;
+}
+
+bool AGun::ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutSocketName) const
+{
+	OutParent = nullptr;
+	OutSocketName = NAME_None;
+
+	if (bUseSecondaryADSSocket)
+	{
+		if (UStaticMeshComponent* SecondaryOpticComponent = ResolveSecondaryOpticComponent())
+		{
+			OutParent = SecondaryOpticComponent;
+			OutSocketName = ResolveOpticADSSocket(SecondaryOpticComponent, SecondaryOpticADSSocketName);
+			return true;
+		}
+
+		if (USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh())
+		{
+			const FName SecondaryWeaponSocketName = ResolveSecondaryWeaponADSSocket(MainMesh);
+			if (!SecondaryWeaponSocketName.IsNone())
+			{
+				OutParent = MainMesh;
+				OutSocketName = SecondaryWeaponSocketName;
+				return true;
+			}
+		}
+	}
+
+	if (UStaticMeshComponent* OpticComponent = ResolvePrimaryOpticComponent())
+	{
+		OutParent = OpticComponent;
+		OutSocketName = ResolveOpticADSSocket(OpticComponent, OpticADSSocketName);
+		return true;
+	}
+
+	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	if (!MainMesh)
+	{
+		return false;
+	}
+
+	const FName WeaponSocketName = ResolveWeaponADSSocket(MainMesh);
+	OutParent = MainMesh;
+	OutSocketName = WeaponSocketName;
+	return !WeaponSocketName.IsNone();
+}
+
+UStaticMeshComponent* AGun::ResolvePrimaryOpticComponent() const
+{
+	const USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	UStaticMeshComponent* BestComponent = nullptr;
+	int32 BestScore = MIN_int32;
+
+	TInlineComponentArray<UStaticMeshComponent*> StaticMeshes(this);
+	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshes)
+	{
+		if (!IsValid(StaticMeshComponent) || !IsLikelyOpticComponent(StaticMeshComponent))
+		{
+			continue;
+		}
+
+		if (IsLikelySecondaryOpticComponent(StaticMeshComponent)
+			&& StaticMeshComponent->GetAttachSocketName() == WeaponSecondaryOpticsSocketName)
+		{
+			continue;
+		}
+
+		int32 Score = 0;
+		const UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh();
+		const FString MeshPath = StaticMesh ? StaticMesh->GetPathName() : FString();
+		const FString ComponentName = StaticMeshComponent->GetName();
+		const FName AttachSocketName = StaticMeshComponent->GetAttachSocketName();
+
+		if (StaticMeshComponent->IsVisible())
+		{
+			Score += 50;
+		}
+
+		if (StaticMeshComponent->GetAttachParent() == MainMesh)
+		{
+			Score += 30;
+		}
+
+		if (MeshPath.Contains(WeaponAttachmentMeshPathToken))
+		{
+			Score += 100;
+		}
+
+		if (!WeaponOpticsSocketName.IsNone() && AttachSocketName == WeaponOpticsSocketName)
+		{
+			Score += 40;
+		}
+
+		if (!OpticADSSocketName.IsNone() && StaticMeshComponent->DoesSocketExist(OpticADSSocketName))
+		{
+			Score += 25;
+		}
+
+		if (MeshPath.Contains(TEXT("Laser"), ESearchCase::IgnoreCase)
+			|| ComponentName.Contains(TEXT("Laser"), ESearchCase::IgnoreCase))
+		{
+			Score -= 200;
+		}
+
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			BestComponent = StaticMeshComponent;
+		}
+	}
+
+	return BestComponent;
+}
+
+UStaticMeshComponent* AGun::ResolveSecondaryOpticComponent() const
+{
+	const USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	UStaticMeshComponent* BestComponent = nullptr;
+	int32 BestScore = MIN_int32;
+
+	TInlineComponentArray<UStaticMeshComponent*> StaticMeshes(this);
+	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshes)
+	{
+		if (!IsValid(StaticMeshComponent) || !IsLikelyOpticComponent(StaticMeshComponent))
+		{
+			continue;
+		}
+
+		int32 Score = 0;
+		const UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh();
+		const FString MeshPath = StaticMesh ? StaticMesh->GetPathName() : FString();
+		const FName AttachSocketName = StaticMeshComponent->GetAttachSocketName();
+
+		if (StaticMeshComponent->IsVisible())
+		{
+			Score += 50;
+		}
+
+		if (StaticMeshComponent->GetAttachParent() == MainMesh)
+		{
+			Score += 30;
+		}
+
+		if (MeshPath.Contains(WeaponAttachmentMeshPathToken))
+		{
+			Score += 100;
+		}
+
+		if (!WeaponSecondaryOpticsSocketName.IsNone() && AttachSocketName == WeaponSecondaryOpticsSocketName)
+		{
+			Score += 120;
+		}
+
+		if (IsLikelySecondaryOpticComponent(StaticMeshComponent))
+		{
+			Score += 80;
+		}
+
+		if (!SecondaryOpticADSSocketName.IsNone() && StaticMeshComponent->DoesSocketExist(SecondaryOpticADSSocketName))
+		{
+			Score += 25;
+		}
+
+		if (!WeaponOpticsSocketName.IsNone() && AttachSocketName == WeaponOpticsSocketName)
+		{
+			Score -= 20;
+		}
+
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			BestComponent = StaticMeshComponent;
+		}
+	}
+
+	return BestComponent;
+}
+
+FName AGun::ResolveOpticADSSocket(const USceneComponent* Component, const FName PreferredSocketName) const
+{
+	if (!Component)
+	{
+		return NAME_None;
+	}
+
+	if (!PreferredSocketName.IsNone() && Component->DoesSocketExist(PreferredSocketName))
+	{
+		return PreferredSocketName;
+	}
+
+	static const FName CandidateSocketNames[] =
+	{
+		TEXT("ADS"),
+		TEXT("ADS_Aim"),
+		TEXT("Aim"),
+		TEXT("AimPoint"),
+		TEXT("Sight"),
+		TEXT("Scope"),
+		TEXT("Camera")
+	};
+
+	for (const FName CandidateSocketName : CandidateSocketNames)
+	{
+		if (Component->DoesSocketExist(CandidateSocketName))
+		{
+			return CandidateSocketName;
+		}
+	}
+
+	return NAME_None;
+}
+
+FName AGun::ResolveWeaponADSSocket(const USkeletalMeshComponent* Mesh) const
+{
+	if (!Mesh)
+	{
+		return NAME_None;
+	}
+
+	if (!WeaponOpticsSocketName.IsNone() && Mesh->DoesSocketExist(WeaponOpticsSocketName))
+	{
+		return WeaponOpticsSocketName;
+	}
+
+	if (!WeaponIronSightSocketName.IsNone() && Mesh->DoesSocketExist(WeaponIronSightSocketName))
+	{
+		return WeaponIronSightSocketName;
+	}
+
+	static const FName CandidateSocketNames[] =
+	{
+		TEXT("ADS_Eye"),
+		TEXT("ADS"),
+		TEXT("Sight"),
+		TEXT("Camera"),
+		TEXT("Camera_FP")
+	};
+
+	for (const FName CandidateSocketName : CandidateSocketNames)
+	{
+		if (Mesh->DoesSocketExist(CandidateSocketName))
+		{
+			return CandidateSocketName;
+		}
+	}
+
+	return NAME_None;
+}
+
+FName AGun::ResolveSecondaryWeaponADSSocket(const USkeletalMeshComponent* Mesh) const
+{
+	if (!Mesh)
+	{
+		return NAME_None;
+	}
+
+	if (!WeaponSecondaryOpticsSocketName.IsNone() && Mesh->DoesSocketExist(WeaponSecondaryOpticsSocketName))
+	{
+		return WeaponSecondaryOpticsSocketName;
+	}
+
+	static const FName CandidateSocketNames[] =
+	{
+		TEXT("Canted"),
+		TEXT("CantedSight"),
+		TEXT("SideSight"),
+		TEXT("BackupSight"),
+		TEXT("Backup"),
+		TEXT("ADS_Secondary"),
+		TEXT("ADS_Canted"),
+		TEXT("ADS_Eye_Secondary")
+	};
+
+	for (const FName CandidateSocketName : CandidateSocketNames)
+	{
+		if (Mesh->DoesSocketExist(CandidateSocketName))
+		{
+			return CandidateSocketName;
+		}
+	}
+
+	return NAME_None;
 }
 
 FText AGun::MakeDefaultWeaponDisplayName(const UClass* WeaponClass)

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TMGameplayStatics.h"
+#include "TouchMe.h"
 #include "Engine/Blueprint.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -70,6 +71,14 @@
 
 namespace TMGameplayStatics
 {
+	struct FALSTurnInPlaceBridgeState
+	{
+		bool bHasSourceYaw = false;
+		double SourceYaw = 0.0;
+	};
+
+	TMap<TWeakObjectPtr<ACharacter>, FALSTurnInPlaceBridgeState> GALSTurnInPlaceBridgeStates;
+
 	bool GetEnumLikePropertyValue(const UObject* Object, const FName PropertyName, int64& OutValue, FString& OutDisplayName)
 	{
 		OutValue = 0;
@@ -244,6 +253,64 @@ namespace TMGameplayStatics
 		return Aliases;
 	}
 
+	bool ResolveEnumValueByAliases(const UEnum* Enum, const TArray<FString>& Aliases, int64& OutValue)
+	{
+		if (!Enum || Aliases.IsEmpty())
+		{
+			return false;
+		}
+
+		for (int32 Index = 0; Index < Enum->NumEnums(); ++Index)
+		{
+#if WITH_METADATA
+			if (Enum->HasMetaData(TEXT("Hidden"), Index))
+			{
+				continue;
+			}
+#endif
+
+			const FString Name = NormalizeOverlayEnumText(Enum->GetNameStringByIndex(Index));
+			const FString DisplayName = NormalizeOverlayEnumText(Enum->GetDisplayNameTextByIndex(Index).ToString());
+			if (Aliases.Contains(Name) || Aliases.Contains(DisplayName))
+			{
+				OutValue = Enum->GetValueByIndex(Index);
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool SetEnumLikeValueByAliases(FProperty* Property, void* ValuePtr, const TArray<FString>& Aliases)
+	{
+		if (!Property || !ValuePtr || Aliases.IsEmpty())
+		{
+			return false;
+		}
+
+		UEnum* Enum = nullptr;
+		FNumericProperty* NumericProperty = nullptr;
+		if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+		{
+			Enum = EnumProperty->GetEnum();
+			NumericProperty = EnumProperty->GetUnderlyingProperty();
+		}
+		else if (FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+		{
+			Enum = ByteProperty->Enum;
+			NumericProperty = ByteProperty;
+		}
+
+		int64 Value = 0;
+		if (!Enum || !NumericProperty || !ResolveEnumValueByAliases(Enum, Aliases, Value))
+		{
+			return false;
+		}
+
+		NumericProperty->SetIntPropertyValue(ValuePtr, Value);
+		return true;
+	}
+
 	bool SetEnumLikePropertyValueByAliases(UObject* Object, const FName PropertyName, const TArray<FString>& Aliases)
 	{
 		if (!Object || Aliases.IsEmpty())
@@ -257,10 +324,25 @@ namespace TMGameplayStatics
 			return false;
 		}
 
+		return SetEnumLikeValueByAliases(Property, Property->ContainerPtrToValuePtr<void>(Object), Aliases);
+	}
+
+	bool SetEnumLikePropertyValueByAliasesOrValue(UObject* Object, const FName PropertyName, const TArray<FString>& Aliases, const int64 FallbackValue)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		FProperty* Property = Object->GetClass()->FindPropertyByName(PropertyName);
+		if (!Property)
+		{
+			return false;
+		}
+
+		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
 		UEnum* Enum = nullptr;
 		FNumericProperty* NumericProperty = nullptr;
-		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
-
 		if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
 		{
 			Enum = EnumProperty->GetEnum();
@@ -272,28 +354,569 @@ namespace TMGameplayStatics
 			NumericProperty = ByteProperty;
 		}
 
-		if (!Enum || !NumericProperty)
+		if (!NumericProperty)
 		{
 			return false;
 		}
 
-		for (int32 Index = 0; Index < Enum->NumEnums(); ++Index)
+		int64 TargetValue = FallbackValue;
+		if (Enum)
 		{
-			if (Enum->HasMetaData(TEXT("Hidden"), Index))
+			ResolveEnumValueByAliases(Enum, Aliases, TargetValue);
+		}
+
+		if (NumericProperty->GetSignedIntPropertyValue(ValuePtr) == TargetValue)
+		{
+			return false;
+		}
+
+		NumericProperty->SetIntPropertyValue(ValuePtr, TargetValue);
+		return true;
+	}
+
+	bool GetBoolPropertyValueByName(const UObject* Object, const FName PropertyName, bool& bOutValue)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Object->GetClass()->FindPropertyByName(PropertyName));
+		if (!BoolProperty)
+		{
+			return false;
+		}
+
+		bOutValue = BoolProperty->GetPropertyValue_InContainer(Object);
+		return true;
+	}
+
+	bool GetNumericPropertyValueByName(const UObject* Object, const FName PropertyName, double& OutValue)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		const FNumericProperty* NumericProperty = CastField<FNumericProperty>(Object->GetClass()->FindPropertyByName(PropertyName));
+		if (!NumericProperty)
+		{
+			return false;
+		}
+
+		const void* ValuePtr = NumericProperty->ContainerPtrToValuePtr<void>(Object);
+		OutValue = NumericProperty->IsFloatingPoint()
+			? NumericProperty->GetFloatingPointPropertyValue(ValuePtr)
+			: static_cast<double>(NumericProperty->GetSignedIntPropertyValue(ValuePtr));
+		return true;
+	}
+
+	bool SetNumericPropertyValueByName(UObject* Object, const FName PropertyName, const double Value)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		FNumericProperty* NumericProperty = CastField<FNumericProperty>(Object->GetClass()->FindPropertyByName(PropertyName));
+		if (!NumericProperty)
+		{
+			return false;
+		}
+
+		void* ValuePtr = NumericProperty->ContainerPtrToValuePtr<void>(Object);
+		const double CurrentValue = NumericProperty->IsFloatingPoint()
+			? NumericProperty->GetFloatingPointPropertyValue(ValuePtr)
+			: static_cast<double>(NumericProperty->GetSignedIntPropertyValue(ValuePtr));
+		if (FMath::IsNearlyEqual(CurrentValue, Value, KINDA_SMALL_NUMBER))
+		{
+			return false;
+		}
+
+		if (NumericProperty->IsFloatingPoint())
+		{
+			NumericProperty->SetFloatingPointPropertyValue(ValuePtr, Value);
+		}
+		else
+		{
+			NumericProperty->SetIntPropertyValue(ValuePtr, FMath::RoundToInt64(Value));
+		}
+		return true;
+	}
+
+	bool SetRotatorPropertyValueByName(UObject* Object, const FName PropertyName, const FRotator& Value)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		FStructProperty* StructProperty = CastField<FStructProperty>(Object->GetClass()->FindPropertyByName(PropertyName));
+		if (!StructProperty || StructProperty->Struct != TBaseStructure<FRotator>::Get())
+		{
+			return false;
+		}
+
+		FRotator* ValuePtr = StructProperty->ContainerPtrToValuePtr<FRotator>(Object);
+		if (ValuePtr && ValuePtr->Equals(Value, KINDA_SMALL_NUMBER))
+		{
+			return false;
+		}
+
+		if (ValuePtr)
+		{
+			*ValuePtr = Value;
+			return true;
+		}
+		return false;
+	}
+
+	bool SetVector2DPropertyValueByName(UObject* Object, const FName PropertyName, const FVector2D& Value)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		FStructProperty* StructProperty = CastField<FStructProperty>(Object->GetClass()->FindPropertyByName(PropertyName));
+		if (!StructProperty || StructProperty->Struct != TBaseStructure<FVector2D>::Get())
+		{
+			return false;
+		}
+
+		FVector2D* ValuePtr = StructProperty->ContainerPtrToValuePtr<FVector2D>(Object);
+		if (ValuePtr && ValuePtr->Equals(Value, KINDA_SMALL_NUMBER))
+		{
+			return false;
+		}
+
+		if (ValuePtr)
+		{
+			*ValuePtr = Value;
+			return true;
+		}
+		return false;
+	}
+
+	void AddRotationModeAlias(TArray<FString>& Aliases, const FString& Alias)
+	{
+		AddOverlayAlias(Aliases, Alias);
+	}
+
+	TArray<FString> BuildRotationModeAliasesForAimState(const ACharacter* Character, const bool bAiming)
+	{
+		TArray<FString> Aliases;
+		if (bAiming)
+		{
+			AddRotationModeAlias(Aliases, TEXT("Aiming"));
+			return Aliases;
+		}
+
+		int64 DesiredRotationModeValue = 1;
+		FString DesiredRotationModeDisplayName;
+		if (GetEnumLikePropertyValue(Character, TEXT("DesiredRotationMode"), DesiredRotationModeValue, DesiredRotationModeDisplayName))
+		{
+			AddRotationModeAlias(Aliases, DesiredRotationModeDisplayName);
+			switch (DesiredRotationModeValue)
+			{
+			case 0:
+				AddRotationModeAlias(Aliases, TEXT("VelocityDirection"));
+				AddRotationModeAlias(Aliases, TEXT("Velocity Direction"));
+				break;
+			case 1:
+				AddRotationModeAlias(Aliases, TEXT("LookingDirection"));
+				AddRotationModeAlias(Aliases, TEXT("Looking Direction"));
+				break;
+			case 2:
+				AddRotationModeAlias(Aliases, TEXT("Aiming"));
+				break;
+			default:
+				break;
+			}
+		}
+
+		if (Aliases.IsEmpty())
+		{
+			AddRotationModeAlias(Aliases, TEXT("LookingDirection"));
+			AddRotationModeAlias(Aliases, TEXT("Looking Direction"));
+		}
+
+		return Aliases;
+	}
+
+	bool AliasesContainAiming(const TArray<FString>& Aliases)
+	{
+		return Aliases.Contains(NormalizeOverlayEnumText(TEXT("Aiming")));
+	}
+
+	TArray<FString> BuildLookingDirectionAliases()
+	{
+		TArray<FString> Aliases;
+		AddRotationModeAlias(Aliases, TEXT("LookingDirection"));
+		AddRotationModeAlias(Aliases, TEXT("Looking Direction"));
+		return Aliases;
+	}
+
+	TArray<FString> BuildThirdPersonViewModeAliases()
+	{
+		TArray<FString> Aliases;
+		AddOverlayAlias(Aliases, TEXT("ThirdPerson"));
+		AddOverlayAlias(Aliases, TEXT("Third Person"));
+		AddOverlayAlias(Aliases, TEXT("TP"));
+		return Aliases;
+	}
+
+	bool SetBoolPropertyByName(UObject* Object, const FName PropertyName, const bool bValue)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		FBoolProperty* BoolProperty = CastField<FBoolProperty>(Object->GetClass()->FindPropertyByName(PropertyName));
+		if (!BoolProperty)
+		{
+			return false;
+		}
+
+		if (BoolProperty->GetPropertyValue_InContainer(Object) == bValue)
+		{
+			return false;
+		}
+
+		BoolProperty->SetPropertyValue_InContainer(Object, bValue);
+		return true;
+	}
+
+	bool SetObjectPropertyValueByName(UObject* Object, const FName PropertyName, UObject* Value)
+	{
+		if (!Object || !Value)
+		{
+			return false;
+		}
+
+		FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Object->GetClass()->FindPropertyByName(PropertyName));
+		if (!ObjectProperty || !Value->IsA(ObjectProperty->PropertyClass))
+		{
+			return false;
+		}
+
+		UObject* CurrentValue = ObjectProperty->GetObjectPropertyValue_InContainer(Object);
+		if (CurrentValue == Value)
+		{
+			return false;
+		}
+
+		ObjectProperty->SetObjectPropertyValue_InContainer(Object, Value);
+		return true;
+	}
+
+	bool CallSetRotationModeFunction(UObject* Object, const TArray<FString>& Aliases)
+	{
+		if (!Object || Aliases.IsEmpty())
+		{
+			return false;
+		}
+
+		UFunction* Function = Object->FindFunction(TEXT("SetRotationMode"));
+		if (!Function)
+		{
+			return false;
+		}
+
+		void* Parameters = FMemory_Alloca(Function->ParmsSize);
+		FMemory::Memzero(Parameters, Function->ParmsSize);
+
+		bool bSetRotationMode = false;
+		for (TFieldIterator<FProperty> It(Function); It; ++It)
+		{
+			FProperty* Property = *It;
+			if (!Property || !Property->HasAnyPropertyFlags(CPF_Parm) || Property->HasAnyPropertyFlags(CPF_ReturnParm))
 			{
 				continue;
 			}
 
-			const FString Name = NormalizeOverlayEnumText(Enum->GetNameStringByIndex(Index));
-			const FString DisplayName = NormalizeOverlayEnumText(Enum->GetDisplayNameTextByIndex(Index).ToString());
-			if (Aliases.Contains(Name) || Aliases.Contains(DisplayName))
+			void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Parameters);
+			if (!bSetRotationMode && SetEnumLikeValueByAliases(Property, ValuePtr, Aliases))
 			{
-				NumericProperty->SetIntPropertyValue(ValuePtr, Enum->GetValueByIndex(Index));
+				bSetRotationMode = true;
+			}
+			else if (FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+			{
+				const FString PropertyName = Property->GetName();
+				if (PropertyName.Contains(TEXT("Force"), ESearchCase::IgnoreCase)
+					|| PropertyName.Equals(TEXT("bForce"), ESearchCase::IgnoreCase))
+				{
+					BoolProperty->SetPropertyValue(ValuePtr, true);
+				}
+			}
+		}
+
+		if (!bSetRotationMode)
+		{
+			return false;
+		}
+
+		Object->ProcessEvent(Function, Parameters);
+		return true;
+	}
+
+	bool PatchLinkedOverlayAnimMasters(USkeletalMeshComponent* Mesh, UAnimInstance* MasterAnimInstance)
+	{
+		if (!Mesh || !MasterAnimInstance)
+		{
+			return false;
+		}
+
+		bool bChanged = false;
+		const USkeletalMeshComponent* ConstMesh = Mesh;
+		for (UAnimInstance* LinkedAnimInstance : ConstMesh->GetLinkedAnimInstances())
+		{
+			if (!LinkedAnimInstance || LinkedAnimInstance == MasterAnimInstance)
+			{
+				continue;
+			}
+
+			bChanged |= SetObjectPropertyValueByName(LinkedAnimInstance, TEXT("AnimBPMaster"), MasterAnimInstance);
+		}
+
+		return bChanged;
+	}
+
+	bool ApplyRotationModeAliasesToAnimInstance(UAnimInstance* AnimInstance, const TArray<FString>& Aliases)
+	{
+		if (!AnimInstance)
+		{
+			return false;
+		}
+
+		const bool bAiming = AliasesContainAiming(Aliases);
+		bool bChanged = SetEnumLikePropertyValueByAliases(AnimInstance, TEXT("RotationMode"), Aliases);
+		bChanged |= SetBoolPropertyByName(AnimInstance, TEXT("bIsAiming"), bAiming);
+		bChanged |= SetBoolPropertyByName(AnimInstance, TEXT("bAiming"), bAiming);
+		bChanged |= SetBoolPropertyByName(AnimInstance, TEXT("IsAiming"), bAiming);
+		return bChanged;
+	}
+
+	bool ApplyRotationModeAliasesToMesh(USkeletalMeshComponent* Mesh, const TArray<FString>& Aliases)
+	{
+		if (!Mesh)
+		{
+			return false;
+		}
+
+		bool bChanged = false;
+		UAnimInstance* AnimInstance = Mesh->GetAnimInstance();
+		bChanged |= ApplyRotationModeAliasesToAnimInstance(AnimInstance, Aliases);
+		bChanged |= PatchLinkedOverlayAnimMasters(Mesh, AnimInstance);
+
+		const USkeletalMeshComponent* ConstMesh = Mesh;
+		for (UAnimInstance* LinkedAnimInstance : ConstMesh->GetLinkedAnimInstances())
+		{
+			bChanged |= ApplyRotationModeAliasesToAnimInstance(LinkedAnimInstance, Aliases);
+		}
+
+		return bChanged;
+	}
+
+	bool ReadNumericPropertyFromMeshAnimInstances(const USkeletalMeshComponent* Mesh, const FName PropertyName, double& OutValue)
+	{
+		if (!Mesh)
+		{
+			return false;
+		}
+
+		if (const UAnimInstance* AnimInstance = Mesh->GetAnimInstance())
+		{
+			if (GetNumericPropertyValueByName(AnimInstance, PropertyName, OutValue))
+			{
+				return true;
+			}
+		}
+
+		for (const UAnimInstance* LinkedAnimInstance : Mesh->GetLinkedAnimInstances())
+		{
+			if (GetNumericPropertyValueByName(LinkedAnimInstance, PropertyName, OutValue))
+			{
 				return true;
 			}
 		}
 
 		return false;
+	}
+
+	bool ReadTurnYawOffset(ACharacter* Character, double& OutYawOffset)
+	{
+		if (!Character)
+		{
+			return false;
+		}
+
+		static const FName YawOffsetPropertyNames[] =
+		{
+			TEXT("YawOffset"),
+			TEXT("TurnYawOffset"),
+			TEXT("AimYawOffset"),
+			TEXT("RotationYawOffset")
+		};
+
+		USkeletalMeshComponent* Mesh = Character->GetMesh();
+		for (const FName PropertyName : YawOffsetPropertyNames)
+		{
+			if (ReadNumericPropertyFromMeshAnimInstances(Mesh, PropertyName, OutYawOffset)
+				|| GetNumericPropertyValueByName(Character, PropertyName, OutYawOffset))
+			{
+				OutYawOffset = FRotator::NormalizeAxis(OutYawOffset);
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	double ReadALSTurnPitch(ACharacter* Character, const FRotator& BaseAimRotation)
+	{
+		double Pitch = BaseAimRotation.Pitch;
+		if (!Character)
+		{
+			return Pitch;
+		}
+
+		double MPSPitch = 0.0;
+		if (GetNumericPropertyValueByName(Character, TEXT("Pitch"), MPSPitch)
+			|| ReadNumericPropertyFromMeshAnimInstances(Character->GetMesh(), TEXT("Pitch"), MPSPitch))
+		{
+			Pitch = MPSPitch;
+		}
+
+		return FRotator::NormalizeAxis(Pitch);
+	}
+
+	bool ReadALSAimBool(ACharacter* Character, bool& bOutAiming)
+	{
+		if (!Character)
+		{
+			return false;
+		}
+
+		static const FName AimPropertyNames[] =
+		{
+			TEXT("bIsAiming"),
+			TEXT("IsAiming"),
+			TEXT("IsAiming?"),
+			TEXT("bAiming"),
+			TEXT("Aiming"),
+			TEXT("bADS"),
+			TEXT("IsADS"),
+			TEXT("bIsADS")
+		};
+
+		for (const FName PropertyName : AimPropertyNames)
+		{
+			if (GetBoolPropertyValueByName(Character, PropertyName, bOutAiming))
+			{
+				return true;
+			}
+		}
+
+		if (const USkeletalMeshComponent* Mesh = Character->GetMesh())
+		{
+			if (const UAnimInstance* AnimInstance = Mesh->GetAnimInstance())
+			{
+				for (const FName PropertyName : AimPropertyNames)
+				{
+					if (GetBoolPropertyValueByName(AnimInstance, PropertyName, bOutAiming))
+					{
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	}
+
+	bool ApplyViewModeToAnimInstance(UAnimInstance* AnimInstance, const TArray<FString>& ViewModeAliases)
+	{
+		return SetEnumLikePropertyValueByAliasesOrValue(AnimInstance, TEXT("ViewMode"), ViewModeAliases, 0);
+	}
+
+	bool ApplyLookingDirectionToAnimInstance(UAnimInstance* AnimInstance, const TArray<FString>& RotationModeAliases)
+	{
+		if (!AnimInstance)
+		{
+			return false;
+		}
+
+		bool bChanged = SetEnumLikePropertyValueByAliasesOrValue(AnimInstance, TEXT("RotationMode"), RotationModeAliases, 1);
+		bChanged |= SetBoolPropertyByName(AnimInstance, TEXT("bIsAiming"), false);
+		bChanged |= SetBoolPropertyByName(AnimInstance, TEXT("bAiming"), false);
+		bChanged |= SetBoolPropertyByName(AnimInstance, TEXT("IsAiming"), false);
+		return bChanged;
+	}
+
+	bool ApplyALSTurnValuesToObject(UObject* Object, const FRotator& AimingRotation, const FVector2D& AimingAngle, const double AimYawRate)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		bool bChanged = SetRotatorPropertyValueByName(Object, TEXT("AimingRotation"), AimingRotation);
+		bChanged |= SetNumericPropertyValueByName(Object, TEXT("AimYawRate"), AimYawRate);
+		bChanged |= SetVector2DPropertyValueByName(Object, TEXT("AimingAngle"), AimingAngle);
+		return bChanged;
+	}
+
+	bool ApplyALSTurnValuesToMesh(USkeletalMeshComponent* Mesh, const FRotator& AimingRotation, const FVector2D& AimingAngle, const double AimYawRate, const bool bApplyLookingDirection)
+	{
+		if (!Mesh)
+		{
+			return false;
+		}
+
+		bool bChanged = false;
+		const TArray<FString> ViewModeAliases = BuildThirdPersonViewModeAliases();
+		const TArray<FString> RotationModeAliases = BuildLookingDirectionAliases();
+
+		if (UAnimInstance* AnimInstance = Mesh->GetAnimInstance())
+		{
+			bChanged |= ApplyALSTurnValuesToObject(AnimInstance, AimingRotation, AimingAngle, AimYawRate);
+			bChanged |= ApplyViewModeToAnimInstance(AnimInstance, ViewModeAliases);
+			if (bApplyLookingDirection)
+			{
+				bChanged |= ApplyLookingDirectionToAnimInstance(AnimInstance, RotationModeAliases);
+			}
+		}
+
+		const USkeletalMeshComponent* ConstMesh = Mesh;
+		for (UAnimInstance* LinkedAnimInstance : ConstMesh->GetLinkedAnimInstances())
+		{
+			bChanged |= ApplyALSTurnValuesToObject(LinkedAnimInstance, AimingRotation, AimingAngle, AimYawRate);
+			bChanged |= ApplyViewModeToAnimInstance(LinkedAnimInstance, ViewModeAliases);
+			if (bApplyLookingDirection)
+			{
+				bChanged |= ApplyLookingDirectionToAnimInstance(LinkedAnimInstance, RotationModeAliases);
+			}
+		}
+
+		return bChanged;
+	}
+
+	void CleanupTurnBridgeStatesIfNeeded()
+	{
+		if (GALSTurnInPlaceBridgeStates.Num() < 128)
+		{
+			return;
+		}
+
+		for (auto It = GALSTurnInPlaceBridgeStates.CreateIterator(); It; ++It)
+		{
+			if (!It.Key().IsValid())
+			{
+				It.RemoveCurrent();
+			}
+		}
 	}
 
 	TSubclassOf<UAnimInstance> LoadMPSOverlayAnimClass(const int64 PoseValue, const FString& PoseDisplayName)
@@ -508,12 +1131,33 @@ bool UTMGameplayStatics::ApplyMPSOverlayPose(ACharacter* Character, UObject* Act
 {
 	if (!Character)
 	{
+		if (IsTouchMeRuntimeTraceEnabled())
+		{
+			UE_LOG(
+				LogTouchMeRuntimeTrace,
+				Warning,
+				TEXT("[ApplyMPSOverlayPose] Character=None ActiveWeapon=%s"),
+				ActiveWeapon ? *ActiveWeapon->GetPathName() : TEXT("None"));
+		}
 		return false;
 	}
 
 	int64 PoseValue = 0;
 	FString PoseDisplayName;
 	TMGameplayStatics::GetEnumLikePropertyValue(ActiveWeapon, TEXT("DT_OverlayPose"), PoseValue, PoseDisplayName);
+	if (IsTouchMeRuntimeTraceEnabled())
+	{
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[ApplyMPSOverlayPose] Character=%s CharacterClass=%s ActiveWeapon=%s ActiveWeaponClass=%s PoseValue=%lld PoseDisplayName=%s"),
+			*Character->GetPathName(),
+			*Character->GetClass()->GetPathName(),
+			ActiveWeapon ? *ActiveWeapon->GetPathName() : TEXT("None"),
+			ActiveWeapon ? *ActiveWeapon->GetClass()->GetPathName() : TEXT("None"),
+			static_cast<long long>(PoseValue),
+			*PoseDisplayName);
+	}
 	TMGameplayStatics::SetEnumLikePropertyValue(Character, TEXT("OverlayPose"), PoseValue);
 	const TArray<FString> OverlayStateAliases = TMGameplayStatics::BuildOverlayStateAliases(PoseValue, PoseDisplayName);
 	TMGameplayStatics::SetEnumLikePropertyValueByAliases(Character, TEXT("OverlayState"), OverlayStateAliases);
@@ -527,16 +1171,137 @@ bool UTMGameplayStatics::ApplyMPSOverlayPose(ACharacter* Character, UObject* Act
 	const TSubclassOf<UAnimInstance> OverlayAnimClass = TMGameplayStatics::LoadMPSOverlayAnimClass(PoseValue, PoseDisplayName);
 	if (!OverlayAnimClass)
 	{
+		if (IsTouchMeRuntimeTraceEnabled())
+		{
+			UE_LOG(
+				LogTouchMeRuntimeTrace,
+				Warning,
+				TEXT("[ApplyMPSOverlayPose] OverlayAnimClass=None PoseValue=%lld PoseDisplayName=%s"),
+				static_cast<long long>(PoseValue),
+				*PoseDisplayName);
+		}
 		return false;
 	}
 
 	if (UAnimInstance* AnimInstance = Mesh->GetAnimInstance())
 	{
 		TMGameplayStatics::SetEnumLikePropertyValueByAliases(AnimInstance, TEXT("OverlayState"), OverlayStateAliases);
+		if (IsTouchMeRuntimeTraceEnabled())
+		{
+			UE_LOG(
+				LogTouchMeRuntimeTrace,
+				Warning,
+				TEXT("[ApplyMPSOverlayPose] AnimInstance=%s Class=%s OverlayAnimClass=%s"),
+				*AnimInstance->GetPathName(),
+				*AnimInstance->GetClass()->GetPathName(),
+				*OverlayAnimClass->GetPathName());
+		}
 	}
 
 	Mesh->LinkAnimClassLayers(OverlayAnimClass);
+	TMGameplayStatics::PatchLinkedOverlayAnimMasters(Mesh, Mesh->GetAnimInstance());
+	if (IsTouchMeRuntimeTraceEnabled())
+	{
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[ApplyMPSOverlayPose] LinkAnimClassLayers done OverlayAnimClass=%s"),
+			*OverlayAnimClass->GetPathName());
+	}
 	return true;
+}
+
+bool UTMGameplayStatics::ApplyALSAimState(ACharacter* Character, const bool bAiming)
+{
+	if (!Character)
+	{
+		return false;
+	}
+
+	const TArray<FString> RotationModeAliases = TMGameplayStatics::BuildRotationModeAliasesForAimState(Character, bAiming);
+	bool bChanged = TMGameplayStatics::CallSetRotationModeFunction(Character, RotationModeAliases);
+	bChanged |= TMGameplayStatics::SetEnumLikePropertyValueByAliases(Character, TEXT("RotationMode"), RotationModeAliases);
+	bChanged |= TMGameplayStatics::SetBoolPropertyByName(Character, TEXT("bIsAiming"), bAiming);
+	bChanged |= TMGameplayStatics::SetBoolPropertyByName(Character, TEXT("bAiming"), bAiming);
+	bChanged |= TMGameplayStatics::SetBoolPropertyByName(Character, TEXT("IsAiming"), bAiming);
+	bChanged |= TMGameplayStatics::SetBoolPropertyByName(Character, TEXT("bADS"), bAiming);
+	bChanged |= TMGameplayStatics::SetBoolPropertyByName(Character, TEXT("IsADS"), bAiming);
+	bChanged |= TMGameplayStatics::ApplyRotationModeAliasesToMesh(Character->GetMesh(), RotationModeAliases);
+
+	if (IsTouchMeRuntimeTraceEnabled())
+	{
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[ApplyALSAimState] Character=%s bAiming=%d Changed=%d Aliases=%s"),
+			*Character->GetPathName(),
+			bAiming ? 1 : 0,
+			bChanged ? 1 : 0,
+			*FString::Join(RotationModeAliases, TEXT(",")));
+	}
+
+	return bChanged;
+}
+
+bool UTMGameplayStatics::ApplyALSTurnInPlaceState(ACharacter* Character, const float DeltaSeconds)
+{
+	if (!Character)
+	{
+		return false;
+	}
+
+	const FRotator ActorRotation = Character->GetActorRotation();
+	const FRotator BaseAimRotation = Character->GetBaseAimRotation();
+
+	double YawOffset = 0.0;
+	if (!TMGameplayStatics::ReadTurnYawOffset(Character, YawOffset))
+	{
+		YawOffset = FRotator::NormalizeAxis(BaseAimRotation.Yaw - ActorRotation.Yaw);
+	}
+
+	const double SourceYaw = FRotator::NormalizeAxis(ActorRotation.Yaw + YawOffset);
+	const double Pitch = TMGameplayStatics::ReadALSTurnPitch(Character, BaseAimRotation);
+	const FRotator AimingRotation(Pitch, SourceYaw, 0.0);
+	const FVector2D AimingAngle(YawOffset, Pitch);
+
+	TMGameplayStatics::CleanupTurnBridgeStatesIfNeeded();
+	const TWeakObjectPtr<ACharacter> CharacterKey(Character);
+	TMGameplayStatics::FALSTurnInPlaceBridgeState& BridgeState = TMGameplayStatics::GALSTurnInPlaceBridgeStates.FindOrAdd(CharacterKey);
+	double AimYawRate = 0.0;
+	if (BridgeState.bHasSourceYaw && DeltaSeconds > SMALL_NUMBER)
+	{
+		const double DeltaYaw = FMath::Abs(FRotator::NormalizeAxis(SourceYaw - BridgeState.SourceYaw));
+		AimYawRate = FMath::Min(DeltaYaw / static_cast<double>(DeltaSeconds), 720.0);
+	}
+	BridgeState.bHasSourceYaw = true;
+	BridgeState.SourceYaw = SourceYaw;
+
+	bool bAiming = false;
+	const bool bApplyLookingDirection = !TMGameplayStatics::ReadALSAimBool(Character, bAiming) || !bAiming;
+	const TArray<FString> ViewModeAliases = TMGameplayStatics::BuildThirdPersonViewModeAliases();
+	const TArray<FString> RotationModeAliases = TMGameplayStatics::BuildLookingDirectionAliases();
+
+	bool bChanged = TMGameplayStatics::ApplyALSTurnValuesToObject(Character, AimingRotation, AimingAngle, AimYawRate);
+	bChanged |= TMGameplayStatics::SetEnumLikePropertyValueByAliasesOrValue(Character, TEXT("ViewMode"), ViewModeAliases, 0);
+	if (bApplyLookingDirection)
+	{
+		bChanged |= TMGameplayStatics::SetEnumLikePropertyValueByAliasesOrValue(Character, TEXT("RotationMode"), RotationModeAliases, 1);
+	}
+	bChanged |= TMGameplayStatics::ApplyALSTurnValuesToMesh(Character->GetMesh(), AimingRotation, AimingAngle, AimYawRate, bApplyLookingDirection);
+
+	if (bChanged && IsTouchMeRuntimeTraceEnabled())
+	{
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Verbose,
+			TEXT("[ALSTurnInPlaceBridge] Character=%s YawOffset=%.2f SourceYaw=%.2f AimYawRate=%.2f"),
+			*Character->GetPathName(),
+			YawOffset,
+			SourceYaw,
+			AimYawRate);
+	}
+
+	return bChanged;
 }
 
 AActor* UTMGameplayStatics::Shoot(

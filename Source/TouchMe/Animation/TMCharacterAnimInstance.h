@@ -23,6 +23,9 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "TouchMe|First Person")
 	FTransform CameraWeaponOffsetCorrection;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|First Person")
+	FTransform CameraWeaponOffsetAiming;
+
 private:
 	void UpdateCameraWeaponOffsetCorrection();
 };

@@ -4,3 +4,6 @@
 
 #include "CoreMinimal.h"
 
+DECLARE_LOG_CATEGORY_EXTERN(LogTouchMeRuntimeTrace, Log, All);
+
+TOUCHME_API bool IsTouchMeRuntimeTraceEnabled();

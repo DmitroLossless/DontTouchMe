@@ -63,6 +63,12 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, Category="TM|Animation")
 	static TOUCHME_API bool ApplyMPSOverlayPose(ACharacter* Character, UObject* ActiveWeapon);
 
+	UFUNCTION(BlueprintCallable, Category="TM|Animation")
+	static TOUCHME_API bool ApplyALSAimState(ACharacter* Character, bool bAiming);
+
+	UFUNCTION(BlueprintCallable, Category="TM|Animation")
+	static TOUCHME_API bool ApplyALSTurnInPlaceState(ACharacter* Character, float DeltaSeconds);
+
 	UFUNCTION(BlueprintCallable, Category="TM|Projectile", meta=(WorldContext="WorldContextObject"))
 	static TOUCHME_API AActor* Shoot(
 		const UObject* WorldContextObject,
