@@ -12,6 +12,17 @@ public class TouchMe : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { "AudioMixer", "AudioSynesthesia", "AudioSynesthesiaCore", "Niagara", "PakFile", "UMG" });
 
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[]
+			{
+				"AnimGraph",
+				"BlueprintGraph",
+				"Kismet",
+				"UnrealEd"
+			});
+		}
+
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 		
