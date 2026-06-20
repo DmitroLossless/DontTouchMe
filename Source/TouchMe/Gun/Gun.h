@@ -149,6 +149,7 @@ private:
 	void RequestDeferredAttachmentSanitize();
 	void RunDeferredAttachmentSanitize();
 	bool IsInvalidWeaponAttachmentComponent(const UStaticMeshComponent* Component) const;
+	int32 SynchronizeUnderbarrelAttachmentComponent();
 	USkeletalMeshComponent* ResolveMainSkeletalMesh() const;
 	bool ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutSocketName) const;
 	UStaticMeshComponent* ResolvePrimaryOpticComponent() const;

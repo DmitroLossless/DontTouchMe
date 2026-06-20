@@ -23,6 +23,8 @@ const FName AGun::MainSkeletalMeshComponentName(TEXT("Item"));
 namespace
 {
 	const TCHAR* WeaponAttachmentMeshPathToken = TEXT("/Weapons/Attachments/");
+	const FName UnderbarrelDataPropertyName(TEXT("UnderbarrelData"));
+	const FName UnderbarrelSocketName(TEXT("Underbarrel"));
 
 	FString CleanGeneratedWeaponClassName(FString ClassName)
 	{
@@ -84,6 +86,81 @@ namespace
 			|| Path.Contains(TEXT("BP_Kriss"))
 			|| Path.Contains(TEXT("BP_SMG"))
 			|| Path.Contains(TEXT("MP_System_V3"));
+	}
+
+	bool IsUnderbarrelSocketName(const FName SocketName)
+	{
+		return SocketName == UnderbarrelSocketName
+			|| SocketName.ToString().Contains(TEXT("Underbarrel"), ESearchCase::IgnoreCase);
+	}
+
+	const FProperty* FindStructFieldByPrefix(const UScriptStruct* Struct, const TCHAR* Prefix)
+	{
+		if (!Struct)
+		{
+			return nullptr;
+		}
+
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (Property && Property->GetName().StartsWith(Prefix))
+			{
+				return Property;
+			}
+		}
+
+		return nullptr;
+	}
+
+	const UStaticMesh* ReadStaticMeshFieldByPrefix(const FStructProperty* StructProperty, const void* StructValue, const TCHAR* Prefix)
+	{
+		if (!StructProperty || !StructValue)
+		{
+			return nullptr;
+		}
+
+		const FProperty* MeshProperty = FindStructFieldByPrefix(StructProperty->Struct, Prefix);
+		const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(MeshProperty);
+		if (!ObjectProperty)
+		{
+			return nullptr;
+		}
+
+		const void* ValueAddress = ObjectProperty->ContainerPtrToValuePtr<void>(StructValue);
+		return Cast<UStaticMesh>(ObjectProperty->GetObjectPropertyValue(ValueAddress));
+	}
+
+	FName ReadSocketFieldByPrefix(const FStructProperty* StructProperty, const void* StructValue, const TCHAR* Prefix)
+	{
+		if (!StructProperty || !StructValue)
+		{
+			return NAME_None;
+		}
+
+		const FProperty* SocketProperty = FindStructFieldByPrefix(StructProperty->Struct, Prefix);
+		if (!SocketProperty)
+		{
+			return NAME_None;
+		}
+
+		const void* ValueAddress = SocketProperty->ContainerPtrToValuePtr<void>(StructValue);
+		if (const FNameProperty* NameProperty = CastField<FNameProperty>(SocketProperty))
+		{
+			return NameProperty->GetPropertyValue(ValueAddress);
+		}
+
+		if (const FStrProperty* StringProperty = CastField<FStrProperty>(SocketProperty))
+		{
+			return FName(*StringProperty->GetPropertyValue(ValueAddress));
+		}
+
+		if (const FTextProperty* TextProperty = CastField<FTextProperty>(SocketProperty))
+		{
+			return FName(*TextProperty->GetPropertyValue(ValueAddress).ToString());
+		}
+
+		return NAME_None;
 	}
 
 	void AppendFunctionParameters(const UFunction* Function, void* Parameters, FString& Out)
@@ -550,6 +627,7 @@ void AGun::RunDeferredAttachmentSanitize()
 {
 	bAttachmentSanitizeRequested = false;
 	SanitizeInvalidAttachmentComponents();
+	SynchronizeUnderbarrelAttachmentComponent();
 	RefreshADSSocket();
 }
 
@@ -655,8 +733,79 @@ bool AGun::ShouldRequestAttachmentSanitizeForFunction(const UFunction* Function)
 		|| FunctionName.Contains(TEXT("Detach"))
 		|| FunctionName.Contains(TEXT("Attachment"))
 		|| FunctionName.Contains(TEXT("Attachament"))
+		|| FunctionName.Contains(TEXT("Underbarrel"))
+		|| FunctionName.Contains(TEXT("Muzzle"))
+		|| FunctionName.Contains(TEXT("SideRail"))
 		|| FunctionName.Contains(TEXT("Optic"))
 		|| FunctionName.Contains(TEXT("Sight"));
+}
+
+int32 AGun::SynchronizeUnderbarrelAttachmentComponent()
+{
+	const FStructProperty* UnderbarrelDataProperty = FindFProperty<FStructProperty>(GetClass(), UnderbarrelDataPropertyName);
+	if (!UnderbarrelDataProperty)
+	{
+		return 0;
+	}
+
+	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	if (!MainMesh)
+	{
+		return 0;
+	}
+
+	const void* UnderbarrelData = UnderbarrelDataProperty->ContainerPtrToValuePtr<void>(this);
+	const UStaticMesh* DesiredMesh = ReadStaticMeshFieldByPrefix(UnderbarrelDataProperty, UnderbarrelData, TEXT("Mesh"));
+	FName DesiredSocketName = ReadSocketFieldByPrefix(UnderbarrelDataProperty, UnderbarrelData, TEXT("Socket"));
+	if (DesiredSocketName.IsNone())
+	{
+		DesiredSocketName = UnderbarrelSocketName;
+	}
+
+	int32 DestroyedCount = 0;
+	bool bKeptDesiredComponent = false;
+	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
+	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
+	{
+		if (!IsValid(StaticMeshComponent) || !IsWeaponAttachmentMesh(StaticMeshComponent))
+		{
+			continue;
+		}
+
+		if (StaticMeshComponent->GetAttachParent() != MainMesh)
+		{
+			continue;
+		}
+
+		const FName AttachSocketName = StaticMeshComponent->GetAttachSocketName();
+		if (AttachSocketName != DesiredSocketName && !IsUnderbarrelSocketName(AttachSocketName))
+		{
+			continue;
+		}
+
+		const UStaticMesh* CurrentMesh = StaticMeshComponent->GetStaticMesh();
+		const bool bMatchesDesiredMesh = DesiredMesh && CurrentMesh == DesiredMesh;
+		if (bMatchesDesiredMesh && !bKeptDesiredComponent)
+		{
+			bKeptDesiredComponent = true;
+			continue;
+		}
+
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("Destroying stale underbarrel attachment component '%s' on '%s'. CurrentMesh='%s', DesiredMesh='%s', Socket='%s'."),
+			*StaticMeshComponent->GetName(),
+			*GetName(),
+			CurrentMesh ? *CurrentMesh->GetPathName() : TEXT("None"),
+			DesiredMesh ? *DesiredMesh->GetPathName() : TEXT("None"),
+			*AttachSocketName.ToString());
+
+		StaticMeshComponent->DestroyComponent();
+		++DestroyedCount;
+	}
+
+	return DestroyedCount;
 }
 
 void AGun::ApplyFakeMode()
