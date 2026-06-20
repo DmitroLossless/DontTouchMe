@@ -32,6 +32,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Fake Gun|Bones", meta = (BlueprintThreadSafe))
 	FTransform GetBoneOffset(FName BoneName) const;
 
+#if WITH_EDITOR
+	bool EditorSetBoneReferenceTarget(FName BoneName, FName TargetBoneName);
+	FName EditorGetBoneReferenceTarget(FName BoneName) const;
+#endif
+
 protected:
 	// Logical name -> skeletal bone reference. Bone references cache their runtime indices on initialization.
 	UPROPERTY(EditDefaultsOnly, Category = "Fake Gun|Bones")

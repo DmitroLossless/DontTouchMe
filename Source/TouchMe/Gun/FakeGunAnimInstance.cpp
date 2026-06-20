@@ -40,3 +40,29 @@ FTransform UFakeGunAnimInstance::GetBoneOffset(const FName BoneName) const
 
 	return FTransform::Identity;
 }
+
+#if WITH_EDITOR
+bool UFakeGunAnimInstance::EditorSetBoneReferenceTarget(const FName BoneName, const FName TargetBoneName)
+{
+	if (FFakeGunBoneOffset* BoneReference = BoneReferences.Find(BoneName))
+	{
+		Modify();
+		BoneReference->TargetBoneName.BoneName = TargetBoneName;
+		BoneReference->TargetBoneName.InvalidateCachedBoneIndex();
+		MarkPackageDirty();
+		return true;
+	}
+
+	return false;
+}
+
+FName UFakeGunAnimInstance::EditorGetBoneReferenceTarget(const FName BoneName) const
+{
+	if (const FFakeGunBoneOffset* BoneReference = BoneReferences.Find(BoneName))
+	{
+		return BoneReference->TargetBoneName.BoneName;
+	}
+
+	return NAME_None;
+}
+#endif

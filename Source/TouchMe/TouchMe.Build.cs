@@ -17,6 +17,7 @@ public class TouchMe : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[]
 			{
 				"AnimGraph",
+				"AnimGraphRuntime",
 				"BlueprintGraph",
 				"Kismet",
 				"UnrealEd"
