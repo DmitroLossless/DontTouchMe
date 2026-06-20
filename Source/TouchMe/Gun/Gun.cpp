@@ -356,6 +356,12 @@ AGun::AGun()
 	FakeSkeletalMeshComponent->SetGenerateOverlapEvents(false);
 	FakeSkeletalMeshComponent->SetVisibility(false);
 
+	FakeAttachedSkeletalMeshComponent = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("FakeAttachedSkeletalMeshComponent"));
+	FakeAttachedSkeletalMeshComponent->SetupAttachment(FakeSkeletalMeshComponent);
+	FakeAttachedSkeletalMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	FakeAttachedSkeletalMeshComponent->SetGenerateOverlapEvents(false);
+	FakeAttachedSkeletalMeshComponent->SetVisibility(false);
+
 	ADSSocketComponent = CreateDefaultSubobject<USceneComponent>(TEXT("ADS_Eye"));
 	ADSSocketComponent->SetupAttachment(SceneRoot);
 }
@@ -487,7 +493,7 @@ void AGun::ProcessEvent(UFunction* Function, void* Parameters)
 		UE_LOG(
 			LogTouchMeRuntimeTrace,
 			Warning,
-			TEXT("[GunProcessEvent:After] Gun=%s Class=%s Function=%s BlueprintState={%s} Root={%s} MainMesh={%s Anim=%s Asset=%s} FakeMesh={%s Anim=%s Asset=%s}"),
+			TEXT("[GunProcessEvent:After] Gun=%s Class=%s Function=%s BlueprintState={%s} Root={%s} MainMesh={%s Anim=%s Asset=%s} FakeMesh={%s Anim=%s Asset=%s} FakeAttachedMesh={%s Asset=%s}"),
 			*GetPathName(),
 			*GetClass()->GetPathName(),
 			Function ? *Function->GetPathName() : TEXT("None"),
@@ -500,6 +506,10 @@ void AGun::ProcessEvent(UFunction* Function, void* Parameters)
 			*DescribeAnimClass(FakeSkeletalMeshComponent),
 			FakeSkeletalMeshComponent && FakeSkeletalMeshComponent->GetSkeletalMeshAsset()
 				? *FakeSkeletalMeshComponent->GetSkeletalMeshAsset()->GetPathName()
+				: TEXT("None"),
+			*DescribeSceneComponent(FakeAttachedSkeletalMeshComponent),
+			FakeAttachedSkeletalMeshComponent && FakeAttachedSkeletalMeshComponent->GetSkeletalMeshAsset()
+				? *FakeAttachedSkeletalMeshComponent->GetSkeletalMeshAsset()->GetPathName()
 				: TEXT("None"));
 	}
 }
@@ -866,6 +876,28 @@ void AGun::ApplyFakeMode()
 		FakeSkeletalMeshComponent->SetAnimInstanceClass(FakeAnimInstanceClass);
 		FakeSkeletalMeshComponent->SetVisibility(true, false);
 
+		const bool bCanAttachFakeMesh = IsValid(FakeAttachedSkeletalMesh)
+			&& !FakeAttachedSkeletalMeshSocketName.IsNone();
+
+		if (bCanAttachFakeMesh)
+		{
+			FakeAttachedSkeletalMeshComponent->AttachToComponent(
+				FakeSkeletalMeshComponent,
+				FAttachmentTransformRules::SnapToTargetIncludingScale,
+				FakeAttachedSkeletalMeshSocketName);
+			FakeAttachedSkeletalMeshComponent->SetRelativeTransform(FakeAttachedSkeletalMeshOffset);
+			FakeAttachedSkeletalMeshComponent->SetSkeletalMeshAsset(FakeAttachedSkeletalMesh);
+			FakeAttachedSkeletalMeshComponent->SetVisibility(true, false);
+		}
+		else
+		{
+			FakeAttachedSkeletalMeshComponent->SetVisibility(false, false);
+			FakeAttachedSkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
+			FakeAttachedSkeletalMeshComponent->AttachToComponent(
+				FakeSkeletalMeshComponent,
+				FAttachmentTransformRules::SnapToTargetIncludingScale);
+		}
+
 		bFakeModeApplied = true;
 		return;
 	}
@@ -875,6 +907,12 @@ void AGun::ApplyFakeMode()
 
 void AGun::RestoreFromFakeMode()
 {
+	FakeAttachedSkeletalMeshComponent->SetVisibility(false, false);
+	FakeAttachedSkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
+	FakeAttachedSkeletalMeshComponent->AttachToComponent(
+		FakeSkeletalMeshComponent,
+		FAttachmentTransformRules::SnapToTargetIncludingScale);
+
 	FakeSkeletalMeshComponent->SetVisibility(false, false);
 	FakeSkeletalMeshComponent->SetAnimInstanceClass(nullptr);
 	FakeSkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);

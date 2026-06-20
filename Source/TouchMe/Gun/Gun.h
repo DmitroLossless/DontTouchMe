@@ -95,6 +95,15 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Fake Mode", meta = (EditCondition = "bFakeMode"))
 	FTransform FakeSkeletalMeshOffset = FTransform::Identity;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Fake Mode", meta = (EditCondition = "bFakeMode"))
+	TObjectPtr<USkeletalMesh> FakeAttachedSkeletalMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Fake Mode", meta = (EditCondition = "bFakeMode"))
+	FName FakeAttachedSkeletalMeshSocketName = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Fake Mode", meta = (EditCondition = "bFakeMode"))
+	FTransform FakeAttachedSkeletalMeshOffset = FTransform::Identity;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Camera", meta = (DisplayName = "Camera Weapon Offset"))
 	FTransform CameraWeaponOffset = FTransform(
 		FRotator::ZeroRotator,
@@ -109,6 +118,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gun|Fake Mode")
 	TObjectPtr<USkeletalMeshComponent> FakeSkeletalMeshComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gun|Fake Mode")
+	TObjectPtr<USkeletalMeshComponent> FakeAttachedSkeletalMeshComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gun|ADS", meta = (DisplayName = "ADS Eye"))
 	TObjectPtr<USceneComponent> ADSSocketComponent;

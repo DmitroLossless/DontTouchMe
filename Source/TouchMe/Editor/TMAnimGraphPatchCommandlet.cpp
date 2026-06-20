@@ -15,6 +15,10 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "../Gun/FakeGunAnimInstance.h"
+#include "../Gun/Gun.h"
+#include "Animation/Skeleton.h"
+#include "Engine/Blueprint.h"
+#include "Engine/SkeletalMesh.h"
 #include "K2Node_BreakStruct.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_GetDataTableRow.h"
@@ -3171,6 +3175,215 @@ namespace
 		return true;
 	}
 
+	bool TMSaveAssetPackage(UObject* Asset, const TCHAR* Label)
+	{
+		if (!Asset)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] Cannot save null asset for %s."), Label);
+			return false;
+		}
+
+		UPackage* Package = Asset->GetOutermost();
+		const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+			Package->GetName(),
+			FPackageName::GetAssetPackageExtension());
+
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
+
+		if (!UPackage::SavePackage(Package, nullptr, *PackageFilename, SaveArgs))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] Failed to save %s package: %s"), Label, *PackageFilename);
+			return false;
+		}
+
+		UE_LOG(LogTemp, Display, TEXT("[TMFakeGun] Saved %s package: %s"), Label, *PackageFilename);
+		return true;
+	}
+
+	bool TMSetObjectProperty(UObject* Object, const FName PropertyName, UObject* Value)
+	{
+		FObjectPropertyBase* Property = Object
+			? FindFProperty<FObjectPropertyBase>(Object->GetClass(), PropertyName)
+			: nullptr;
+		if (!Property)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] Missing object property %s on %s."), *PropertyName.ToString(), Object ? *Object->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		Property->SetObjectPropertyValue_InContainer(Object, Value);
+		UE_LOG(LogTemp, Display, TEXT("[TMFakeGun] Set %s=%s on %s."), *PropertyName.ToString(), Value ? *Value->GetPathName() : TEXT("None"), *Object->GetPathName());
+		return true;
+	}
+
+	bool TMSetClassProperty(UObject* Object, const FName PropertyName, UClass* Value)
+	{
+		FClassProperty* Property = Object
+			? FindFProperty<FClassProperty>(Object->GetClass(), PropertyName)
+			: nullptr;
+		if (!Property)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] Missing class property %s on %s."), *PropertyName.ToString(), Object ? *Object->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		Property->SetPropertyValue_InContainer(Object, Value);
+		UE_LOG(LogTemp, Display, TEXT("[TMFakeGun] Set %s=%s on %s."), *PropertyName.ToString(), Value ? *Value->GetPathName() : TEXT("None"), *Object->GetPathName());
+		return true;
+	}
+
+	bool TMSetNameProperty(UObject* Object, const FName PropertyName, const FName Value)
+	{
+		FNameProperty* Property = Object
+			? FindFProperty<FNameProperty>(Object->GetClass(), PropertyName)
+			: nullptr;
+		if (!Property)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] Missing name property %s on %s."), *PropertyName.ToString(), Object ? *Object->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		Property->SetPropertyValue_InContainer(Object, Value);
+		UE_LOG(LogTemp, Display, TEXT("[TMFakeGun] Set %s=%s on %s."), *PropertyName.ToString(), *Value.ToString(), *Object->GetPathName());
+		return true;
+	}
+
+	bool TMSetBoolProperty(UObject* Object, const FName PropertyName, const bool bValue)
+	{
+		FBoolProperty* Property = Object
+			? FindFProperty<FBoolProperty>(Object->GetClass(), PropertyName)
+			: nullptr;
+		if (!Property)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] Missing bool property %s on %s."), *PropertyName.ToString(), Object ? *Object->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		Property->SetPropertyValue_InContainer(Object, bValue);
+		UE_LOG(LogTemp, Display, TEXT("[TMFakeGun] Set %s=%d on %s."), *PropertyName.ToString(), bValue ? 1 : 0, *Object->GetPathName());
+		return true;
+	}
+
+	bool TMSetTransformProperty(UObject* Object, const FName PropertyName, const FTransform& Value)
+	{
+		FStructProperty* Property = Object
+			? FindFProperty<FStructProperty>(Object->GetClass(), PropertyName)
+			: nullptr;
+		if (!Property || Property->Struct != TBaseStructure<FTransform>::Get())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] Missing transform property %s on %s."), *PropertyName.ToString(), Object ? *Object->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(Object), &Value);
+		UE_LOG(LogTemp, Display, TEXT("[TMFakeGun] Set %s=%s on %s."), *PropertyName.ToString(), *Value.ToHumanReadableString(), *Object->GetPathName());
+		return true;
+	}
+
+	bool TMPatchKrissFakeYaxisMagazine()
+	{
+		static const TCHAR* KrissBlueprintPath =
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Kriss/BP_Kriss.BP_Kriss");
+		static const TCHAR* KrissFakeAnimBlueprintPath =
+			TEXT("/Game/Weapons/Mesh/SMG/Kriss_FakeAnimBP.Kriss_FakeAnimBP");
+		static const TCHAR* KrissFakeAnimClassPath =
+			TEXT("/Game/Weapons/Mesh/SMG/Kriss_FakeAnimBP.Kriss_FakeAnimBP_C");
+		static const TCHAR* KrissYaxisMeshPath =
+			TEXT("/Game/Weapons/Mesh/SMG/SK_V014_SMG_Yaxis.SK_V014_SMG_Yaxis");
+		static const TCHAR* KrissMagEmptyMeshPath =
+			TEXT("/Game/Weapons/Mesh/SMG/SK_V014_MagEmpty.SK_V014_MagEmpty");
+
+		if (!TMPatchKrissFakeAnimGraph())
+		{
+			return false;
+		}
+
+		USkeletalMesh* KrissYaxisMesh = LoadObject<USkeletalMesh>(nullptr, KrissYaxisMeshPath);
+		USkeletalMesh* KrissMagEmptyMesh = LoadObject<USkeletalMesh>(nullptr, KrissMagEmptyMeshPath);
+		UAnimBlueprint* FakeAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, KrissFakeAnimBlueprintPath);
+		UClass* FakeAnimClass = LoadClass<UFakeGunAnimInstance>(nullptr, KrissFakeAnimClassPath);
+		UBlueprint* KrissBlueprint = LoadObject<UBlueprint>(nullptr, KrissBlueprintPath);
+
+		if (!KrissYaxisMesh || !KrissMagEmptyMesh || !FakeAnimBlueprint || !FakeAnimClass || !KrissBlueprint)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMFakeGun] Failed to load Kriss fake Y-axis assets. Mesh=%s Mag=%s AnimBP=%s AnimClass=%s BP=%s"),
+				KrissYaxisMesh ? *KrissYaxisMesh->GetPathName() : TEXT("None"),
+				KrissMagEmptyMesh ? *KrissMagEmptyMesh->GetPathName() : TEXT("None"),
+				FakeAnimBlueprint ? *FakeAnimBlueprint->GetPathName() : TEXT("None"),
+				FakeAnimClass ? *FakeAnimClass->GetPathName() : TEXT("None"),
+				KrissBlueprint ? *KrissBlueprint->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		USkeleton* YaxisSkeleton = KrissYaxisMesh->GetSkeleton();
+		if (!YaxisSkeleton)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] %s has no skeleton."), *KrissYaxisMesh->GetPathName());
+			return false;
+		}
+
+		if (FakeAnimBlueprint->TargetSkeleton != YaxisSkeleton)
+		{
+			FakeAnimBlueprint->Modify();
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMFakeGun] Kriss fake anim target skeleton %s -> %s."),
+				FakeAnimBlueprint->TargetSkeleton ? *FakeAnimBlueprint->TargetSkeleton->GetPathName() : TEXT("None"),
+				*YaxisSkeleton->GetPathName());
+			FakeAnimBlueprint->TargetSkeleton = YaxisSkeleton;
+			FBlueprintEditorUtils::MarkBlueprintAsModified(FakeAnimBlueprint);
+			FKismetEditorUtilities::CompileBlueprint(FakeAnimBlueprint);
+
+			if (FakeAnimBlueprint->Status == BS_Error)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] Kriss fake anim blueprint failed after Y-axis skeleton switch."));
+				return false;
+			}
+
+			if (!TMSaveAssetPackage(FakeAnimBlueprint, TEXT("Kriss fake anim Y-axis skeleton")))
+			{
+				return false;
+			}
+		}
+
+		FKismetEditorUtilities::CompileBlueprint(KrissBlueprint);
+
+		AGun* KrissDefaultObject = KrissBlueprint->GeneratedClass
+			? Cast<AGun>(KrissBlueprint->GeneratedClass->GetDefaultObject())
+			: nullptr;
+		if (!KrissDefaultObject)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMFakeGun] %s generated class is not an AGun."), KrissBlueprintPath);
+			return false;
+		}
+
+		KrissBlueprint->Modify();
+		KrissDefaultObject->Modify();
+
+		const bool bPatchedDefaults =
+			TMSetBoolProperty(KrissDefaultObject, TEXT("bFakeMode"), true)
+			&& TMSetObjectProperty(KrissDefaultObject, TEXT("FakeSkeletalMesh"), KrissYaxisMesh)
+			&& TMSetClassProperty(KrissDefaultObject, TEXT("FakeAnimInstanceClass"), FakeAnimClass)
+			&& TMSetObjectProperty(KrissDefaultObject, TEXT("FakeAttachedSkeletalMesh"), KrissMagEmptyMesh)
+			&& TMSetNameProperty(KrissDefaultObject, TEXT("FakeAttachedSkeletalMeshSocketName"), TEXT("Mag"))
+			&& TMSetTransformProperty(KrissDefaultObject, TEXT("FakeAttachedSkeletalMeshOffset"), FTransform::Identity);
+
+		if (!bPatchedDefaults)
+		{
+			return false;
+		}
+
+		KrissBlueprint->MarkPackageDirty();
+		KrissDefaultObject->MarkPackageDirty();
+		return TMSaveAssetPackage(KrissBlueprint, TEXT("Kriss weapon fake Y-axis magazine"));
+	}
+
 	bool TMPatchScarFakeMagazineBone()
 	{
 		static const TCHAR* ScarFakeAnimBlueprintPath =
@@ -3597,6 +3810,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("FixKrissFakeAnimGraph"), ESearchCase::IgnoreCase))
 	{
 		return TMPatchKrissFakeAnimGraph() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("FixKrissFakeYaxisMagazine"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchKrissFakeYaxisMagazine() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("MenuViewerLHOffset"), ESearchCase::IgnoreCase))
