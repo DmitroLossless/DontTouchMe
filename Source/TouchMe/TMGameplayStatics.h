@@ -23,6 +23,8 @@ class UInitialActiveSoundParams;
 class UBlueprint;
 class UDecalComponent;
 class UDialogueWave;
+class UFXSystemAsset;
+class UFXSystemComponent;
 class UParticleSystem;
 class UParticleSystemComponent;
 class USaveGame;
@@ -56,6 +58,30 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 
 	UFUNCTION(BlueprintCallable, Category="Audio", meta=(WorldContext="WorldContextObject", AdvancedDisplay = "4", UnsafeDuringActorConstruction = "true", Keywords = "play"))
 	static TOUCHME_API UAudioComponent* SpawnSoundAtLocationDistanced(const UObject* WorldContextObject, USoundBase* Sound, FVector Location, FRotator Rotation = FRotator::ZeroRotator, float VolumeMultiplier = 1.f, float PitchMultiplier = 1.f, float StartTime = 0.f, class USoundAttenuation* AttenuationSettings = nullptr, USoundConcurrency* ConcurrencySettings = nullptr, bool bAutoDestroy = true);
+
+	UFUNCTION(BlueprintCallable, Category = "TM|FX", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "6", UnsafeDuringActorConstruction = "true", Keywords = "spawn fx cascade niagara emitter particle"))
+	static TOUCHME_API UFXSystemComponent* SpawnFXSystemAtLocation(
+		const UObject* WorldContextObject,
+		UFXSystemAsset* EmitterTemplate,
+		FVector Location,
+		FRotator Rotation = FRotator::ZeroRotator,
+		FVector Scale = FVector(1.f),
+		bool bAutoDestroy = true,
+		EPSCPoolMethod PoolingMethod = EPSCPoolMethod::None,
+		bool bAutoActivateSystem = true);
+
+	UFUNCTION(BlueprintCallable, Category = "TM|FX", meta = (AdvancedDisplay = "7", UnsafeDuringActorConstruction = "true", Keywords = "spawn fx cascade niagara emitter particle"))
+	static TOUCHME_API UFXSystemComponent* SpawnFXSystemAttached(
+		UFXSystemAsset* EmitterTemplate,
+		USceneComponent* AttachToComponent,
+		FName AttachPointName = NAME_None,
+		FVector Location = FVector(ForceInit),
+		FRotator Rotation = FRotator::ZeroRotator,
+		FVector Scale = FVector(1.f),
+		EAttachLocation::Type LocationType = EAttachLocation::KeepRelativeOffset,
+		bool bAutoDestroy = true,
+		EPSCPoolMethod PoolingMethod = EPSCPoolMethod::None,
+		bool bAutoActivate = true);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "5", UnsafeDuringActorConstruction = "true", Keywords = "play"))
 	static TOUCHME_API void MarketSoundRoom(bool enable);

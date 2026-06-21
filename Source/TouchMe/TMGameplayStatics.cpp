@@ -15,6 +15,10 @@
 #include "Kismet/GameplayStaticsTypes.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/EngineVersion.h"
+#include "NiagaraCommon.h"
+#include "NiagaraComponent.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/DamageType.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -1120,6 +1124,100 @@ UAudioComponent* UTMGameplayStatics::SpawnSoundAtLocationDistanced(const UObject
 	}
 
 	return AudioComponent;
+}
+
+UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAtLocation(
+	const UObject* WorldContextObject,
+	UFXSystemAsset* EmitterTemplate,
+	FVector Location,
+	FRotator Rotation,
+	FVector Scale,
+	bool bAutoDestroy,
+	EPSCPoolMethod PoolingMethod,
+	bool bAutoActivateSystem)
+{
+	if (!EmitterTemplate)
+	{
+		return nullptr;
+	}
+
+	if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(EmitterTemplate))
+	{
+		return UGameplayStatics::SpawnEmitterAtLocation(
+			WorldContextObject,
+			CascadeSystem,
+			Location,
+			Rotation,
+			Scale,
+			bAutoDestroy,
+			PoolingMethod,
+			bAutoActivateSystem);
+	}
+
+	if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(EmitterTemplate))
+	{
+		return UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			WorldContextObject,
+			NiagaraSystem,
+			Location,
+			Rotation,
+			Scale,
+			bAutoDestroy,
+			bAutoActivateSystem,
+			ToNiagaraPooling(PoolingMethod));
+	}
+
+	return nullptr;
+}
+
+UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAttached(
+	UFXSystemAsset* EmitterTemplate,
+	USceneComponent* AttachToComponent,
+	FName AttachPointName,
+	FVector Location,
+	FRotator Rotation,
+	FVector Scale,
+	EAttachLocation::Type LocationType,
+	bool bAutoDestroy,
+	EPSCPoolMethod PoolingMethod,
+	bool bAutoActivate)
+{
+	if (!EmitterTemplate || !AttachToComponent)
+	{
+		return nullptr;
+	}
+
+	if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(EmitterTemplate))
+	{
+		return UGameplayStatics::SpawnEmitterAttached(
+			CascadeSystem,
+			AttachToComponent,
+			AttachPointName,
+			Location,
+			Rotation,
+			Scale,
+			LocationType,
+			bAutoDestroy,
+			PoolingMethod,
+			bAutoActivate);
+	}
+
+	if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(EmitterTemplate))
+	{
+		return UNiagaraFunctionLibrary::SpawnSystemAttached(
+			NiagaraSystem,
+			AttachToComponent,
+			AttachPointName,
+			Location,
+			Rotation,
+			Scale,
+			LocationType,
+			bAutoDestroy,
+			ToNiagaraPooling(PoolingMethod),
+			bAutoActivate);
+	}
+
+	return nullptr;
 }
 
 void UTMGameplayStatics::MarketSoundRoom(bool enable)
