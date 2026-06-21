@@ -387,6 +387,17 @@ namespace
 		return TMReadAimStateBoolProperty(AnimInstance, bAiming) && bAiming;
 	}
 
+	bool TMIsCharacterAimingForCameraWeaponOffset(const ATMCharacter* Character, const UAnimInstance* AnimInstance)
+	{
+		bool bAiming = false;
+		if (TMReadAimStateBoolProperty(Character, bAiming))
+		{
+			return bAiming;
+		}
+
+		return TMIsAimingForWeaponBoneLock(Character, AnimInstance);
+	}
+
 	FRotator TMGetCameraFloorLockedRotation(const ATMCharacter* Character)
 	{
 		FRotator CameraRotation = Character ? Character->GetViewRotation() : FRotator::ZeroRotator;
@@ -479,6 +490,23 @@ namespace
 		{
 			TMUpdateWeaponBoneFloorLock(LinkedAnimInstance, Character, Mesh);
 		}
+	}
+
+	const AGun* TMGetGunDefaults(const AGun* ActiveGun)
+	{
+		return ActiveGun ? Cast<AGun>(ActiveGun->GetClass()->GetDefaultObject()) : nullptr;
+	}
+
+	FTransform TMGetDefaultCameraWeaponOffset(const AGun* ActiveGun)
+	{
+		const AGun* DefaultGun = TMGetGunDefaults(ActiveGun);
+		return DefaultGun ? DefaultGun->GetCameraWeaponOffset() : FTransform::Identity;
+	}
+
+	FTransform TMGetDefaultCameraWeaponOffsetAiming(const AGun* ActiveGun)
+	{
+		const AGun* DefaultGun = TMGetGunDefaults(ActiveGun);
+		return DefaultGun ? DefaultGun->GetCameraWeaponOffsetAiming() : FTransform::Identity;
 	}
 
 	bool TMInferAimStateFromFunctionName(const UFunction* Function, bool& bOutAiming)
@@ -1261,7 +1289,10 @@ namespace
 			return;
 		}
 
-		const FTransform CameraWeaponOffset = ActiveGun->GetCameraWeaponOffset();
+		const bool bUseAimingOffset = TMIsCharacterAimingForCameraWeaponOffset(Character, Mesh->GetAnimInstance());
+		const FTransform CameraWeaponOffset = bUseAimingOffset
+			? TMGetDefaultCameraWeaponOffsetAiming(ActiveGun)
+			: TMGetDefaultCameraWeaponOffset(ActiveGun);
 		const FVector TargetLocation = CameraWeaponOffset.GetLocation();
 		UCameraComponent* CameraComponent = Character && Character->IsLocallyControlled()
 			? Character->FindComponentByClass<UCameraComponent>()
@@ -1274,7 +1305,10 @@ namespace
 				CameraComponent->IsUsingAbsoluteScale());
 		}
 
-		if (FPCameraSocket->RelativeLocation.Equals(TargetLocation, KINDA_SMALL_NUMBER))
+		const bool bNeedsSocketLocationUpdate = !FPCameraSocket->RelativeLocation.Equals(TargetLocation, KINDA_SMALL_NUMBER);
+		const bool bNeedsCameraRollUpdate = CameraComponent
+			&& !FMath::IsNearlyZero(CameraComponent->GetComponentRotation().GetNormalized().Roll, 0.01f);
+		if (!bNeedsSocketLocationUpdate && !bNeedsCameraRollUpdate)
 		{
 			return;
 		}
@@ -1302,11 +1336,14 @@ namespace
 			bHasViewTarget = true;
 		}
 
+		if (bNeedsSocketLocationUpdate)
+		{
 #if WITH_EDITOR
-		FPCameraSocket->Modify();
+			FPCameraSocket->Modify();
 #endif
-		FPCameraSocket->RelativeLocation = TargetLocation;
-		Mesh->UpdateChildTransforms();
+			FPCameraSocket->RelativeLocation = TargetLocation;
+			Mesh->UpdateChildTransforms();
+		}
 
 		if (bHasViewTarget && CameraComponent)
 		{
@@ -1326,7 +1363,7 @@ namespace
 		}
 	}
 
-	void TMUpdateCameraWeaponOffsetAnimBridge(UAnimInstance* AnimInstance, const AGun* ActiveGun)
+	void TMUpdateCameraWeaponOffsetAnimBridge(UAnimInstance* AnimInstance, const AGun* ActiveGun, const ATMCharacter* Character)
 	{
 		if (!AnimInstance || !ActiveGun)
 		{
@@ -1334,16 +1371,24 @@ namespace
 		}
 
 		static const FName CameraWeaponOffsetPropertyName(TEXT("CameraWeaponOffset"));
+		static const FName CameraWeaponOffsetNoAimingPropertyName(TEXT("CameraWeaponOffsetNoAiming"));
 		static const FName CameraWeaponOffsetAimingPropertyName(TEXT("CameraWeaponOffsetAiming"));
+		const FTransform CameraWeaponOffsetNoAiming = TMGetDefaultCameraWeaponOffset(ActiveGun);
+		const FTransform CameraWeaponOffsetAiming = TMGetDefaultCameraWeaponOffsetAiming(ActiveGun);
+		const bool bUseAimingOffset = TMIsCharacterAimingForCameraWeaponOffset(Character, AnimInstance);
 
 		TMWriteTransformProperty(
 			AnimInstance,
 			CameraWeaponOffsetPropertyName,
-			ActiveGun->GetCameraWeaponOffset());
+			bUseAimingOffset ? CameraWeaponOffsetAiming : CameraWeaponOffsetNoAiming);
+		TMWriteTransformProperty(
+			AnimInstance,
+			CameraWeaponOffsetNoAimingPropertyName,
+			CameraWeaponOffsetNoAiming);
 		TMWriteTransformProperty(
 			AnimInstance,
 			CameraWeaponOffsetAimingPropertyName,
-			ActiveGun->GetCameraWeaponOffsetAiming());
+			CameraWeaponOffsetAiming);
 	}
 
 	void TMUpdateADSSocketAnimBridge(
@@ -1433,7 +1478,7 @@ namespace
 			const_cast<ATMCharacter*>(Character),
 			const_cast<USkeletalMeshComponent*>(Mesh),
 			ActiveGun);
-		TMUpdateCameraWeaponOffsetAnimBridge(Mesh->GetAnimInstance(), ActiveGun);
+		TMUpdateCameraWeaponOffsetAnimBridge(Mesh->GetAnimInstance(), ActiveGun, Character);
 		TMUpdateADSSocketAnimBridge(
 			Mesh->GetAnimInstance(),
 			Character,
@@ -1443,7 +1488,7 @@ namespace
 
 		for (UAnimInstance* LinkedAnimInstance : Mesh->GetLinkedAnimInstances())
 		{
-			TMUpdateCameraWeaponOffsetAnimBridge(LinkedAnimInstance, ActiveGun);
+			TMUpdateCameraWeaponOffsetAnimBridge(LinkedAnimInstance, ActiveGun, Character);
 			TMUpdateADSSocketAnimBridge(
 				LinkedAnimInstance,
 				Character,

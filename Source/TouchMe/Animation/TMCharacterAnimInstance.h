@@ -14,18 +14,12 @@ class TOUCHME_API UTMCharacterAnimInstance : public UAnimInstance
 public:
 	UTMCharacterAnimInstance();
 
-	virtual void NativeInitializeAnimation() override;
-	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|First Person")
 	FTransform CameraWeaponOffset;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "TouchMe|First Person")
-	FTransform CameraWeaponOffsetCorrection;
-
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|First Person")
+	FTransform CameraWeaponOffsetNoAiming;
+	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|First Person")
 	FTransform CameraWeaponOffsetAiming;
-
-private:
-	void UpdateCameraWeaponOffsetCorrection();
 };

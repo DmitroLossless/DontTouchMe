@@ -7,29 +7,7 @@ UTMCharacterAnimInstance::UTMCharacterAnimInstance()
 		FRotator::ZeroRotator,
 		FVector(0.0f, 0.0f, -35.0f),
 		FVector::OneVector)
+	, CameraWeaponOffsetNoAiming(CameraWeaponOffset)
 	, CameraWeaponOffsetAiming(CameraWeaponOffset)
 {
-	UpdateCameraWeaponOffsetCorrection();
-}
-
-void UTMCharacterAnimInstance::NativeInitializeAnimation()
-{
-	Super::NativeInitializeAnimation();
-
-	UpdateCameraWeaponOffsetCorrection();
-}
-
-void UTMCharacterAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
-{
-	Super::NativeUpdateAnimation(DeltaSeconds);
-
-	UpdateCameraWeaponOffsetCorrection();
-}
-
-void UTMCharacterAnimInstance::UpdateCameraWeaponOffsetCorrection()
-{
-	CameraWeaponOffsetCorrection = FTransform(
-		CameraWeaponOffset.GetRotation().Inverse(),
-		-CameraWeaponOffset.GetTranslation(),
-		FVector::OneVector);
 }
