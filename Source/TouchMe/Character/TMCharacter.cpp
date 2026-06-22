@@ -13,6 +13,10 @@
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Controller.h"
+#include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "UObject/UnrealType.h"
 #include "../Gun/Gun.h"
 #include "../TMGameplayStatics.h"
@@ -45,6 +49,83 @@ namespace
 			|| UpperName.Contains(TEXT("CALCULATE_AIM"))
 			|| UpperName.Contains(TEXT("GETAIM"))
 			|| UpperName.Contains(TEXT("GET_AIM"));
+	}
+
+	bool GTMDebugLocalHandsScaleEnabled = true;
+	bool GTMDebugLocalHandsScaleConsoleOverrideSet = false;
+	float GTMDebugLocalHandsScale = 1.5f;
+	FVector GTMDebugKrissNoAimOffsetPulseOffset = FVector::ZeroVector;
+	double GTMDebugKrissNoAimOffsetPulseEndTime = 0.0;
+	bool GTMDebugKrissNoAimOffsetPulseWasActive = false;
+
+	struct FTMDebugBoneScaleDelegate
+	{
+		TWeakObjectPtr<USkeletalMeshComponent> Mesh;
+		FDelegateHandle Handle;
+		bool bIncludeForearmDescendants = false;
+		bool bIncludeWeaponBone = false;
+	};
+
+	TArray<FTMDebugBoneScaleDelegate> GTMDebugBoneScaleDelegates;
+	TSet<uint32> GTMDebugBoneScaleReportedMeshIds;
+
+	bool TMIsDebugLocalHandsScaleEnabled()
+	{
+#if WITH_EDITOR
+		static double LastFileCheckTime = -1.0;
+		static bool bScaleFilePresent = false;
+		static bool bLastReportedEnabled = false;
+		static bool bReportedConsoleCommandRegistration = false;
+
+		if (!bReportedConsoleCommandRegistration)
+		{
+			bReportedConsoleCommandRegistration = true;
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMDebugLocalHandsScale] ConsoleCommandRegistered=%d Command=tm.DebugLocalHandsScale"),
+				IConsoleManager::Get().FindConsoleObject(TEXT("tm.DebugLocalHandsScale")) ? 1 : 0);
+		}
+
+		const double Now = FPlatformTime::Seconds();
+		if (LastFileCheckTime < 0.0 || Now - LastFileCheckTime > 0.25)
+		{
+			LastFileCheckTime = Now;
+
+			FString FileContents;
+			const FString ToggleFilePath = FPaths::ProjectSavedDir() / TEXT("Codex/DebugLocalHandsScale.txt");
+			bScaleFilePresent = FFileHelper::LoadFileToString(FileContents, *ToggleFilePath);
+			if (bScaleFilePresent)
+			{
+				FileContents = FileContents.TrimStartAndEnd();
+				if (!FileContents.IsEmpty())
+				{
+					const float ParsedScale = FCString::Atof(*FileContents);
+					if (ParsedScale > UE_SMALL_NUMBER)
+					{
+						GTMDebugLocalHandsScale = ParsedScale;
+					}
+				}
+			}
+		}
+
+		const bool bEnabled = GTMDebugLocalHandsScaleConsoleOverrideSet ? GTMDebugLocalHandsScaleEnabled : true;
+		if (bEnabled != bLastReportedEnabled)
+		{
+			bLastReportedEnabled = bEnabled;
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMDebugLocalHandsScale] RuntimeDefault Enabled=%d BaseScale=%.3f ScaleFile=%d ConsoleOverride=%d"),
+				bEnabled ? 1 : 0,
+				GTMDebugLocalHandsScale,
+				bScaleFilePresent ? 1 : 0,
+				GTMDebugLocalHandsScaleConsoleOverrideSet ? 1 : 0);
+		}
+		return bEnabled;
+#else
+		return GTMDebugLocalHandsScaleEnabled;
+#endif
 	}
 
 	bool TMIsAimBridgeFunction(const UFunction* Function)
@@ -497,10 +578,83 @@ namespace
 		return ActiveGun ? Cast<AGun>(ActiveGun->GetClass()->GetDefaultObject()) : nullptr;
 	}
 
+	bool TMIsKrissGun(const AGun* ActiveGun)
+	{
+		return ActiveGun
+			&& ActiveGun->GetClass()
+			&& ActiveGun->GetClass()->GetPathName().Contains(TEXT("BP_Kriss"));
+	}
+
 	FTransform TMGetDefaultCameraWeaponOffset(const AGun* ActiveGun)
 	{
 		const AGun* DefaultGun = TMGetGunDefaults(ActiveGun);
-		return DefaultGun ? DefaultGun->GetCameraWeaponOffset() : FTransform::Identity;
+		FTransform CameraWeaponOffset = DefaultGun ? DefaultGun->GetCameraWeaponOffset() : FTransform::Identity;
+		const bool bIsKrissGun = TMIsKrissGun(ActiveGun);
+		if (bIsKrissGun)
+		{
+			CameraWeaponOffset.SetLocation(FVector(6.0f, 11.0f, -6.0f));
+		}
+
+		static double LastPulseFileCheckTime = -1.0;
+		const double Now = FPlatformTime::Seconds();
+		if (LastPulseFileCheckTime < 0.0 || Now - LastPulseFileCheckTime > 0.1)
+		{
+			LastPulseFileCheckTime = Now;
+
+			FString FileContents;
+			const FString PulseFilePath = FPaths::ProjectSavedDir() / TEXT("Codex/KrissNoAimOffsetPulse.txt");
+			if (FFileHelper::LoadFileToString(FileContents, *PulseFilePath))
+			{
+				TArray<FString> Args;
+				FileContents.ParseIntoArrayWS(Args);
+				float Duration = 3.0f;
+				if (Args.Num() >= 4)
+				{
+					GTMDebugKrissNoAimOffsetPulseOffset = FVector(
+						FCString::Atof(*Args[0]),
+						FCString::Atof(*Args[1]),
+						FCString::Atof(*Args[2]));
+					Duration = FCString::Atof(*Args[3]);
+				}
+				else
+				{
+					const float PulseZ = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 15.0f;
+					Duration = Args.Num() > 1 ? FCString::Atof(*Args[1]) : 3.0f;
+					GTMDebugKrissNoAimOffsetPulseOffset = FVector(0.0f, 0.0f, PulseZ);
+				}
+				GTMDebugKrissNoAimOffsetPulseEndTime = Now + FMath::Max(Duration, 0.0f);
+				GTMDebugKrissNoAimOffsetPulseWasActive = false;
+				IFileManager::Get().Delete(*PulseFilePath, false, true);
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("[TMDebugKrissNoAimOffsetPulse] Started AddOffset=%s Duration=%.3f"),
+					*GTMDebugKrissNoAimOffsetPulseOffset.ToString(),
+					Duration);
+			}
+		}
+
+		const bool bPulseActive = Now < GTMDebugKrissNoAimOffsetPulseEndTime;
+		if (bPulseActive)
+		{
+			if (bIsKrissGun)
+			{
+				CameraWeaponOffset.AddToTranslation(GTMDebugKrissNoAimOffsetPulseOffset);
+			}
+		}
+
+		if (bPulseActive != GTMDebugKrissNoAimOffsetPulseWasActive)
+		{
+			GTMDebugKrissNoAimOffsetPulseWasActive = bPulseActive;
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMDebugKrissNoAimOffsetPulse] Active=%d AddOffset=%s"),
+				bPulseActive ? 1 : 0,
+				*GTMDebugKrissNoAimOffsetPulseOffset.ToString());
+		}
+
+		return CameraWeaponOffset;
 	}
 
 	FTransform TMGetDefaultCameraWeaponOffsetAiming(const AGun* ActiveGun)
@@ -1542,6 +1696,328 @@ namespace
 		}
 	}
 
+	bool TMIsForearmRootBoneName(const FString& BoneName)
+	{
+		const FString UpperName = BoneName.ToUpper();
+		return UpperName.Contains(TEXT("LOWERARM"))
+			|| UpperName.Contains(TEXT("LOWER_ARM"))
+			|| UpperName.Contains(TEXT("FOREARM"))
+			|| UpperName.Contains(TEXT("FORE_ARM"));
+	}
+
+	bool TMIsWeaponBoneName(const FString& BoneName)
+	{
+		return BoneName.Equals(TEXT("Weapon"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMIsFingerOrWristBoneName(const FString& BoneName)
+	{
+		const FString UpperName = BoneName.ToUpper();
+		return UpperName.Contains(TEXT("WRIST"))
+			|| UpperName.Contains(TEXT("FINGER"))
+			|| UpperName.Contains(TEXT("THUMB"))
+			|| UpperName.Contains(TEXT("INDEX"))
+			|| UpperName.Contains(TEXT("MIDDLE"))
+			|| UpperName.Contains(TEXT("RING"))
+			|| UpperName.Contains(TEXT("PINKY"))
+			|| UpperName.Contains(TEXT("LITTLE"))
+			|| UpperName.Contains(TEXT("METACARPAL"));
+	}
+
+	bool TMIsDescendantOfAnyBone(
+		const FReferenceSkeleton& RefSkeleton,
+		const int32 BoneIndex,
+		const TSet<int32>& RootBoneIndices)
+	{
+		for (int32 CurrentBoneIndex = BoneIndex; CurrentBoneIndex != INDEX_NONE; CurrentBoneIndex = RefSkeleton.GetParentIndex(CurrentBoneIndex))
+		{
+			if (RootBoneIndices.Contains(CurrentBoneIndex))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMCollectDebugBoneScaleIndices(
+		const USkeletalMeshComponent* Mesh,
+		const bool bIncludeForearmDescendants,
+		const bool bIncludeWeaponBone,
+		TArray<int32>& OutBoneIndices,
+		FString& OutBoneNames)
+	{
+		OutBoneIndices.Reset();
+		OutBoneNames.Reset();
+
+		const USkeletalMesh* SkeletalMesh = Mesh ? Mesh->GetSkeletalMeshAsset() : nullptr;
+		if (!SkeletalMesh)
+		{
+			return false;
+		}
+
+		const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
+		const int32 BoneCount = RefSkeleton.GetNum();
+		TSet<int32> ForearmRootBoneIndices;
+		TSet<int32> TargetBoneIndices;
+
+		for (int32 BoneIndex = 0; BoneIndex < BoneCount; ++BoneIndex)
+		{
+			const FString BoneName = RefSkeleton.GetBoneName(BoneIndex).ToString();
+			if (TMIsForearmRootBoneName(BoneName))
+			{
+				ForearmRootBoneIndices.Add(BoneIndex);
+			}
+		}
+
+		if (bIncludeForearmDescendants)
+		{
+			for (int32 BoneIndex = 0; BoneIndex < BoneCount; ++BoneIndex)
+			{
+				if (TMIsDescendantOfAnyBone(RefSkeleton, BoneIndex, ForearmRootBoneIndices))
+				{
+					TargetBoneIndices.Add(BoneIndex);
+				}
+			}
+		}
+
+		if (bIncludeWeaponBone)
+		{
+			for (int32 BoneIndex = 0; BoneIndex < BoneCount; ++BoneIndex)
+			{
+				const FString BoneName = RefSkeleton.GetBoneName(BoneIndex).ToString();
+				if (TMIsWeaponBoneName(BoneName))
+				{
+					TargetBoneIndices.Add(BoneIndex);
+				}
+			}
+		}
+
+		for (const int32 BoneIndex : TargetBoneIndices)
+		{
+			OutBoneIndices.Add(BoneIndex);
+		}
+		OutBoneIndices.Sort();
+
+		static constexpr int32 MaxLoggedBoneNames = 28;
+		for (int32 Index = 0; Index < OutBoneIndices.Num() && Index < MaxLoggedBoneNames; ++Index)
+		{
+			if (!OutBoneNames.IsEmpty())
+			{
+				OutBoneNames += TEXT(", ");
+			}
+			OutBoneNames += RefSkeleton.GetBoneName(OutBoneIndices[Index]).ToString();
+		}
+
+		if (OutBoneIndices.Num() > MaxLoggedBoneNames)
+		{
+			OutBoneNames += FString::Printf(TEXT(", ... +%d"), OutBoneIndices.Num() - MaxLoggedBoneNames);
+		}
+
+		return OutBoneIndices.Num() > 0;
+	}
+
+	bool TMApplyDebugBoneScaleToMesh(
+		USkeletalMeshComponent* Mesh,
+		const bool bIncludeForearmDescendants,
+		const bool bIncludeWeaponBone,
+		const float Scale,
+		const bool bWaitForParallelEvaluation)
+	{
+		if (!Mesh)
+		{
+			return false;
+		}
+
+		if (!bIncludeForearmDescendants && bIncludeWeaponBone)
+		{
+			return false;
+		}
+
+		const float SafeScale = FMath::Max(Scale, UE_SMALL_NUMBER);
+		const USkeletalMesh* SkeletalMesh = Mesh->GetSkeletalMeshAsset();
+		TArray<int32> TargetBoneIndices;
+		FString TargetBoneNames;
+		if (!TMCollectDebugBoneScaleIndices(
+			Mesh,
+			bIncludeForearmDescendants,
+			bIncludeWeaponBone,
+			TargetBoneIndices,
+			TargetBoneNames))
+		{
+			return false;
+		}
+
+		if (bWaitForParallelEvaluation)
+		{
+			Mesh->HandleExistingParallelEvaluationTask(true, true);
+		}
+
+		const FVector Scale3D(SafeScale);
+		const FVector WeaponScale3D(1.0f);
+		bool bApplied = false;
+
+		TArray<FTransform>& ComponentSpaceTransforms =
+			const_cast<TArray<FTransform>&>(Mesh->GetComponentSpaceTransforms());
+		for (const int32 BoneIndex : TargetBoneIndices)
+		{
+			if (ComponentSpaceTransforms.IsValidIndex(BoneIndex))
+			{
+				const FString BoneName = SkeletalMesh ? SkeletalMesh->GetRefSkeleton().GetBoneName(BoneIndex).ToString() : FString();
+				ComponentSpaceTransforms[BoneIndex].SetScale3D(TMIsWeaponBoneName(BoneName) ? WeaponScale3D : Scale3D);
+				bApplied = true;
+			}
+		}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		for (const int32 BoneIndex : TargetBoneIndices)
+		{
+			if (Mesh->BoneSpaceTransforms.IsValidIndex(BoneIndex))
+			{
+				const FString BoneName = SkeletalMesh ? SkeletalMesh->GetRefSkeleton().GetBoneName(BoneIndex).ToString() : FString();
+				Mesh->BoneSpaceTransforms[BoneIndex].SetScale3D(TMIsWeaponBoneName(BoneName) ? WeaponScale3D : Scale3D);
+				bApplied = true;
+			}
+		}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+		if (bApplied)
+		{
+			const uint32 MeshId = Mesh->GetUniqueID();
+			if (!GTMDebugBoneScaleReportedMeshIds.Contains(MeshId))
+			{
+				GTMDebugBoneScaleReportedMeshIds.Add(MeshId);
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("[TMDebugLocalHandsScale] Applied Mesh=%s Asset=%s Bones=%d ForearmDesc=%d WeaponBone=%d BaseScale=%.3f WristFingerScale=Base WeaponBoneScale=1.000 BonesSample=[%s]"),
+					*Mesh->GetPathName(),
+					Mesh->GetSkeletalMeshAsset() ? *Mesh->GetSkeletalMeshAsset()->GetPathName() : TEXT("None"),
+					TargetBoneIndices.Num(),
+					bIncludeForearmDescendants ? 1 : 0,
+					bIncludeWeaponBone ? 1 : 0,
+					SafeScale,
+					*TargetBoneNames);
+			}
+			Mesh->InvalidateCachedBounds();
+			Mesh->UpdateBounds();
+			Mesh->UpdateChildTransforms();
+			Mesh->MarkRenderDynamicDataDirty();
+		}
+
+		return bApplied;
+	}
+
+	void TMRegisterDebugBoneScaleDelegate(
+		USkeletalMeshComponent* Mesh,
+		const bool bIncludeForearmDescendants,
+		const bool bIncludeWeaponBone)
+	{
+		if (!Mesh)
+		{
+			return;
+		}
+
+		for (const FTMDebugBoneScaleDelegate& Entry : GTMDebugBoneScaleDelegates)
+		{
+			if (Entry.Mesh.Get() == Mesh
+				&& Entry.bIncludeForearmDescendants == bIncludeForearmDescendants
+				&& Entry.bIncludeWeaponBone == bIncludeWeaponBone)
+			{
+				return;
+			}
+		}
+
+		const TWeakObjectPtr<USkeletalMeshComponent> WeakMesh(Mesh);
+		const FDelegateHandle Handle = Mesh->RegisterOnBoneTransformsFinalizedDelegate(
+			FOnBoneTransformsFinalizedMultiCast::FDelegate::CreateLambda(
+				[WeakMesh, bIncludeForearmDescendants, bIncludeWeaponBone]()
+				{
+					if (!TMIsDebugLocalHandsScaleEnabled())
+					{
+						return;
+					}
+
+					if (USkeletalMeshComponent* LiveMesh = WeakMesh.Get())
+					{
+						TMApplyDebugBoneScaleToMesh(
+							LiveMesh,
+							bIncludeForearmDescendants,
+							bIncludeWeaponBone,
+							GTMDebugLocalHandsScale,
+							false);
+					}
+				}));
+
+		FTMDebugBoneScaleDelegate Entry;
+		Entry.Mesh = WeakMesh;
+		Entry.Handle = Handle;
+		Entry.bIncludeForearmDescendants = bIncludeForearmDescendants;
+		Entry.bIncludeWeaponBone = bIncludeWeaponBone;
+		GTMDebugBoneScaleDelegates.Add(Entry);
+	}
+
+	void TMApplyDebugLocalHandsScaleForCharacter(ATMCharacter* Character)
+	{
+		if (!TMIsDebugLocalHandsScaleEnabled() || !Character || !Character->IsLocallyControlled())
+		{
+			return;
+		}
+
+		if (USkeletalMeshComponent* CharacterMesh = Character->GetMesh())
+		{
+			TMRegisterDebugBoneScaleDelegate(CharacterMesh, true, true);
+			TMApplyDebugBoneScaleToMesh(CharacterMesh, true, true, GTMDebugLocalHandsScale, true);
+		}
+	}
+
+	void TMConsoleDebugLocalHandsScale(const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() > 0)
+		{
+			GTMDebugLocalHandsScaleConsoleOverrideSet = true;
+			GTMDebugLocalHandsScaleEnabled = FCString::Atoi(*Args[0]) != 0;
+		}
+		else
+		{
+			const bool bCurrentlyEnabled = TMIsDebugLocalHandsScaleEnabled();
+			GTMDebugLocalHandsScaleConsoleOverrideSet = true;
+			GTMDebugLocalHandsScaleEnabled = !bCurrentlyEnabled;
+		}
+
+		if (Args.Num() > 1)
+		{
+			GTMDebugLocalHandsScale = FCString::Atof(*Args[1]);
+		}
+
+		int32 AppliedCharacterCount = 0;
+		if (World)
+		{
+			for (TActorIterator<ATMCharacter> It(World); It; ++It)
+			{
+				ATMCharacter* Character = *It;
+				if (Character && Character->IsLocallyControlled())
+				{
+					TMApplyDebugLocalHandsScaleForCharacter(Character);
+					++AppliedCharacterCount;
+				}
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMDebugLocalHandsScale] Console Enabled=%d BaseScale=%.3f LocalCharacters=%d"),
+			GTMDebugLocalHandsScaleEnabled ? 1 : 0,
+			GTMDebugLocalHandsScale,
+			AppliedCharacterCount);
+	}
+
+	FAutoConsoleCommandWithWorldAndArgs GTMDebugLocalHandsScaleConsoleCommand(
+		TEXT("tm.DebugLocalHandsScale"),
+		TEXT("tm.DebugLocalHandsScale [0|1] [Scale]. Runtime debug: scale local character forearm descendants and Weapon bone."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&TMConsoleDebugLocalHandsScale));
+
 }
 
 ATMCharacter::ATMCharacter()
@@ -1604,6 +2080,7 @@ void ATMCharacter::Tick(float DeltaSeconds)
 	TMUpdateWeaponBoneFloorLock(this, GetMesh());
 	TMUpdateADSSocketAnimBridge(this, GetMesh());
 	TMUpdateRightHandIKTargetGuard(GetMesh());
+	TMApplyDebugLocalHandsScaleForCharacter(this);
 	if (!IsTouchMeRuntimeTraceEnabled())
 	{
 		return;

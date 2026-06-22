@@ -27,6 +27,7 @@
 #include "Math/InverseRotationMatrix.h"
 #include "UObject/Package.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/DataTable.h"
 #include "ParticleHelper.h"
 #include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
@@ -988,6 +989,257 @@ namespace TMGameplayStatics
 		}
 		return WorldContextObject->GetTypedOuter<AActor>();
 	}
+
+	bool IsAttachedMuzzleFlashTarget(const UFXSystemAsset* EmitterTemplate, const FName AttachPointName)
+	{
+		return EmitterTemplate
+			&& EmitterTemplate->GetName().Equals(TEXT("NS_MuzzleFlash"), ESearchCase::IgnoreCase)
+			&& AttachPointName.IsEqual(TEXT("Muzzle"), ENameCase::IgnoreCase);
+	}
+
+	const TCHAR* AttachLocationTypeToString(const EAttachLocation::Type LocationType);
+
+	bool PropertyNameMatches(const FProperty* Property, const TCHAR* ExpectedName)
+	{
+		if (!Property)
+		{
+			return false;
+		}
+
+		const FString Expected(ExpectedName);
+		const FString PropertyName = Property->GetName();
+		return PropertyName.Equals(Expected, ESearchCase::IgnoreCase)
+			|| PropertyName.StartsWith(Expected + TEXT("_"), ESearchCase::IgnoreCase)
+			|| Property->GetAuthoredName().Equals(Expected, ESearchCase::IgnoreCase)
+			|| Property->GetDisplayNameText().ToString().Equals(Expected, ESearchCase::IgnoreCase);
+	}
+
+	const FProperty* FindPropertyByName(const UStruct* Struct, const TCHAR* ExpectedName)
+	{
+		if (!Struct)
+		{
+			return nullptr;
+		}
+
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (PropertyNameMatches(Property, ExpectedName))
+			{
+				return Property;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool AssetPropertyMatches(const FProperty* Property, const void* Container, const UFXSystemAsset* EmitterTemplate)
+	{
+		if (!Property || !Container || !EmitterTemplate)
+		{
+			return false;
+		}
+
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			const UObject* Value = ObjectProperty->GetObjectPropertyValue_InContainer(Container);
+			return Value == EmitterTemplate
+				|| (Value && Value->GetPathName().Equals(EmitterTemplate->GetPathName(), ESearchCase::IgnoreCase));
+		}
+
+		if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+		{
+			const FSoftObjectPtr* Value = SoftObjectProperty->ContainerPtrToValuePtr<FSoftObjectPtr>(Container);
+			if (!Value)
+			{
+				return false;
+			}
+
+			const FSoftObjectPath ValuePath = Value->ToSoftObjectPath();
+			const FSoftObjectPath TemplatePath(EmitterTemplate);
+			return ValuePath == TemplatePath
+				|| ValuePath.GetAssetPathString().Equals(TemplatePath.GetAssetPathString(), ESearchCase::IgnoreCase);
+		}
+
+		return false;
+	}
+
+	bool TryGetAttachedParticleScaleFromWeaponTable(const UFXSystemAsset* EmitterTemplate, FVector& OutScale, FName& OutRowName)
+	{
+		static const TCHAR* WeaponTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons");
+
+		UDataTable* WeaponTable = LoadObject<UDataTable>(nullptr, WeaponTablePath);
+		if (!WeaponTable || !WeaponTable->GetRowStruct())
+		{
+			return false;
+		}
+
+		const FStructProperty* FeaturesProperty = CastField<FStructProperty>(FindPropertyByName(WeaponTable->GetRowStruct(), TEXT("Features")));
+		if (!FeaturesProperty || !FeaturesProperty->Struct)
+		{
+			return false;
+		}
+
+		const FProperty* AttachedParticleProperty = FindPropertyByName(FeaturesProperty->Struct, TEXT("Attached Particle"));
+		const FStructProperty* AttachedOffsetProperty = CastField<FStructProperty>(FindPropertyByName(FeaturesProperty->Struct, TEXT("Attached offset")));
+		if (!AttachedParticleProperty || !AttachedOffsetProperty || AttachedOffsetProperty->Struct != TBaseStructure<FTransform>::Get())
+		{
+			return false;
+		}
+
+		for (const TPair<FName, uint8*>& RowPair : WeaponTable->GetRowMap())
+		{
+			if (!RowPair.Value)
+			{
+				continue;
+			}
+
+			const void* FeaturesValue = FeaturesProperty->ContainerPtrToValuePtr<void>(RowPair.Value);
+			if (!AssetPropertyMatches(AttachedParticleProperty, FeaturesValue, EmitterTemplate))
+			{
+				continue;
+			}
+
+			const FTransform* AttachedOffset = AttachedOffsetProperty->ContainerPtrToValuePtr<FTransform>(FeaturesValue);
+			if (!AttachedOffset)
+			{
+				return false;
+			}
+
+			OutScale = AttachedOffset->GetScale3D();
+			OutRowName = RowPair.Key;
+			return !OutScale.IsNearlyZero();
+		}
+
+		return false;
+	}
+
+	void ApplyAttachedMuzzleFlashScale(
+		const UFXSystemAsset* EmitterTemplate,
+		const FName AttachPointName,
+		FVector& Scale)
+	{
+		if (!IsAttachedMuzzleFlashTarget(EmitterTemplate, AttachPointName) || !Scale.Equals(FVector(1.0f), KINDA_SMALL_NUMBER))
+		{
+			return;
+		}
+
+		FVector TableScale = FVector::OneVector;
+		FName RowName = NAME_None;
+		if (!TryGetAttachedParticleScaleFromWeaponTable(EmitterTemplate, TableScale, RowName))
+		{
+			return;
+		}
+
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Display,
+			TEXT("[MuzzleFXScaleFix] Asset=%s Row=%s IncomingScale=%s -> TableAttachedScale=%s"),
+			*EmitterTemplate->GetPathName(),
+			*RowName.ToString(),
+			*Scale.ToCompactString(),
+			*TableScale.ToCompactString());
+
+		Scale = TableScale;
+	}
+
+	void FixWorldSpaceMuzzleFlashOffset(
+		const UFXSystemAsset* EmitterTemplate,
+		const USceneComponent* AttachToComponent,
+		const FName AttachPointName,
+		FVector& Location,
+		FRotator& Rotation,
+		const EAttachLocation::Type LocationType)
+	{
+		if (!IsAttachedMuzzleFlashTarget(EmitterTemplate, AttachPointName) || !AttachToComponent)
+		{
+			return;
+		}
+
+		if (LocationType != EAttachLocation::SnapToTarget && LocationType != EAttachLocation::SnapToTargetIncludingScale)
+		{
+			return;
+		}
+
+		if (!AttachToComponent->DoesSocketExist(AttachPointName))
+		{
+			return;
+		}
+
+		const FTransform SocketWorldTransform = AttachToComponent->GetSocketTransform(AttachPointName, RTS_World);
+		const FVector SocketWorldLocation = SocketWorldTransform.GetLocation();
+		const float DistanceFromSocketWorld = FVector::Dist(Location, SocketWorldLocation);
+		if (DistanceFromSocketWorld > 5.0f)
+		{
+			return;
+		}
+
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Display,
+			TEXT("[MuzzleFXAttachFix] Asset=%s AttachTo=%s AttachPoint=%s IncomingWorldLoc=%s IncomingRot=%s SocketWorldLoc=%s SocketWorldRot=%s LocationType=%s -> RelativeLoc=Zero RelativeRot=Zero"),
+			*EmitterTemplate->GetPathName(),
+			*AttachToComponent->GetPathName(),
+			*AttachPointName.ToString(),
+			*Location.ToCompactString(),
+			*Rotation.ToCompactString(),
+			*SocketWorldLocation.ToCompactString(),
+			*SocketWorldTransform.Rotator().ToCompactString(),
+			AttachLocationTypeToString(LocationType));
+
+		Location = FVector::ZeroVector;
+		Rotation = FRotator::ZeroRotator;
+	}
+
+	const TCHAR* AttachLocationTypeToString(const EAttachLocation::Type LocationType)
+	{
+		switch (LocationType)
+		{
+		case EAttachLocation::KeepRelativeOffset:
+			return TEXT("KeepRelativeOffset");
+		case EAttachLocation::KeepWorldPosition:
+			return TEXT("KeepWorldPosition");
+		case EAttachLocation::SnapToTarget:
+			return TEXT("SnapToTarget");
+		case EAttachLocation::SnapToTargetIncludingScale:
+			return TEXT("SnapToTargetIncludingScale");
+		default:
+			return TEXT("Unknown");
+		}
+	}
+
+	void DrawAttachedParticleAxes(
+		UFXSystemComponent* Component,
+		const UFXSystemAsset* EmitterTemplate,
+		const FName AttachPointName)
+	{
+		if (!Component || !IsAttachedMuzzleFlashTarget(EmitterTemplate, AttachPointName))
+		{
+			return;
+		}
+
+		UWorld* World = Component->GetWorld();
+		if (!World)
+		{
+			return;
+		}
+
+		constexpr float Duration = 25.0f;
+		constexpr float BaseLength = 45.0f;
+		const FTransform Transform = Component->GetComponentTransform();
+		const FVector Origin = Transform.GetLocation();
+		const FVector AxisX = Transform.GetUnitAxis(EAxis::X);
+		const FVector AxisY = Transform.GetUnitAxis(EAxis::Y);
+		const FVector AxisZ = Transform.GetUnitAxis(EAxis::Z);
+		constexpr float ArrowSize = 8.0f;
+
+		DrawDebugDirectionalArrow(World, Origin, Origin + AxisX * BaseLength, ArrowSize, FColor::Red, false, Duration, SDPG_Foreground, 2.5f);
+		DrawDebugDirectionalArrow(World, Origin, Origin + AxisY * BaseLength, ArrowSize, FColor::Green, false, Duration, SDPG_Foreground, 2.5f);
+		DrawDebugDirectionalArrow(World, Origin, Origin + AxisZ * BaseLength, ArrowSize, FColor::Blue, false, Duration, SDPG_Foreground, 2.5f);
+		DrawDebugString(World, Origin + AxisX * (BaseLength + 6.0f), TEXT("+X"), nullptr, FColor::Red, Duration, true, 1.2f);
+		DrawDebugString(World, Origin + AxisY * (BaseLength + 6.0f), TEXT("+Y"), nullptr, FColor::Green, Duration, true, 1.2f);
+		DrawDebugString(World, Origin + AxisZ * (BaseLength + 6.0f), TEXT("+Z"), nullptr, FColor::Blue, Duration, true, 1.2f);
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1143,7 +1395,7 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAtLocation(
 
 	if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(EmitterTemplate))
 	{
-		return UGameplayStatics::SpawnEmitterAtLocation(
+		UParticleSystemComponent* Component = UGameplayStatics::SpawnEmitterAtLocation(
 			WorldContextObject,
 			CascadeSystem,
 			Location,
@@ -1152,11 +1404,12 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAtLocation(
 			bAutoDestroy,
 			PoolingMethod,
 			bAutoActivateSystem);
+		return Component;
 	}
 
 	if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(EmitterTemplate))
 	{
-		return UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+		UNiagaraComponent* Component = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 			WorldContextObject,
 			NiagaraSystem,
 			Location,
@@ -1165,6 +1418,7 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAtLocation(
 			bAutoDestroy,
 			bAutoActivateSystem,
 			ToNiagaraPooling(PoolingMethod));
+		return Component;
 	}
 
 	return nullptr;
@@ -1187,9 +1441,12 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAttached(
 		return nullptr;
 	}
 
+	TMGameplayStatics::FixWorldSpaceMuzzleFlashOffset(EmitterTemplate, AttachToComponent, AttachPointName, Location, Rotation, LocationType);
+	TMGameplayStatics::ApplyAttachedMuzzleFlashScale(EmitterTemplate, AttachPointName, Scale);
+
 	if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(EmitterTemplate))
 	{
-		return UGameplayStatics::SpawnEmitterAttached(
+		UParticleSystemComponent* Component = UGameplayStatics::SpawnEmitterAttached(
 			CascadeSystem,
 			AttachToComponent,
 			AttachPointName,
@@ -1200,11 +1457,13 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAttached(
 			bAutoDestroy,
 			PoolingMethod,
 			bAutoActivate);
+		TMGameplayStatics::DrawAttachedParticleAxes(Component, EmitterTemplate, AttachPointName);
+		return Component;
 	}
 
 	if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(EmitterTemplate))
 	{
-		return UNiagaraFunctionLibrary::SpawnSystemAttached(
+		UNiagaraComponent* Component = UNiagaraFunctionLibrary::SpawnSystemAttached(
 			NiagaraSystem,
 			AttachToComponent,
 			AttachPointName,
@@ -1215,6 +1474,8 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAttached(
 			bAutoDestroy,
 			ToNiagaraPooling(PoolingMethod),
 			bAutoActivate);
+		TMGameplayStatics::DrawAttachedParticleAxes(Component, EmitterTemplate, AttachPointName);
+		return Component;
 	}
 
 	return nullptr;
