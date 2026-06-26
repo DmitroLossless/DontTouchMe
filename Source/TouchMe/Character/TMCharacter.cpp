@@ -2147,7 +2147,7 @@ void ATMCharacter::Tick(float DeltaSeconds)
 	TMUpdateADSSocketAnimBridge(this, GetMesh());
 	TMApplyAcogCameraFOVGuard(this);
 	TMUpdateRightHandIKTargetGuard(GetMesh());
-	TMApplyDebugLocalHandsScaleForCharacter(this);
+	// TMApplyDebugLocalHandsScaleForCharacter(this);
 	if (!IsTouchMeRuntimeTraceEnabled())
 	{
 		return;
