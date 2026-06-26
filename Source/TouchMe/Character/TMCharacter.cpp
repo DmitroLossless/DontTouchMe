@@ -483,28 +483,7 @@ namespace
 		return TMIsAimingForWeaponBoneLock(Character, AnimInstance);
 	}
 
-	bool TMActiveGunHasAcogOptic(const AGun* ActiveGun)
-	{
-		if (!ActiveGun)
-		{
-			return false;
-		}
-
-		static const TCHAR* AcogMeshPathToken = TEXT("/Game/Fps/Weapons/Scope/Acog/SM_ACOG_Scope");
-		TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(ActiveGun);
-		for (const UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
-		{
-			const UStaticMesh* StaticMesh = StaticMeshComponent ? StaticMeshComponent->GetStaticMesh() : nullptr;
-			if (StaticMesh && StaticMesh->GetPathName().Contains(AcogMeshPathToken, ESearchCase::IgnoreCase))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	void TMApplyAcogCameraFOVGuard(ATMCharacter* Character)
+	void TMApplyOpticCameraFOVGuard(ATMCharacter* Character)
 	{
 		if (!Character || !Character->IsLocallyControlled())
 		{
@@ -512,7 +491,10 @@ namespace
 		}
 
 		AGun* ActiveGun = TMResolveActiveGun(Character);
-		if (!TMActiveGunHasAcogOptic(ActiveGun))
+		float OpticZoomMultiplier = 1.0f;
+		if (!ActiveGun
+			|| !ActiveGun->GetActiveOpticZoomMultiplier(OpticZoomMultiplier)
+			|| OpticZoomMultiplier <= 1.0f + KINDA_SMALL_NUMBER)
 		{
 			return;
 		}
@@ -524,17 +506,16 @@ namespace
 		}
 
 		static constexpr float DefaultFOV = 90.0f;
-		static constexpr float AcogZoomMultiplier = 3.5f;
-		static constexpr float AcogAimFOV = DefaultFOV / AcogZoomMultiplier;
+		const float OpticAimFOV = DefaultFOV / FMath::Clamp(OpticZoomMultiplier, 1.0f, 16.0f);
 		const bool bAiming = TMIsCharacterAimingForCameraWeaponOffset(
 			Character,
 			Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr);
 
 		if (bAiming)
 		{
-			if (!FMath::IsNearlyEqual(CameraComponent->FieldOfView, AcogAimFOV, 0.01f))
+			if (!FMath::IsNearlyEqual(CameraComponent->FieldOfView, OpticAimFOV, 0.01f))
 			{
-				CameraComponent->SetFieldOfView(AcogAimFOV);
+				CameraComponent->SetFieldOfView(OpticAimFOV);
 			}
 			return;
 		}
@@ -2145,7 +2126,7 @@ void ATMCharacter::Tick(float DeltaSeconds)
 	TMUpdateFabrikFixerAlpha(GetMesh());
 	TMUpdateWeaponBoneFloorLock(this, GetMesh());
 	TMUpdateADSSocketAnimBridge(this, GetMesh());
-	TMApplyAcogCameraFOVGuard(this);
+	TMApplyOpticCameraFOVGuard(this);
 	TMUpdateRightHandIKTargetGuard(GetMesh());
 	// TMApplyDebugLocalHandsScaleForCharacter(this);
 	if (!IsTouchMeRuntimeTraceEnabled())

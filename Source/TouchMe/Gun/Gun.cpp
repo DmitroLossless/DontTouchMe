@@ -8,6 +8,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/DataTable.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
@@ -27,12 +28,15 @@ const FName AGun::MainSkeletalMeshComponentName(TEXT("Item"));
 namespace
 {
 	const TCHAR* WeaponAttachmentMeshPathToken = TEXT("/Weapons/Attachments/");
+	const TCHAR* HoloMeshPathToken = TEXT("/Game/MP_System_V3/Game/Weapons/Attachments/Optics/Holo/SM_Holographic_Scope");
+	const TCHAR* BlazeMeshPathToken = TEXT("/Game/AdvanceWeaponPack/Mesh/Attachment/Sight/SM_Holographic_Sight");
 	const TCHAR* AcogMeshPathToken = TEXT("/Game/Fps/Weapons/Scope/Acog/SM_ACOG_Scope");
 	const TCHAR* AcogRenderDiscMeshPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/SM_Disc_RenderGlass.SM_Disc_RenderGlass");
 	const TCHAR* AcogGlassMeshPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/SM_ScopeGlass4.SM_ScopeGlass4");
 	const TCHAR* AcogRenderMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Translucent_Acog.M_Scope_Translucent_Acog");
 	const TCHAR* AcogGlassMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Glass_Acog.M_Scope_Glass_Acog");
 	const TCHAR* AcogMaterialParameterCollectionPath = TEXT("/Game/Fps/Weapons/Camera/MPC_FP.MPC_FP");
+	const TCHAR* OpticsTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Optics.DT_Optics");
 	const FName UnderbarrelDataPropertyName(TEXT("UnderbarrelData"));
 	const FName UnderbarrelSocketName(TEXT("Underbarrel"));
 	const FName AcogRenderDiscComponentName(TEXT("ACOG_RenderDisc"));
@@ -40,6 +44,7 @@ namespace
 	const FName AcogRenderDiscSocketName(TEXT("RM_Scope"));
 	const FName AcogGlassSocketName(TEXT("RM_Glass"));
 	const FName AcogFOVParameterName(TEXT("FOV"));
+	const FVector ScaledOpticAttachmentRelativeScale(0.9f, 0.9f, 0.9f);
 
 	FString CleanGeneratedWeaponClassName(FString ClassName)
 	{
@@ -236,6 +241,159 @@ namespace
 		}
 
 		return FString::Printf(TEXT("%lld/%s"), static_cast<long long>(Value), *DisplayName);
+	}
+
+	bool PropertyNameMatches(const FProperty* Property, const TCHAR* ExpectedName)
+	{
+		if (!Property)
+		{
+			return false;
+		}
+
+		const FString Expected(ExpectedName);
+		const FString PropertyName = Property->GetName();
+		return PropertyName.Equals(Expected, ESearchCase::IgnoreCase)
+			|| PropertyName.StartsWith(Expected + TEXT("_"), ESearchCase::IgnoreCase)
+			|| Property->GetAuthoredName().Equals(Expected, ESearchCase::IgnoreCase)
+			|| Property->GetDisplayNameText().ToString().Equals(Expected, ESearchCase::IgnoreCase);
+	}
+
+	const FProperty* FindPropertyByName(const UStruct* Struct, const TCHAR* ExpectedName)
+	{
+		if (!Struct)
+		{
+			return nullptr;
+		}
+
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (PropertyNameMatches(Property, ExpectedName))
+			{
+				return Property;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool ReadStaticMeshAssetPath(const FProperty* Property, const void* Container, FString& OutAssetPath)
+	{
+		OutAssetPath.Reset();
+		if (!Property || !Container)
+		{
+			return false;
+		}
+
+		const void* ValueAddress = Property->ContainerPtrToValuePtr<void>(Container);
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			const UObject* Value = ObjectProperty->GetObjectPropertyValue(ValueAddress);
+			if (!Value)
+			{
+				return false;
+			}
+
+			OutAssetPath = FSoftObjectPath(Value).GetAssetPathString();
+			return !OutAssetPath.IsEmpty();
+		}
+
+		if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+		{
+			const FSoftObjectPtr* Value = SoftObjectProperty->ContainerPtrToValuePtr<FSoftObjectPtr>(Container);
+			if (!Value)
+			{
+				return false;
+			}
+
+			OutAssetPath = Value->ToSoftObjectPath().GetAssetPathString();
+			return !OutAssetPath.IsEmpty();
+		}
+
+		return false;
+	}
+
+	bool ReadNumericPropertyValue(const FProperty* Property, const void* Container, float& OutValue)
+	{
+		OutValue = 0.0f;
+		const FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property);
+		if (!NumericProperty || !Container)
+		{
+			return false;
+		}
+
+		const void* ValueAddress = NumericProperty->ContainerPtrToValuePtr<void>(Container);
+		OutValue = NumericProperty->IsFloatingPoint()
+			? static_cast<float>(NumericProperty->GetFloatingPointPropertyValue(ValueAddress))
+			: static_cast<float>(NumericProperty->GetSignedIntPropertyValue(ValueAddress));
+		return true;
+	}
+
+	const TMap<FString, float>& GetOpticZoomByMeshPath()
+	{
+		static bool bInitialized = false;
+		static TMap<FString, float> ZoomByMeshPath;
+#if WITH_EDITOR
+		bInitialized = false;
+#endif
+		if (bInitialized)
+		{
+			return ZoomByMeshPath;
+		}
+
+		bInitialized = true;
+		ZoomByMeshPath.Reset();
+		UDataTable* OpticsTable = LoadObject<UDataTable>(nullptr, OpticsTablePath);
+		if (!OpticsTable || !OpticsTable->GetRowStruct())
+		{
+			return ZoomByMeshPath;
+		}
+
+		const FProperty* MeshProperty = FindPropertyByName(OpticsTable->GetRowStruct(), TEXT("Mesh"));
+		const FProperty* OpticsFOVProperty = FindPropertyByName(OpticsTable->GetRowStruct(), TEXT("Optics_FOV"));
+		if (!MeshProperty || !OpticsFOVProperty)
+		{
+			return ZoomByMeshPath;
+		}
+
+		for (const TPair<FName, uint8*>& RowPair : OpticsTable->GetRowMap())
+		{
+			if (!RowPair.Value)
+			{
+				continue;
+			}
+
+			FString MeshAssetPath;
+			float ZoomMultiplier = 1.0f;
+			if (!ReadStaticMeshAssetPath(MeshProperty, RowPair.Value, MeshAssetPath)
+				|| !ReadNumericPropertyValue(OpticsFOVProperty, RowPair.Value, ZoomMultiplier)
+				|| MeshAssetPath.IsEmpty())
+			{
+				continue;
+			}
+
+			ZoomByMeshPath.Add(MeshAssetPath, FMath::Max(1.0f, ZoomMultiplier));
+		}
+
+		return ZoomByMeshPath;
+	}
+
+	bool TryGetOpticZoomMultiplierForMesh(const UStaticMesh* StaticMesh, float& OutZoomMultiplier)
+	{
+		OutZoomMultiplier = 1.0f;
+		if (!StaticMesh)
+		{
+			return false;
+		}
+
+		const FString MeshAssetPath = FSoftObjectPath(StaticMesh).GetAssetPathString();
+		if (const float* FoundZoom = GetOpticZoomByMeshPath().Find(MeshAssetPath))
+		{
+			OutZoomMultiplier = *FoundZoom;
+			return true;
+		}
+
+		return false;
 	}
 
 	void AppendSimplePropertyValue(const FProperty* Property, const void* ValueAddress, FString& Out)
@@ -602,6 +760,8 @@ void AGun::RefreshADSSocket()
 		return;
 	}
 
+	ApplyAttachmentVisualScaleOverrides();
+
 	USceneComponent* AttachParent = nullptr;
 	FName AttachSocketName = NAME_None;
 	bADSSocketResolved = ResolveADSSocketAttachTarget(AttachParent, AttachSocketName);
@@ -659,6 +819,21 @@ FVector AGun::GetADSSocketForwardVector() const
 	return ADSTransform.GetUnitAxis(EAxis::X);
 }
 
+bool AGun::GetActiveOpticZoomMultiplier(float& OutZoomMultiplier) const
+{
+	OutZoomMultiplier = 1.0f;
+
+	const UStaticMeshComponent* OpticComponent = bUseSecondaryADSSocket
+		? ResolveSecondaryOpticComponent()
+		: ResolvePrimaryOpticComponent();
+	if (!IsValid(OpticComponent))
+	{
+		return false;
+	}
+
+	return TryGetOpticZoomMultiplierForMesh(OpticComponent->GetStaticMesh(), OutZoomMultiplier);
+}
+
 void AGun::RequestDeferredAttachmentSanitize()
 {
 	if (bAttachmentSanitizeRequested || bSanitizingAttachmentComponents || HasAnyFlags(RF_ClassDefaultObject))
@@ -680,6 +855,7 @@ void AGun::RunDeferredAttachmentSanitize()
 {
 	bAttachmentSanitizeRequested = false;
 	SanitizeInvalidAttachmentComponents();
+	ApplyAttachmentVisualScaleOverrides();
 	SynchronizeUnderbarrelAttachmentComponent();
 	SynchronizeAcogRenderComponents();
 	RefreshADSSocket();
@@ -719,10 +895,40 @@ bool AGun::IsWeaponAttachmentMesh(const UStaticMeshComponent* Component)
 	return StaticMesh && StaticMesh->GetPathName().Contains(WeaponAttachmentMeshPathToken);
 }
 
+bool AGun::IsHoloOpticMesh(const UStaticMeshComponent* Component)
+{
+	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
+	return StaticMesh && StaticMesh->GetPathName().Contains(HoloMeshPathToken, ESearchCase::IgnoreCase);
+}
+
+bool AGun::IsBlazeOpticMesh(const UStaticMeshComponent* Component)
+{
+	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
+	return StaticMesh && StaticMesh->GetPathName().Contains(BlazeMeshPathToken, ESearchCase::IgnoreCase);
+}
+
 bool AGun::IsAcogOpticMesh(const UStaticMeshComponent* Component)
 {
 	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
 	return StaticMesh && StaticMesh->GetPathName().Contains(AcogMeshPathToken, ESearchCase::IgnoreCase);
+}
+
+void AGun::ApplyAttachmentVisualScaleOverrides()
+{
+	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
+	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
+	{
+		if (!IsValid(StaticMeshComponent)
+			|| (!IsHoloOpticMesh(StaticMeshComponent) && !IsBlazeOpticMesh(StaticMeshComponent)))
+		{
+			continue;
+		}
+
+		if (!StaticMeshComponent->GetRelativeScale3D().Equals(ScaledOpticAttachmentRelativeScale, KINDA_SMALL_NUMBER))
+		{
+			StaticMeshComponent->SetRelativeScale3D(ScaledOpticAttachmentRelativeScale);
+		}
+	}
 }
 
 bool AGun::IsLikelyOpticComponent(const UStaticMeshComponent* Component)
