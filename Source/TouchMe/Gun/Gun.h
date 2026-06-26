@@ -73,6 +73,7 @@ protected:
 	virtual void PostLoad() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void Tick(float DeltaSeconds) override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gun")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -162,19 +163,30 @@ private:
 	void RunDeferredAttachmentSanitize();
 	bool IsInvalidWeaponAttachmentComponent(const UStaticMeshComponent* Component) const;
 	int32 SynchronizeUnderbarrelAttachmentComponent();
+	int32 SynchronizeAcogRenderComponents();
+	void DestroyAcogRenderComponents();
+	void UpdateAcogMaterialParameterCollection() const;
 	USkeletalMeshComponent* ResolveMainSkeletalMesh() const;
 	bool ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutSocketName) const;
 	UStaticMeshComponent* ResolvePrimaryOpticComponent() const;
 	UStaticMeshComponent* ResolveSecondaryOpticComponent() const;
+	UStaticMeshComponent* ResolveAcogOpticComponent() const;
 	FName ResolveOpticADSSocket(const USceneComponent* Component, FName PreferredSocketName) const;
 	FName ResolveWeaponADSSocket(const USkeletalMeshComponent* Mesh) const;
 	FName ResolveSecondaryWeaponADSSocket(const USkeletalMeshComponent* Mesh) const;
 	static bool IsWeaponAttachmentMesh(const UStaticMeshComponent* Component);
+	static bool IsAcogOpticMesh(const UStaticMeshComponent* Component);
 	static bool IsLikelyOpticComponent(const UStaticMeshComponent* Component);
 	static bool IsLikelySecondaryOpticComponent(const UStaticMeshComponent* Component);
 	static bool ShouldRequestAttachmentSanitizeForFunction(const UFunction* Function);
 
 	static const FName MainSkeletalMeshComponentName;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> AcogRenderDiscComponent;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> AcogGlassComponent;
 
 	bool bAttachmentSanitizeRequested = false;
 	bool bSanitizingAttachmentComponents = false;

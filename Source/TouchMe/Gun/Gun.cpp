@@ -3,6 +3,7 @@
 #include "Gun.h"
 
 #include "Animation/AnimInstance.h"
+#include "Camera/PlayerCameraManager.h"
 #include "FakeGunAnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneComponent.h"
@@ -10,6 +11,9 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "Particles/ParticleSystem.h"
@@ -23,8 +27,19 @@ const FName AGun::MainSkeletalMeshComponentName(TEXT("Item"));
 namespace
 {
 	const TCHAR* WeaponAttachmentMeshPathToken = TEXT("/Weapons/Attachments/");
+	const TCHAR* AcogMeshPathToken = TEXT("/Game/Fps/Weapons/Scope/Acog/SM_ACOG_Scope");
+	const TCHAR* AcogRenderDiscMeshPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/SM_Disc_RenderGlass.SM_Disc_RenderGlass");
+	const TCHAR* AcogGlassMeshPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/SM_ScopeGlass4.SM_ScopeGlass4");
+	const TCHAR* AcogRenderMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Translucent_Acog.M_Scope_Translucent_Acog");
+	const TCHAR* AcogGlassMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Glass_Acog.M_Scope_Glass_Acog");
+	const TCHAR* AcogMaterialParameterCollectionPath = TEXT("/Game/Fps/Weapons/Camera/MPC_FP.MPC_FP");
 	const FName UnderbarrelDataPropertyName(TEXT("UnderbarrelData"));
 	const FName UnderbarrelSocketName(TEXT("Underbarrel"));
+	const FName AcogRenderDiscComponentName(TEXT("ACOG_RenderDisc"));
+	const FName AcogGlassComponentName(TEXT("ACOG_Glass"));
+	const FName AcogRenderDiscSocketName(TEXT("RM_Scope"));
+	const FName AcogGlassSocketName(TEXT("RM_Glass"));
+	const FName AcogFOVParameterName(TEXT("FOV"));
 
 	FString CleanGeneratedWeaponClassName(FString ClassName)
 	{
@@ -345,7 +360,8 @@ namespace
 
 AGun::AGun()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
@@ -421,12 +437,39 @@ void AGun::BeginPlay()
 
 void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	DestroyAcogRenderComponents();
+
 	if (bFakeModeApplied)
 	{
 		RestoreFromFakeMode();
 	}
 
 	Super::EndPlay(EndPlayReason);
+}
+
+void AGun::Tick(const float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	UStaticMeshComponent* AcogOpticComponent = ResolveAcogOpticComponent();
+	if (!IsValid(AcogOpticComponent))
+	{
+		DestroyAcogRenderComponents();
+		return;
+	}
+
+	const bool bVisible = AcogOpticComponent->IsVisible();
+	if (IsValid(AcogRenderDiscComponent))
+	{
+		AcogRenderDiscComponent->SetVisibility(bVisible, true);
+	}
+
+	if (IsValid(AcogGlassComponent))
+	{
+		AcogGlassComponent->SetVisibility(bVisible, true);
+	}
+
+	UpdateAcogMaterialParameterCollection();
 }
 
 void AGun::SetFakeMode(const bool bEnabled)
@@ -638,6 +681,7 @@ void AGun::RunDeferredAttachmentSanitize()
 	bAttachmentSanitizeRequested = false;
 	SanitizeInvalidAttachmentComponents();
 	SynchronizeUnderbarrelAttachmentComponent();
+	SynchronizeAcogRenderComponents();
 	RefreshADSSocket();
 }
 
@@ -673,6 +717,12 @@ bool AGun::IsWeaponAttachmentMesh(const UStaticMeshComponent* Component)
 {
 	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
 	return StaticMesh && StaticMesh->GetPathName().Contains(WeaponAttachmentMeshPathToken);
+}
+
+bool AGun::IsAcogOpticMesh(const UStaticMeshComponent* Component)
+{
+	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
+	return StaticMesh && StaticMesh->GetPathName().Contains(AcogMeshPathToken, ESearchCase::IgnoreCase);
 }
 
 bool AGun::IsLikelyOpticComponent(const UStaticMeshComponent* Component)
@@ -816,6 +866,132 @@ int32 AGun::SynchronizeUnderbarrelAttachmentComponent()
 	}
 
 	return DestroyedCount;
+}
+
+int32 AGun::SynchronizeAcogRenderComponents()
+{
+	UStaticMeshComponent* AcogOpticComponent = ResolveAcogOpticComponent();
+	if (!IsValid(AcogOpticComponent)
+		|| !AcogOpticComponent->DoesSocketExist(AcogRenderDiscSocketName)
+		|| !AcogOpticComponent->DoesSocketExist(AcogGlassSocketName))
+	{
+		DestroyAcogRenderComponents();
+		return 0;
+	}
+
+	UStaticMesh* RenderDiscMesh = LoadObject<UStaticMesh>(nullptr, AcogRenderDiscMeshPath);
+	UStaticMesh* GlassMesh = LoadObject<UStaticMesh>(nullptr, AcogGlassMeshPath);
+	UMaterialInterface* RenderMaterial = LoadObject<UMaterialInterface>(nullptr, AcogRenderMaterialPath);
+	UMaterialInterface* GlassMaterial = LoadObject<UMaterialInterface>(nullptr, AcogGlassMaterialPath);
+	if (!RenderDiscMesh || !GlassMesh || !RenderMaterial || !GlassMaterial)
+	{
+		DestroyAcogRenderComponents();
+		return 0;
+	}
+
+	auto EnsureComponent = [this](TObjectPtr<UStaticMeshComponent>& Component, const FName ComponentName)
+		-> UStaticMeshComponent*
+	{
+		if (IsValid(Component))
+		{
+			return Component.Get();
+		}
+
+		UStaticMeshComponent* NewComponent = NewObject<UStaticMeshComponent>(this, ComponentName);
+		if (!NewComponent)
+		{
+			return nullptr;
+		}
+
+		NewComponent->CreationMethod = EComponentCreationMethod::Instance;
+		NewComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		NewComponent->SetGenerateOverlapEvents(false);
+		NewComponent->SetCastShadow(false);
+		AddInstanceComponent(NewComponent);
+		NewComponent->RegisterComponent();
+		Component = NewComponent;
+		return NewComponent;
+	};
+
+	UStaticMeshComponent* RenderDiscComponent = EnsureComponent(AcogRenderDiscComponent, AcogRenderDiscComponentName);
+	UStaticMeshComponent* GlassComponent = EnsureComponent(AcogGlassComponent, AcogGlassComponentName);
+	if (!RenderDiscComponent || !GlassComponent)
+	{
+		DestroyAcogRenderComponents();
+		return 0;
+	}
+
+	RenderDiscComponent->SetMobility(AcogOpticComponent->Mobility);
+	RenderDiscComponent->SetStaticMesh(RenderDiscMesh);
+	RenderDiscComponent->SetMaterial(0, RenderMaterial);
+	RenderDiscComponent->AttachToComponent(
+		AcogOpticComponent,
+		FAttachmentTransformRules::SnapToTargetIncludingScale,
+		AcogRenderDiscSocketName);
+	RenderDiscComponent->SetRelativeTransform(FTransform::Identity);
+
+	GlassComponent->SetMobility(AcogOpticComponent->Mobility);
+	GlassComponent->SetStaticMesh(GlassMesh);
+	GlassComponent->SetMaterial(0, GlassMaterial);
+	GlassComponent->AttachToComponent(
+		AcogOpticComponent,
+		FAttachmentTransformRules::SnapToTargetIncludingScale,
+		AcogGlassSocketName);
+	GlassComponent->SetRelativeTransform(FTransform::Identity);
+
+	const bool bVisible = AcogOpticComponent->IsVisible();
+	RenderDiscComponent->SetVisibility(bVisible, true);
+	GlassComponent->SetVisibility(bVisible, true);
+	UpdateAcogMaterialParameterCollection();
+	SetActorTickEnabled(true);
+	return 2;
+}
+
+void AGun::DestroyAcogRenderComponents()
+{
+	if (IsValid(AcogRenderDiscComponent))
+	{
+		AcogRenderDiscComponent->DestroyComponent();
+	}
+	AcogRenderDiscComponent = nullptr;
+
+	if (IsValid(AcogGlassComponent))
+	{
+		AcogGlassComponent->DestroyComponent();
+	}
+	AcogGlassComponent = nullptr;
+
+	SetActorTickEnabled(false);
+}
+
+void AGun::UpdateAcogMaterialParameterCollection() const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	UMaterialParameterCollection* Collection =
+		LoadObject<UMaterialParameterCollection>(nullptr, AcogMaterialParameterCollectionPath);
+	if (!Collection)
+	{
+		return;
+	}
+
+	UMaterialParameterCollectionInstance* CollectionInstance = World->GetParameterCollectionInstance(Collection);
+	if (!CollectionInstance)
+	{
+		return;
+	}
+
+	float CurrentFOV = 90.0f;
+	if (const APlayerCameraManager* PlayerCameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0))
+	{
+		CurrentFOV = PlayerCameraManager->GetFOVAngle();
+	}
+
+	CollectionInstance->SetScalarParameterValue(AcogFOVParameterName, CurrentFOV);
 }
 
 void AGun::ApplyFakeMode()
@@ -1111,6 +1287,59 @@ UStaticMeshComponent* AGun::ResolveSecondaryOpticComponent() const
 		if (!WeaponOpticsSocketName.IsNone() && AttachSocketName == WeaponOpticsSocketName)
 		{
 			Score -= 20;
+		}
+
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			BestComponent = StaticMeshComponent;
+		}
+	}
+
+	return BestComponent;
+}
+
+UStaticMeshComponent* AGun::ResolveAcogOpticComponent() const
+{
+	UStaticMeshComponent* PrimaryOpticComponent = ResolvePrimaryOpticComponent();
+	if (IsValid(PrimaryOpticComponent) && IsAcogOpticMesh(PrimaryOpticComponent))
+	{
+		return PrimaryOpticComponent;
+	}
+
+	const USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	UStaticMeshComponent* BestComponent = nullptr;
+	int32 BestScore = MIN_int32;
+
+	TInlineComponentArray<UStaticMeshComponent*> StaticMeshes(this);
+	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshes)
+	{
+		if (!IsValid(StaticMeshComponent) || !IsAcogOpticMesh(StaticMeshComponent))
+		{
+			continue;
+		}
+
+		int32 Score = 0;
+		const FName AttachSocketName = StaticMeshComponent->GetAttachSocketName();
+
+		if (StaticMeshComponent->IsVisible())
+		{
+			Score += 50;
+		}
+
+		if (StaticMeshComponent->GetAttachParent() == MainMesh)
+		{
+			Score += 30;
+		}
+
+		if (!WeaponOpticsSocketName.IsNone() && AttachSocketName == WeaponOpticsSocketName)
+		{
+			Score += 40;
+		}
+
+		if (AttachSocketName.ToString().Contains(TEXT("Optic"), ESearchCase::IgnoreCase))
+		{
+			Score += 20;
 		}
 
 		if (Score > BestScore)

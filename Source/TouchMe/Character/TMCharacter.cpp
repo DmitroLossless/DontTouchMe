@@ -7,7 +7,9 @@
 #include "Animation/Skeleton.h"
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -24,6 +26,8 @@
 
 namespace
 {
+	AGun* TMResolveActiveGun(const ATMCharacter* Character);
+
 	bool TMIsTraceNoiseFunction(const FString& Name)
 	{
 		return Name.Contains(TEXT("Tick"))
@@ -477,6 +481,68 @@ namespace
 		}
 
 		return TMIsAimingForWeaponBoneLock(Character, AnimInstance);
+	}
+
+	bool TMActiveGunHasAcogOptic(const AGun* ActiveGun)
+	{
+		if (!ActiveGun)
+		{
+			return false;
+		}
+
+		static const TCHAR* AcogMeshPathToken = TEXT("/Game/Fps/Weapons/Scope/Acog/SM_ACOG_Scope");
+		TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(ActiveGun);
+		for (const UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
+		{
+			const UStaticMesh* StaticMesh = StaticMeshComponent ? StaticMeshComponent->GetStaticMesh() : nullptr;
+			if (StaticMesh && StaticMesh->GetPathName().Contains(AcogMeshPathToken, ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void TMApplyAcogCameraFOVGuard(ATMCharacter* Character)
+	{
+		if (!Character || !Character->IsLocallyControlled())
+		{
+			return;
+		}
+
+		AGun* ActiveGun = TMResolveActiveGun(Character);
+		if (!TMActiveGunHasAcogOptic(ActiveGun))
+		{
+			return;
+		}
+
+		UCameraComponent* CameraComponent = Character->FindComponentByClass<UCameraComponent>();
+		if (!CameraComponent)
+		{
+			return;
+		}
+
+		static constexpr float DefaultFOV = 90.0f;
+		static constexpr float AcogZoomMultiplier = 3.5f;
+		static constexpr float AcogAimFOV = DefaultFOV / AcogZoomMultiplier;
+		const bool bAiming = TMIsCharacterAimingForCameraWeaponOffset(
+			Character,
+			Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr);
+
+		if (bAiming)
+		{
+			if (!FMath::IsNearlyEqual(CameraComponent->FieldOfView, AcogAimFOV, 0.01f))
+			{
+				CameraComponent->SetFieldOfView(AcogAimFOV);
+			}
+			return;
+		}
+
+		if (CameraComponent->FieldOfView > 170.0f || CameraComponent->FieldOfView < 5.0f)
+		{
+			CameraComponent->SetFieldOfView(DefaultFOV);
+		}
 	}
 
 	FRotator TMGetCameraFloorLockedRotation(const ATMCharacter* Character)
@@ -2079,6 +2145,7 @@ void ATMCharacter::Tick(float DeltaSeconds)
 	TMUpdateFabrikFixerAlpha(GetMesh());
 	TMUpdateWeaponBoneFloorLock(this, GetMesh());
 	TMUpdateADSSocketAnimBridge(this, GetMesh());
+	TMApplyAcogCameraFOVGuard(this);
 	TMUpdateRightHandIKTargetGuard(GetMesh());
 	TMApplyDebugLocalHandsScaleForCharacter(this);
 	if (!IsTouchMeRuntimeTraceEnabled())
