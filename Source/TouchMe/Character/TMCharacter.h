@@ -34,6 +34,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "TouchMe|ADS")
 	bool GetActiveWeaponADSCameraTargetTransform(float EyeRelief, FTransform& OutTransform) const;
 
+	UFUNCTION(BlueprintCallable, Category = "TouchMe|Combat")
+	void Shoot();
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Combat", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "m"))
+	float ShootTraceDistanceMeters = 100.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Combat")
+	TSubclassOf<AActor> ShootFallbackProjectileClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Combat", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "cm/s"))
+	float ShootFallbackProjectileSpeed = 30000.f;
+
 protected:
 	UPROPERTY(BlueprintReadOnly, Category = "TouchMe|Character")
 	bool bIsLocalPlayerControlled = false;

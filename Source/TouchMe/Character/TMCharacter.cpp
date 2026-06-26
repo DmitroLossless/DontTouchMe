@@ -15,14 +15,21 @@
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/ProjectileMovementComponent.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
+#include "Kismet/KismetMathLibrary.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
+#include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
 #include "../Gun/Gun.h"
 #include "../TMGameplayStatics.h"
 #include "../TouchMe.h"
+
+#include <initializer_list>
 
 namespace
 {
@@ -330,6 +337,24 @@ namespace
 
 		OutValue = NameProperty->GetPropertyValue_InContainer(Object);
 		return true;
+	}
+
+	template <typename TObjectType>
+	TObjectType* TMReadObjectProperty(const UObject* Object, const FName PropertyName)
+	{
+		if (!Object)
+		{
+			return nullptr;
+		}
+
+		const FObjectPropertyBase* ObjectProperty =
+			CastField<FObjectPropertyBase>(Object->GetClass()->FindPropertyByName(PropertyName));
+		if (!ObjectProperty)
+		{
+			return nullptr;
+		}
+
+		return Cast<TObjectType>(ObjectProperty->GetObjectPropertyValue_InContainer(Object));
 	}
 
 	bool TMReadTransformProperty(const UObject* Object, const FName PropertyName, FTransform& OutValue)
@@ -1392,6 +1417,610 @@ namespace
 		return FTransform(CameraRotation.GetNormalized(), CameraLocation, FVector::OneVector);
 	}
 
+	FProperty* TMFindFunctionParameter(UFunction* Function, const std::initializer_list<FName> ParameterNames)
+	{
+		if (!Function)
+		{
+			return nullptr;
+		}
+
+		for (const FName ParameterName : ParameterNames)
+		{
+			if (FProperty* Property = Function->FindPropertyByName(ParameterName))
+			{
+				return Property;
+			}
+		}
+
+		for (TFieldIterator<FProperty> It(Function); It; ++It)
+		{
+			FProperty* Property = *It;
+			if (!Property
+				|| !Property->HasAnyPropertyFlags(CPF_Parm)
+				|| Property->HasAnyPropertyFlags(CPF_ReturnParm))
+			{
+				continue;
+			}
+
+			const FString PropertyName = Property->GetName();
+			const FString SpacedPropertyName = PropertyName.Replace(TEXT("_"), TEXT(" "));
+			for (const FName ParameterName : ParameterNames)
+			{
+				const FString RequestedName = ParameterName.ToString();
+				if (PropertyName.Equals(RequestedName, ESearchCase::IgnoreCase)
+					|| SpacedPropertyName.Equals(RequestedName, ESearchCase::IgnoreCase))
+				{
+					return Property;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool TMSetVectorFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		const FVector& Value)
+	{
+		FStructProperty* StructProperty = CastField<FStructProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!StructProperty || StructProperty->Struct != TBaseStructure<FVector>::Get())
+		{
+			return false;
+		}
+
+		*StructProperty->ContainerPtrToValuePtr<FVector>(Parameters) = Value;
+		return true;
+	}
+
+	bool TMGetVectorFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		FVector& OutValue)
+	{
+		FStructProperty* StructProperty = CastField<FStructProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!StructProperty || StructProperty->Struct != TBaseStructure<FVector>::Get())
+		{
+			return false;
+		}
+
+		OutValue = *StructProperty->ContainerPtrToValuePtr<FVector>(Parameters);
+		return true;
+	}
+
+	bool TMSetNumericFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		const double Value)
+	{
+		FNumericProperty* NumericProperty = CastField<FNumericProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!NumericProperty)
+		{
+			return false;
+		}
+
+		void* ValuePtr = NumericProperty->ContainerPtrToValuePtr<void>(Parameters);
+		if (NumericProperty->IsFloatingPoint())
+		{
+			NumericProperty->SetFloatingPointPropertyValue(ValuePtr, Value);
+		}
+		else
+		{
+			NumericProperty->SetIntPropertyValue(ValuePtr, FMath::RoundToInt64(Value));
+		}
+		return true;
+	}
+
+	bool TMSetNameFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		const FName Value)
+	{
+		FNameProperty* NameProperty = CastField<FNameProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!NameProperty)
+		{
+			return false;
+		}
+
+		NameProperty->SetPropertyValue(NameProperty->ContainerPtrToValuePtr<void>(Parameters), Value);
+		return true;
+	}
+
+	bool TMSetObjectFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		UObject* Value)
+	{
+		FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!ObjectProperty)
+		{
+			return false;
+		}
+
+		ObjectProperty->SetObjectPropertyValue(ObjectProperty->ContainerPtrToValuePtr<void>(Parameters), Value);
+		return true;
+	}
+
+	template <typename TObjectType>
+	TObjectType* TMGetObjectFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames)
+	{
+		FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!ObjectProperty)
+		{
+			return nullptr;
+		}
+
+		return Cast<TObjectType>(ObjectProperty->GetObjectPropertyValue(ObjectProperty->ContainerPtrToValuePtr<void>(Parameters)));
+	}
+
+	bool TMSetHitResultFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		const FHitResult& Value)
+	{
+		FStructProperty* StructProperty = CastField<FStructProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!StructProperty || StructProperty->Struct != FHitResult::StaticStruct())
+		{
+			return false;
+		}
+
+		*StructProperty->ContainerPtrToValuePtr<FHitResult>(Parameters) = Value;
+		return true;
+	}
+
+	bool TMSetActorArrayFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		const TArray<AActor*>& Actors)
+	{
+		FProperty* Property = TMFindFunctionParameter(Function, ParameterNames);
+		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FObjectPropertyBase* InnerObjectProperty = CastField<FObjectPropertyBase>(ArrayProperty->Inner);
+			if (!InnerObjectProperty)
+			{
+				return false;
+			}
+
+			FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(Parameters));
+			ArrayHelper.EmptyAndAddValues(Actors.Num());
+			for (int32 Index = 0; Index < Actors.Num(); ++Index)
+			{
+				InnerObjectProperty->SetObjectPropertyValue(ArrayHelper.GetRawPtr(Index), Actors[Index]);
+			}
+			return true;
+		}
+
+		return Actors.Num() > 0 && TMSetObjectFunctionParameter(Function, Parameters, ParameterNames, Actors[0]);
+	}
+
+	template <typename TFillParametersType>
+	bool TMInvokeBlueprintFunction(UObject* Object, const FName FunctionName, TFillParametersType&& FillParameters)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		UFunction* Function = Object->FindFunction(FunctionName);
+		if (!Function)
+		{
+			return false;
+		}
+
+		FStructOnScope FunctionParameters(Function);
+		void* Parameters = FunctionParameters.GetStructMemory();
+		FillParameters(Function, Parameters);
+		Object->ProcessEvent(Function, Parameters);
+		return true;
+	}
+
+	bool TMInvokeBlueprintFunction(UObject* Object, const FName FunctionName)
+	{
+		return TMInvokeBlueprintFunction(Object, FunctionName, [](UFunction*, void*) {});
+	}
+
+	USkeletalMeshComponent* TMResolveGunItemMesh(const AGun* Gun)
+	{
+		if (!Gun)
+		{
+			return nullptr;
+		}
+
+		if (USkeletalMeshComponent* ItemMesh = TMReadObjectProperty<USkeletalMeshComponent>(Gun, TEXT("Item")))
+		{
+			return ItemMesh;
+		}
+
+		TInlineComponentArray<USkeletalMeshComponent*> SkeletalMeshes(Gun);
+		for (USkeletalMeshComponent* SkeletalMesh : SkeletalMeshes)
+		{
+			if (SkeletalMesh && SkeletalMesh->GetFName() == TEXT("Item"))
+			{
+				return SkeletalMesh;
+			}
+		}
+
+		for (USkeletalMeshComponent* SkeletalMesh : SkeletalMeshes)
+		{
+			if (SkeletalMesh && SkeletalMesh->DoesSocketExist(TEXT("Muzzle")))
+			{
+				return SkeletalMesh;
+			}
+		}
+
+		return SkeletalMeshes.Num() > 0 ? SkeletalMeshes[0] : nullptr;
+	}
+
+	bool TMCanUseNativeBlueprintLineTrace(const ATMCharacter* Character)
+	{
+		return Character && TMResolveActiveGun(Character);
+	}
+
+	TSubclassOf<AActor> TMResolveShootFallbackProjectileClass(const ATMCharacter* Character)
+	{
+		if (Character && Character->ShootFallbackProjectileClass)
+		{
+			return Character->ShootFallbackProjectileClass;
+		}
+
+		static TSubclassOf<AActor> CachedPhysBulletClass;
+		if (!CachedPhysBulletClass)
+		{
+			CachedPhysBulletClass = LoadClass<AActor>(
+				nullptr,
+				TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_PhysBullet.BP_PhysBullet_C"));
+		}
+		return CachedPhysBulletClass;
+	}
+
+	bool TMInvokeSvrTrail(ATMCharacter* Character, const FVector& Velocity)
+	{
+		return TMInvokeBlueprintFunction(
+			Character,
+			TEXT("Svr_Trail"),
+			[&Velocity](UFunction* Function, void* Parameters)
+			{
+				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("Velocity") }, Velocity);
+			});
+	}
+
+	bool TMInvokeSvrDelay(ATMCharacter* Character, const double HitDelay)
+	{
+		return TMInvokeBlueprintFunction(
+			Character,
+			TEXT("Svr_Delay"),
+			[HitDelay](UFunction* Function, void* Parameters)
+			{
+				TMSetNumericFunctionParameter(Function, Parameters, { TEXT("HitDelay") }, HitDelay);
+			});
+	}
+
+	bool TMInvokeBulletPenetration(
+		ATMCharacter* Character,
+		const FVector& Speed,
+		const FHitResult& InitialHit,
+		const TArray<AActor*>& ActorsToIgnore)
+	{
+		return TMInvokeBlueprintFunction(
+			Character,
+			TEXT("BulletPenetration"),
+			[&Speed, &InitialHit, &ActorsToIgnore](UFunction* Function, void* Parameters)
+			{
+				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("Speed") }, Speed);
+				TMSetHitResultFunctionParameter(Function, Parameters, { TEXT("InitialHit") }, InitialHit);
+				TMSetActorArrayFunctionParameter(Function, Parameters, { TEXT("ActorsToIgnore") }, ActorsToIgnore);
+			});
+	}
+
+	bool TMInvokeSvrLineTrace(
+		ATMCharacter* Character,
+		const double Distance,
+		const FVector& Location,
+		const FVector& Normal,
+		const FVector& TraceStart,
+		UPhysicalMaterial* PhysicalMaterial,
+		AActor* HitActor,
+		const FName HitBone,
+		const FHitResult& HitInfo)
+	{
+		return TMInvokeBlueprintFunction(
+			Character,
+			TEXT("Svr_LineTrace"),
+			[Distance, &Location, &Normal, &TraceStart, PhysicalMaterial, HitActor, HitBone, &HitInfo](
+				UFunction* Function,
+				void* Parameters)
+			{
+				TMSetNumericFunctionParameter(Function, Parameters, { TEXT("Distance") }, Distance);
+				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("Location") }, Location);
+				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("Normal"), TEXT("Rotation") }, Normal);
+				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("TraceStart"), TEXT("HitDirection") }, TraceStart);
+				TMSetObjectFunctionParameter(
+					Function,
+					Parameters,
+					{ TEXT("Physical Material"), TEXT("Physical_Material"), TEXT("PhysicalMaterial"), TEXT("PhysMat") },
+					PhysicalMaterial);
+				TMSetObjectFunctionParameter(Function, Parameters, { TEXT("HitActor") }, HitActor);
+				TMSetNameFunctionParameter(Function, Parameters, { TEXT("HitBone"), TEXT("HitBoneName") }, HitBone);
+				TMSetHitResultFunctionParameter(Function, Parameters, { TEXT("HitInfo"), TEXT("OutHit") }, HitInfo);
+			});
+	}
+
+	void TMInvokeThrowableHitExplode(AActor* HitActor)
+	{
+		if (!HitActor)
+		{
+			return;
+		}
+
+		if (UFunction* HitExplodeFunction = HitActor->FindFunction(TEXT("HitExplode")))
+		{
+			HitActor->ProcessEvent(HitExplodeFunction, nullptr);
+		}
+	}
+
+	AActor* TMSpawnFallbackPhysicalBullet(
+		ATMCharacter* Character,
+		const FVector& SpawnLocation,
+		const FVector& Direction)
+	{
+		if (!Character)
+		{
+			return nullptr;
+		}
+
+		UWorld* World = Character->GetWorld();
+		TSubclassOf<AActor> ProjectileClass = TMResolveShootFallbackProjectileClass(Character);
+		const FVector ProjectileDirection = Direction.GetSafeNormal();
+		if (!World || !ProjectileClass || ProjectileDirection.IsNearlyZero())
+		{
+			return nullptr;
+		}
+
+		AActor* ProjectileOwner = TMReadObjectProperty<AActor>(Character, TEXT("MPS Controller"));
+		if (!ProjectileOwner)
+		{
+			ProjectileOwner = Character->GetController() ? Cast<AActor>(Character->GetController()) : Character;
+		}
+
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = ProjectileOwner;
+		SpawnParams.Instigator = Character;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		AActor* Projectile = World->SpawnActor<AActor>(
+			ProjectileClass,
+			SpawnLocation,
+			ProjectileDirection.Rotation(),
+			SpawnParams);
+		if (!Projectile)
+		{
+			return nullptr;
+		}
+
+		const float ProjectileSpeed = Character->ShootFallbackProjectileSpeed;
+		if (UProjectileMovementComponent* ProjectileMovement =
+			Projectile->FindComponentByClass<UProjectileMovementComponent>())
+		{
+			const float ResolvedProjectileSpeed =
+				ProjectileSpeed > 0.f ? ProjectileSpeed : ProjectileMovement->InitialSpeed;
+			if (ResolvedProjectileSpeed > 0.f)
+			{
+				ProjectileMovement->InitialSpeed = ResolvedProjectileSpeed;
+				ProjectileMovement->MaxSpeed = FMath::Max(ProjectileMovement->MaxSpeed, ResolvedProjectileSpeed);
+				ProjectileMovement->Velocity = ProjectileDirection * ResolvedProjectileSpeed;
+				ProjectileMovement->Activate(true);
+			}
+		}
+
+		if (ProjectileSpeed > 0.f)
+		{
+			TMWriteVectorProperty(Projectile, TEXT("Velocity"), ProjectileDirection * ProjectileSpeed);
+		}
+		return Projectile;
+	}
+
+	void TMDestroyBlueprintTraceActor(ATMCharacter* Character)
+	{
+		AActor* TraceActor = TMReadObjectProperty<AActor>(Character, TEXT("Trace"));
+		if (TraceActor && !TraceActor->IsActorBeingDestroyed())
+		{
+			TraceActor->Destroy();
+		}
+	}
+
+	bool TMExecuteNativeBlueprintImpact(
+		ATMCharacter* Character,
+		const FVector& Location,
+		const FVector& Normal,
+		const UPhysicalMaterial* PhysicalMaterial)
+	{
+		if (!Character)
+		{
+			return false;
+		}
+
+		if (AGun* ActiveGun = TMResolveActiveGun(Character))
+		{
+			ActiveGun->Impact(Location, Normal, PhysicalMaterial);
+		}
+
+		TMDestroyBlueprintTraceActor(Character);
+		return true;
+	}
+
+	bool TMTryHandleNativeBlueprintImpact(ATMCharacter* Character, UFunction* Function, void* Parameters)
+	{
+		if (!Character
+			|| !Function
+			|| !Parameters
+			|| !Function->GetName().Equals(TEXT("MC_Impact"), ESearchCase::CaseSensitive)
+			|| Character->HasAuthority())
+		{
+			return false;
+		}
+
+		FVector Location = FVector::ZeroVector;
+		FVector Normal = FVector::ZeroVector;
+		if (!TMGetVectorFunctionParameter(Function, Parameters, { TEXT("Location") }, Location)
+			|| !TMGetVectorFunctionParameter(Function, Parameters, { TEXT("Rotation"), TEXT("Normal") }, Normal))
+		{
+			return false;
+		}
+
+		const UPhysicalMaterial* PhysicalMaterial = TMGetObjectFunctionParameter<UPhysicalMaterial>(
+			Function,
+			Parameters,
+			{ TEXT("PhysMat"), TEXT("PhysicalMaterial"), TEXT("Physical Material"), TEXT("Physical_Material") });
+		TMExecuteNativeBlueprintImpact(Character, Location, Normal, PhysicalMaterial);
+		return true;
+	}
+
+	bool TMExecuteNativeBlueprintLineTrace(ATMCharacter* Character)
+	{
+		if (!Character)
+		{
+			return false;
+		}
+
+		AGun* ActiveGun = TMResolveActiveGun(Character);
+		USkeletalMeshComponent* ItemMesh = TMResolveGunItemMesh(ActiveGun);
+		if (!ActiveGun || !ItemMesh)
+		{
+			return false;
+		}
+
+		UCameraComponent* CameraComponent = Character->FindComponentByClass<UCameraComponent>();
+		FVector CameraLocation = Character->GetPawnViewLocation();
+		FVector CameraForward = Character->GetViewRotation().Vector();
+		if (CameraComponent)
+		{
+			CameraLocation = CameraComponent->GetComponentLocation();
+			CameraForward = CameraComponent->GetForwardVector();
+		}
+
+		double RecoilX = 0.0;
+		double RecoilY = 0.0;
+		double SpreadReduction = 1.0;
+		TMReadNumericProperty(ActiveGun, TEXT("Recoil_X"), RecoilX);
+		TMReadNumericProperty(ActiveGun, TEXT("Recoil_Y"), RecoilY);
+		TMReadNumericProperty(ActiveGun, TEXT("DT_SpreadReduction"), SpreadReduction);
+		if (FMath::IsNearlyZero(SpreadReduction))
+		{
+			SpreadReduction = 1.0;
+		}
+
+		bool bAiming = false;
+		TMReadAimStateBoolProperty(Character, bAiming);
+		const float MaxYawInDegrees = static_cast<float>(bAiming ? RecoilX / SpreadReduction : RecoilX);
+		const float MaxPitchInDegrees = static_cast<float>(bAiming ? RecoilY / SpreadReduction : RecoilY);
+		const FVector SpreadDirection = UKismetMathLibrary::RandomUnitVectorInEllipticalConeInDegrees(
+			CameraForward,
+			MaxYawInDegrees,
+			MaxPitchInDegrees);
+
+		TArray<AActor*> ActorsToIgnore;
+		ActorsToIgnore.Add(ActiveGun);
+		ActorsToIgnore.Add(Character);
+
+		const double TraceDistance = FMath::Max(0.0f, Character->ShootTraceDistanceMeters) * 100.0;
+		if (TraceDistance <= UE_SMALL_NUMBER)
+		{
+			return false;
+		}
+
+		const FVector CameraTraceEnd = CameraLocation + SpreadDirection * TraceDistance;
+		FHitResult CameraHit;
+		const bool bCameraHit = UKismetSystemLibrary::LineTraceSingle(
+			Character,
+			CameraLocation,
+			CameraTraceEnd,
+			ETraceTypeQuery::TraceTypeQuery2,
+			true,
+			ActorsToIgnore,
+			EDrawDebugTrace::None,
+			CameraHit,
+			true,
+			FLinearColor(1.0f, 0.0f, 0.835798f, 1.0f),
+			FLinearColor::Green,
+			15.0f);
+
+		const FVector MuzzleLocation = ItemMesh->GetSocketLocation(TEXT("Muzzle"));
+		const FVector WeaponTraceEnd = bCameraHit
+			? CameraHit.Location + CameraForward
+			: CameraTraceEnd;
+		const FVector BulletDirection = UKismetMathLibrary::GetDirectionUnitVector(MuzzleLocation, WeaponTraceEnd);
+		const FVector TrailVelocity = BulletDirection * 20000.0;
+		TMInvokeSvrTrail(Character, TrailVelocity);
+
+		FHitResult WeaponHit;
+		const bool bWeaponHit = UKismetSystemLibrary::LineTraceSingle(
+			Character,
+			MuzzleLocation,
+			WeaponTraceEnd,
+			ETraceTypeQuery::TraceTypeQuery2,
+			true,
+			ActorsToIgnore,
+			EDrawDebugTrace::None,
+			WeaponHit,
+			true,
+			FLinearColor(1.0f, 0.021123f, 0.0f, 1.0f),
+			FLinearColor(0.036429f, 0.0f, 1.0f, 1.0f),
+			5.0f);
+
+		if (!bWeaponHit)
+		{
+			TMSpawnFallbackPhysicalBullet(Character, WeaponTraceEnd, BulletDirection);
+			return true;
+		}
+
+		TMInvokeBulletPenetration(Character, CameraTraceEnd, WeaponHit, ActorsToIgnore);
+
+		const double HitDelay = static_cast<double>(WeaponHit.Distance) / 20000.0;
+		TMWriteNumericProperty(Character, TEXT("HitDelay"), HitDelay);
+		TMInvokeSvrDelay(Character, HitDelay);
+
+		const FVector HitDirection = UKismetMathLibrary::GetDirectionUnitVector(
+			WeaponHit.ImpactNormal,
+			WeaponHit.TraceStart);
+		TMInvokeSvrLineTrace(
+			Character,
+			WeaponHit.Distance,
+			WeaponHit.ImpactPoint,
+			WeaponHit.ImpactNormal,
+			HitDirection,
+			WeaponHit.PhysMaterial.Get(),
+			WeaponHit.GetActor(),
+			WeaponHit.BoneName,
+			WeaponHit);
+		TMInvokeThrowableHitExplode(WeaponHit.GetActor());
+		return true;
+	}
+
+	bool TMTryHandleNativeBlueprintLineTrace(ATMCharacter* Character, UFunction* Function)
+	{
+		if (!Character
+			|| !Function
+			|| !Function->GetName().Equals(TEXT("LineTrace"), ESearchCase::CaseSensitive)
+			|| !TMCanUseNativeBlueprintLineTrace(Character))
+		{
+			return false;
+		}
+
+		Character->Shoot();
+		return true;
+	}
+
 	bool TMHasBoneOrSocket(const USkeletalMeshComponent* Mesh, const FName BoneOrSocketName)
 	{
 		return Mesh
@@ -2078,6 +2707,19 @@ AGun* ATMCharacter::GetActiveGun() const
 	return TMResolveActiveGun(this);
 }
 
+void ATMCharacter::Shoot()
+{
+	if (!TMExecuteNativeBlueprintLineTrace(this) && IsTouchMeRuntimeTraceEnabled())
+	{
+		UE_LOG(
+			LogTouchMeRuntimeTrace,
+			Warning,
+			TEXT("[TMNativeBlueprintShoot] Failed Character=%s ActiveWeaponState={%s}"),
+			*TMObjectName(this),
+			*TMDescribeActiveWeaponState(this));
+	}
+}
+
 bool ATMCharacter::GetActiveWeaponADSSocketWorldTransform(FTransform& OutTransform) const
 {
 	OutTransform = FTransform::Identity;
@@ -2178,6 +2820,12 @@ void ATMCharacter::OnRep_Controller()
 
 void ATMCharacter::ProcessEvent(UFunction* Function, void* Parameters)
 {
+	if (TMTryHandleNativeBlueprintLineTrace(this, Function)
+		|| TMTryHandleNativeBlueprintImpact(this, Function, Parameters))
+	{
+		return;
+	}
+
 	const bool bTrace = IsTouchMeRuntimeTraceEnabled() && TMShouldTraceFunction(Function);
 	const bool bMPSServerAimFunction = TMIsMPSServerAimFunction(Function);
 	const bool bALSAimBridgeCandidate = bMPSServerAimFunction || TMIsAimBridgeFunction(Function);
