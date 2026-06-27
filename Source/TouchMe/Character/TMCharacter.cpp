@@ -5,6 +5,8 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/Skeleton.h"
+#include "AudioDevice.h"
+#include "AudioThread.h"
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -15,14 +17,19 @@
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/GameModeBase.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "Sound/AudioSettings.h"
+#include "Sound/SoundClass.h"
+#include "Sound/SoundMix.h"
 #include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
 #include "../Gun/Gun.h"
@@ -68,6 +75,8 @@ namespace
 	FVector GTMDebugKrissNoAimOffsetPulseOffset = FVector::ZeroVector;
 	double GTMDebugKrissNoAimOffsetPulseEndTime = 0.0;
 	bool GTMDebugKrissNoAimOffsetPulseWasActive = false;
+	const TCHAR* TMProjectMasterSoundClassPath = TEXT("/Game/MP_System_V3/Game/Sounds/SC_Master_MPS.SC_Master_MPS");
+	const TCHAR* TMEngineMasterSoundClassPath = TEXT("/Engine/EngineSounds/Master.Master");
 
 	struct FTMDebugBoneScaleDelegate
 	{
@@ -793,6 +802,63 @@ namespace
 			|| Name.Contains(TEXT("Cycle Inventory"))
 			|| Name.Contains(TEXT("InputAction"))
 			|| Name.Contains(TEXT("InpActEvt"));
+	}
+
+	bool TMReadMaxAnimCurveValue(const USkeletalMeshComponent* Mesh, const FName CurveName, float& OutCurveValue)
+	{
+		OutCurveValue = 0.f;
+		if (!Mesh || CurveName.IsNone())
+		{
+			return false;
+		}
+
+		float MaxValue = 0.f;
+		bool bFoundCurve = false;
+		auto ReadAnimCurve = [&MaxValue, &bFoundCurve, CurveName](const UAnimInstance* AnimInstance)
+		{
+			float CurveValue = 0.f;
+			if (AnimInstance && AnimInstance->GetCurveValue(CurveName, CurveValue))
+			{
+				MaxValue = FMath::Max(MaxValue, CurveValue);
+				bFoundCurve = true;
+			}
+		};
+
+		ReadAnimCurve(Mesh->GetAnimInstance());
+		for (UAnimInstance* LinkedAnimInstance : Mesh->GetLinkedAnimInstances())
+		{
+			ReadAnimCurve(LinkedAnimInstance);
+		}
+
+		OutCurveValue = FMath::Clamp(MaxValue, 0.f, 1.f);
+		return bFoundCurve;
+	}
+
+	float TMInterpolateAudioMuffleFrequency(const float ClearFrequency, const float MuffledFrequency, const float Alpha)
+	{
+		const float SafeClearFrequency = FMath::Clamp(ClearFrequency, 20.f, 20000.f);
+		const float SafeMuffledFrequency = FMath::Clamp(MuffledFrequency, 20.f, SafeClearFrequency);
+		const float SafeAlpha = FMath::Clamp(Alpha, 0.f, 1.f);
+		return FMath::Exp(FMath::Lerp(FMath::Loge(SafeClearFrequency), FMath::Loge(SafeMuffledFrequency), SafeAlpha));
+	}
+
+	USoundClass* TMLoadSoundClassFromPath(const TCHAR* SoundClassPath)
+	{
+		return Cast<USoundClass>(StaticLoadObject(USoundClass::StaticClass(), nullptr, SoundClassPath));
+	}
+
+	bool TMIsMenuGameModeActive(const UObject* WorldContextObject)
+	{
+		const AGameModeBase* GameMode = UGameplayStatics::GetGameMode(WorldContextObject);
+		const UClass* GameModeClass = GameMode ? GameMode->GetClass() : nullptr;
+		if (!GameModeClass)
+		{
+			return false;
+		}
+
+		const FString GameModePath = GameModeClass->GetPathName();
+		return GameModePath.Contains(TEXT("/MainMenuPawn/GM_Menu."), ESearchCase::IgnoreCase)
+			|| GameModePath.Contains(TEXT("GM_Menu_C"), ESearchCase::IgnoreCase);
 	}
 
 	bool TMShouldTraceFunction(const UFunction* Function)
@@ -2700,6 +2766,9 @@ ATMCharacter::ATMCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
+
+	AudioMuffleSoundClasses.Add(TSoftObjectPtr<USoundClass>(FSoftObjectPath(TMProjectMasterSoundClassPath)));
+	AudioMuffleSoundClasses.Add(TSoftObjectPtr<USoundClass>(FSoftObjectPath(TMEngineMasterSoundClassPath)));
 }
 
 AGun* ATMCharacter::GetActiveGun() const
@@ -2759,6 +2828,13 @@ void ATMCharacter::BeginPlay()
 	}
 }
 
+void ATMCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	PopAudioMuffleSoundMix();
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void ATMCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -2770,6 +2846,7 @@ void ATMCharacter::Tick(float DeltaSeconds)
 	TMUpdateADSSocketAnimBridge(this, GetMesh());
 	TMApplyOpticCameraFOVGuard(this);
 	TMUpdateRightHandIKTargetGuard(GetMesh());
+	UpdateAnimCurveAudioMuffle(DeltaSeconds);
 	// TMApplyDebugLocalHandsScaleForCharacter(this);
 	if (!IsTouchMeRuntimeTraceEnabled())
 	{
@@ -3074,4 +3151,162 @@ void ATMCharacter::LogRuntimeTraceSnapshot(const TCHAR* Reason)
 void ATMCharacter::UpdateLocalPlayerControlledFlag()
 {
 	bIsLocalPlayerControlled = IsPlayerControlled() && IsLocallyControlled();
+}
+
+void ATMCharacter::UpdateAnimCurveAudioMuffle(float DeltaSeconds)
+{
+	if (TMIsMenuGameModeActive(this))
+	{
+		CurrentAudioMuffleAlpha = 0.f;
+		PopAudioMuffleSoundMix();
+		return;
+	}
+
+	float TargetAlpha = 0.f;
+	if (bEnableAnimCurveAudioMuffle && bIsLocalPlayerControlled)
+	{
+		float AimedSoundValue = 0.f;
+		TMReadMaxAnimCurveValue(GetMesh(), AudioMuffleCurveName, AimedSoundValue);
+		TargetAlpha = 1.f - AimedSoundValue;
+	}
+
+	if (AudioMuffleInterpSpeed <= 0.f || DeltaSeconds <= 0.f)
+	{
+		CurrentAudioMuffleAlpha = TargetAlpha;
+	}
+	else
+	{
+		CurrentAudioMuffleAlpha = FMath::FInterpTo(CurrentAudioMuffleAlpha, TargetAlpha, DeltaSeconds, AudioMuffleInterpSpeed);
+	}
+
+	const bool bNeedsActiveMix = CurrentAudioMuffleAlpha > UE_KINDA_SMALL_NUMBER
+		|| TargetAlpha > UE_KINDA_SMALL_NUMBER
+		|| bAudioMuffleSoundMixPushed;
+	if (!bNeedsActiveMix)
+	{
+		return;
+	}
+
+	if (!EnsureAudioMuffleSoundMix())
+	{
+		return;
+	}
+
+	const float LowPassFrequency = TMInterpolateAudioMuffleFrequency(
+		AudioMuffleClearLowPassFrequency,
+		AudioMuffleFullyMuffledLowPassFrequency,
+		CurrentAudioMuffleAlpha);
+	ApplyAudioMuffleLowPassFrequency(LowPassFrequency);
+}
+
+bool ATMCharacter::EnsureAudioMuffleSoundMix()
+{
+	if (AudioMuffleRuntimeSoundMix && bAudioMuffleSoundMixPushed)
+	{
+		return AudioMuffleRuntimeSoundMix->SoundClassEffects.Num() > 0;
+	}
+
+	if (!AudioMuffleRuntimeSoundMix)
+	{
+		AudioMuffleRuntimeSoundMix = NewObject<USoundMix>(this, TEXT("TMRuntimeAudioMuffleSoundMix"));
+		if (!AudioMuffleRuntimeSoundMix)
+		{
+			return false;
+		}
+
+		AudioMuffleRuntimeSoundMix->InitialDelay = 0.f;
+		AudioMuffleRuntimeSoundMix->FadeInTime = 0.f;
+		AudioMuffleRuntimeSoundMix->Duration = -1.f;
+		AudioMuffleRuntimeSoundMix->FadeOutTime = 0.f;
+	}
+
+	AudioMuffleRuntimeSoundMix->SoundClassEffects.Reset();
+
+	TSet<USoundClass*> AddedSoundClasses;
+	auto AddSoundClass = [this, &AddedSoundClasses](USoundClass* SoundClass)
+	{
+		if (!SoundClass || AddedSoundClasses.Contains(SoundClass))
+		{
+			return;
+		}
+
+		AddedSoundClasses.Add(SoundClass);
+
+		FSoundClassAdjuster Adjuster;
+		Adjuster.SoundClassObject = SoundClass;
+		Adjuster.VolumeAdjuster = 1.f;
+		Adjuster.PitchAdjuster = 1.f;
+		Adjuster.VoiceCenterChannelVolumeAdjuster = 1.f;
+		Adjuster.LowPassFilterFrequency = FMath::Clamp(AudioMuffleClearLowPassFrequency, 20.f, 20000.f);
+		Adjuster.bApplyToChildren = true;
+		AudioMuffleRuntimeSoundMix->SoundClassEffects.Add(Adjuster);
+	};
+
+	for (const TSoftObjectPtr<USoundClass>& SoundClassPtr : AudioMuffleSoundClasses)
+	{
+		AddSoundClass(SoundClassPtr.LoadSynchronous());
+	}
+
+	if (const UAudioSettings* AudioSettings = GetDefault<UAudioSettings>())
+	{
+		AddSoundClass(AudioSettings->GetDefaultSoundClass());
+		AddSoundClass(AudioSettings->GetDefaultMediaSoundClass());
+	}
+
+	AddSoundClass(TMLoadSoundClassFromPath(TMProjectMasterSoundClassPath));
+	AddSoundClass(TMLoadSoundClassFromPath(TMEngineMasterSoundClassPath));
+
+	if (AudioMuffleRuntimeSoundMix->SoundClassEffects.Num() <= 0)
+	{
+		return false;
+	}
+
+	UGameplayStatics::PushSoundMixModifier(this, AudioMuffleRuntimeSoundMix);
+	bAudioMuffleSoundMixPushed = true;
+	LastAppliedAudioMuffleLowPassFrequency = -1.f;
+	return true;
+}
+
+void ATMCharacter::ApplyAudioMuffleLowPassFrequency(float LowPassFrequency)
+{
+	if (!AudioMuffleRuntimeSoundMix || AudioMuffleRuntimeSoundMix->SoundClassEffects.Num() <= 0)
+	{
+		return;
+	}
+
+	LowPassFrequency = FMath::Clamp(LowPassFrequency, 20.f, 20000.f);
+	if (LastAppliedAudioMuffleLowPassFrequency >= 0.f
+		&& FMath::Abs(LastAppliedAudioMuffleLowPassFrequency - LowPassFrequency) < AudioMuffleUpdateThresholdHz)
+	{
+		return;
+	}
+
+	LastAppliedAudioMuffleLowPassFrequency = LowPassFrequency;
+
+	USoundMix* SoundMix = AudioMuffleRuntimeSoundMix;
+	FAudioThread::RunCommandOnAudioThread([SoundMix, LowPassFrequency]()
+	{
+		if (!SoundMix)
+		{
+			return;
+		}
+
+		for (FSoundClassAdjuster& Adjuster : SoundMix->SoundClassEffects)
+		{
+			Adjuster.LowPassFilterFrequency = LowPassFrequency;
+		}
+	});
+}
+
+void ATMCharacter::PopAudioMuffleSoundMix()
+{
+	if (!AudioMuffleRuntimeSoundMix || !bAudioMuffleSoundMixPushed)
+	{
+		return;
+	}
+
+	ApplyAudioMuffleLowPassFrequency(AudioMuffleClearLowPassFrequency);
+	UGameplayStatics::PopSoundMixModifier(this, AudioMuffleRuntimeSoundMix);
+	bAudioMuffleSoundMixPushed = false;
+	LastAppliedAudioMuffleLowPassFrequency = -1.f;
 }
