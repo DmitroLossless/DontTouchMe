@@ -28,9 +28,6 @@ const FName AGun::MainSkeletalMeshComponentName(TEXT("Item"));
 namespace
 {
 	const TCHAR* WeaponAttachmentMeshPathToken = TEXT("/Weapons/Attachments/");
-	const TCHAR* HoloMeshPathToken = TEXT("/Game/MP_System_V3/Game/Weapons/Attachments/Optics/Holo/SM_Holographic_Scope");
-	const TCHAR* BlazeMeshPathToken = TEXT("/Game/AdvanceWeaponPack/Mesh/Attachment/Sight/SM_Holographic_Sight");
-	const TCHAR* AimPointMeshPathToken = TEXT("/Game/Fps/Meshes/Guns/GunParts/SM_DotSight");
 	const TCHAR* AcogMeshPathToken = TEXT("/Game/Fps/Weapons/Scope/Acog/SM_ACOG_Scope");
 	const TCHAR* AcogRenderDiscMeshPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/SM_Disc_RenderGlass.SM_Disc_RenderGlass");
 	const TCHAR* AcogGlassMeshPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/SM_ScopeGlass4.SM_ScopeGlass4");
@@ -45,9 +42,6 @@ namespace
 	const FName AcogRenderDiscSocketName(TEXT("RM_Scope"));
 	const FName AcogGlassSocketName(TEXT("RM_Glass"));
 	const FName AcogFOVParameterName(TEXT("FOV"));
-	const FVector ScaledHoloAttachmentRelativeScale(0.85f, 0.85f, 0.85f);
-	const FVector ScaledBlazeAttachmentRelativeScale(0.9f, 0.9f, 0.9f);
-	const FVector ScaledAimPointAttachmentRelativeScale(0.85f, 0.85f, 0.85f);
 
 	FString CleanGeneratedWeaponClassName(FString ClassName)
 	{
@@ -255,10 +249,14 @@ namespace
 
 		const FString Expected(ExpectedName);
 		const FString PropertyName = Property->GetName();
-		return PropertyName.Equals(Expected, ESearchCase::IgnoreCase)
+		const bool bMatchesName = PropertyName.Equals(Expected, ESearchCase::IgnoreCase)
 			|| PropertyName.StartsWith(Expected + TEXT("_"), ESearchCase::IgnoreCase)
-			|| Property->GetAuthoredName().Equals(Expected, ESearchCase::IgnoreCase)
-			|| Property->GetDisplayNameText().ToString().Equals(Expected, ESearchCase::IgnoreCase);
+			|| Property->GetAuthoredName().Equals(Expected, ESearchCase::IgnoreCase);
+#if WITH_EDITOR
+		return bMatchesName || Property->GetDisplayNameText().ToString().Equals(Expected, ESearchCase::IgnoreCase);
+#else
+		return bMatchesName;
+#endif
 	}
 
 	const FProperty* FindPropertyByName(const UStruct* Struct, const TCHAR* ExpectedName)
@@ -763,8 +761,6 @@ void AGun::RefreshADSSocket()
 		return;
 	}
 
-	ApplyAttachmentVisualScaleOverrides();
-
 	USceneComponent* AttachParent = nullptr;
 	FName AttachSocketName = NAME_None;
 	bADSSocketResolved = ResolveADSSocketAttachTarget(AttachParent, AttachSocketName);
@@ -858,7 +854,6 @@ void AGun::RunDeferredAttachmentSanitize()
 {
 	bAttachmentSanitizeRequested = false;
 	SanitizeInvalidAttachmentComponents();
-	ApplyAttachmentVisualScaleOverrides();
 	SynchronizeUnderbarrelAttachmentComponent();
 	SynchronizeAcogRenderComponents();
 	RefreshADSSocket();
@@ -898,59 +893,10 @@ bool AGun::IsWeaponAttachmentMesh(const UStaticMeshComponent* Component)
 	return StaticMesh && StaticMesh->GetPathName().Contains(WeaponAttachmentMeshPathToken);
 }
 
-bool AGun::IsHoloOpticMesh(const UStaticMeshComponent* Component)
-{
-	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
-	return StaticMesh && StaticMesh->GetPathName().Contains(HoloMeshPathToken, ESearchCase::IgnoreCase);
-}
-
-bool AGun::IsBlazeOpticMesh(const UStaticMeshComponent* Component)
-{
-	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
-	return StaticMesh && StaticMesh->GetPathName().Contains(BlazeMeshPathToken, ESearchCase::IgnoreCase);
-}
-
-bool AGun::IsAimPointOpticMesh(const UStaticMeshComponent* Component)
-{
-	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
-	return StaticMesh && StaticMesh->GetPathName().Contains(AimPointMeshPathToken, ESearchCase::IgnoreCase);
-}
-
 bool AGun::IsAcogOpticMesh(const UStaticMeshComponent* Component)
 {
 	const UStaticMesh* StaticMesh = Component ? Component->GetStaticMesh() : nullptr;
 	return StaticMesh && StaticMesh->GetPathName().Contains(AcogMeshPathToken, ESearchCase::IgnoreCase);
-}
-
-void AGun::ApplyAttachmentVisualScaleOverrides()
-{
-	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
-	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
-	{
-		if (!IsValid(StaticMeshComponent))
-		{
-			continue;
-		}
-
-		const FVector* TargetScale = nullptr;
-		if (IsHoloOpticMesh(StaticMeshComponent))
-		{
-			TargetScale = &ScaledHoloAttachmentRelativeScale;
-		}
-		else if (IsBlazeOpticMesh(StaticMeshComponent))
-		{
-			TargetScale = &ScaledBlazeAttachmentRelativeScale;
-		}
-		else if (IsAimPointOpticMesh(StaticMeshComponent))
-		{
-			TargetScale = &ScaledAimPointAttachmentRelativeScale;
-		}
-
-		if (TargetScale && !StaticMeshComponent->GetRelativeScale3D().Equals(*TargetScale, KINDA_SMALL_NUMBER))
-		{
-			StaticMeshComponent->SetRelativeScale3D(*TargetScale);
-		}
-	}
 }
 
 bool AGun::IsLikelyOpticComponent(const UStaticMeshComponent* Component)

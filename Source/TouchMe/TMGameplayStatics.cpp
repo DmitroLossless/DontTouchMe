@@ -33,7 +33,6 @@
 #include "Particles/ParticleSystemComponent.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/LocalPlayer.h"
-#include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
 #include "AudioDevice.h"
 #include "SaveGameSystem.h"
@@ -1008,10 +1007,14 @@ namespace TMGameplayStatics
 
 		const FString Expected(ExpectedName);
 		const FString PropertyName = Property->GetName();
-		return PropertyName.Equals(Expected, ESearchCase::IgnoreCase)
+		const bool bMatchesName = PropertyName.Equals(Expected, ESearchCase::IgnoreCase)
 			|| PropertyName.StartsWith(Expected + TEXT("_"), ESearchCase::IgnoreCase)
-			|| Property->GetAuthoredName().Equals(Expected, ESearchCase::IgnoreCase)
-			|| Property->GetDisplayNameText().ToString().Equals(Expected, ESearchCase::IgnoreCase);
+			|| Property->GetAuthoredName().Equals(Expected, ESearchCase::IgnoreCase);
+#if WITH_EDITOR
+		return bMatchesName || Property->GetDisplayNameText().ToString().Equals(Expected, ESearchCase::IgnoreCase);
+#else
+		return bMatchesName;
+#endif
 	}
 
 	const FProperty* FindPropertyByName(const UStruct* Struct, const TCHAR* ExpectedName)
@@ -1208,38 +1211,6 @@ namespace TMGameplayStatics
 		}
 	}
 
-	void DrawAttachedParticleAxes(
-		UFXSystemComponent* Component,
-		const UFXSystemAsset* EmitterTemplate,
-		const FName AttachPointName)
-	{
-		if (!Component || !IsAttachedMuzzleFlashTarget(EmitterTemplate, AttachPointName))
-		{
-			return;
-		}
-
-		UWorld* World = Component->GetWorld();
-		if (!World)
-		{
-			return;
-		}
-
-		constexpr float Duration = 25.0f;
-		constexpr float BaseLength = 45.0f;
-		const FTransform Transform = Component->GetComponentTransform();
-		const FVector Origin = Transform.GetLocation();
-		const FVector AxisX = Transform.GetUnitAxis(EAxis::X);
-		const FVector AxisY = Transform.GetUnitAxis(EAxis::Y);
-		const FVector AxisZ = Transform.GetUnitAxis(EAxis::Z);
-		constexpr float ArrowSize = 8.0f;
-
-		DrawDebugDirectionalArrow(World, Origin, Origin + AxisX * BaseLength, ArrowSize, FColor::Red, false, Duration, SDPG_Foreground, 2.5f);
-		DrawDebugDirectionalArrow(World, Origin, Origin + AxisY * BaseLength, ArrowSize, FColor::Green, false, Duration, SDPG_Foreground, 2.5f);
-		DrawDebugDirectionalArrow(World, Origin, Origin + AxisZ * BaseLength, ArrowSize, FColor::Blue, false, Duration, SDPG_Foreground, 2.5f);
-		DrawDebugString(World, Origin + AxisX * (BaseLength + 6.0f), TEXT("+X"), nullptr, FColor::Red, Duration, true, 1.2f);
-		DrawDebugString(World, Origin + AxisY * (BaseLength + 6.0f), TEXT("+Y"), nullptr, FColor::Green, Duration, true, 1.2f);
-		DrawDebugString(World, Origin + AxisZ * (BaseLength + 6.0f), TEXT("+Z"), nullptr, FColor::Blue, Duration, true, 1.2f);
-	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1457,7 +1428,6 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAttached(
 			bAutoDestroy,
 			PoolingMethod,
 			bAutoActivate);
-		TMGameplayStatics::DrawAttachedParticleAxes(Component, EmitterTemplate, AttachPointName);
 		return Component;
 	}
 
@@ -1474,7 +1444,6 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAttached(
 			bAutoDestroy,
 			ToNiagaraPooling(PoolingMethod),
 			bAutoActivate);
-		TMGameplayStatics::DrawAttachedParticleAxes(Component, EmitterTemplate, AttachPointName);
 		return Component;
 	}
 

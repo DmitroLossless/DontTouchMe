@@ -165,7 +165,6 @@ private:
 	void RequestDeferredAttachmentSanitize();
 	void RunDeferredAttachmentSanitize();
 	bool IsInvalidWeaponAttachmentComponent(const UStaticMeshComponent* Component) const;
-	void ApplyAttachmentVisualScaleOverrides();
 	int32 SynchronizeUnderbarrelAttachmentComponent();
 	int32 SynchronizeAcogRenderComponents();
 	void DestroyAcogRenderComponents();
@@ -179,9 +178,6 @@ private:
 	FName ResolveWeaponADSSocket(const USkeletalMeshComponent* Mesh) const;
 	FName ResolveSecondaryWeaponADSSocket(const USkeletalMeshComponent* Mesh) const;
 	static bool IsWeaponAttachmentMesh(const UStaticMeshComponent* Component);
-	static bool IsHoloOpticMesh(const UStaticMeshComponent* Component);
-	static bool IsBlazeOpticMesh(const UStaticMeshComponent* Component);
-	static bool IsAimPointOpticMesh(const UStaticMeshComponent* Component);
 	static bool IsAcogOpticMesh(const UStaticMeshComponent* Component);
 	static bool IsLikelyOpticComponent(const UStaticMeshComponent* Component);
 	static bool IsLikelySecondaryOpticComponent(const UStaticMeshComponent* Component);
