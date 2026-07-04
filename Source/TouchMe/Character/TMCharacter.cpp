@@ -19,6 +19,7 @@
 #include "GameFramework/Controller.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/ProjectileMovementComponent.h"
+#include "GameFramework/SpringArmComponent.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/KismetMathLibrary.h"
@@ -77,6 +78,19 @@ namespace
 	bool GTMDebugKrissNoAimOffsetPulseWasActive = false;
 	const TCHAR* TMProjectMasterSoundClassPath = TEXT("/Game/MP_System_V3/Game/Sounds/SC_Master_MPS.SC_Master_MPS");
 	const TCHAR* TMEngineMasterSoundClassPath = TEXT("/Engine/EngineSounds/Master.Master");
+	const FName TMMPCameraFPSocketName(TEXT("Camera_FP"));
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelLowerCm(
+		TEXT("tm.ViewmodelLowerCm"),
+		9.0f,
+		TEXT("Moves the local weapon and hands lower in the camera view, in centimeters. 0 disables it."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelForwardCm(
+		TEXT("tm.ViewmodelForwardCm"),
+		15.0f,
+		TEXT("Moves the local weapon and hands forward/backward in the camera view, in centimeters. Positive moves the camera forward."),
+		ECVF_Default);
 
 	struct FTMDebugBoneScaleDelegate
 	{
@@ -88,6 +102,60 @@ namespace
 
 	TArray<FTMDebugBoneScaleDelegate> GTMDebugBoneScaleDelegates;
 	TSet<uint32> GTMDebugBoneScaleReportedMeshIds;
+
+	void TMEnsureMPCameraBoomAttachment(ATMCharacter* Character)
+	{
+		if (!Character)
+		{
+			return;
+		}
+
+		USkeletalMeshComponent* Mesh = Character->GetMesh();
+		USpringArmComponent* CameraBoom = Character->FindComponentByClass<USpringArmComponent>();
+		if (!Mesh || !CameraBoom || !Mesh->DoesSocketExist(TMMPCameraFPSocketName))
+		{
+			return;
+		}
+
+		if (CameraBoom->GetAttachParent() == Mesh && CameraBoom->GetAttachSocketName() == TMMPCameraFPSocketName)
+		{
+			return;
+		}
+
+		CameraBoom->AttachToComponent(
+			Mesh,
+			FAttachmentTransformRules::KeepRelativeTransform,
+			TMMPCameraFPSocketName);
+		CameraBoom->SetRelativeLocation(FVector::ZeroVector);
+		CameraBoom->SetRelativeRotation(FRotator(0.0f, 90.0f, -90.0f));
+	}
+
+	void TMApplyViewmodelCameraOffset(ATMCharacter* Character)
+	{
+		if (!Character || !Character->IsLocallyControlled())
+		{
+			return;
+		}
+
+		UCameraComponent* CameraComponent = Character->FindComponentByClass<UCameraComponent>();
+		if (!CameraComponent)
+		{
+			return;
+		}
+
+		const FVector DesiredRelativeLocation(
+			CVarTMViewmodelForwardCm.GetValueOnGameThread(),
+			0.0f,
+			CVarTMViewmodelLowerCm.GetValueOnGameThread());
+		if (!CameraComponent->GetRelativeLocation().Equals(DesiredRelativeLocation, KINDA_SMALL_NUMBER))
+		{
+			CameraComponent->SetRelativeLocation(
+				DesiredRelativeLocation,
+				false,
+				nullptr,
+				ETeleportType::TeleportPhysics);
+		}
+	}
 
 	bool TMIsDebugLocalHandsScaleEnabled()
 	{
@@ -2168,16 +2236,15 @@ namespace
 			return;
 		}
 
-		static const FName FPCameraSocketName(TEXT("FP_Camera"));
 		USkeletalMeshSocket* FPCameraSocket = nullptr;
 		if (USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
 		{
-			FPCameraSocket = Skeleton->FindSocket(FPCameraSocketName);
+			FPCameraSocket = Skeleton->FindSocket(TMMPCameraFPSocketName);
 		}
 
 		if (!FPCameraSocket)
 		{
-			FPCameraSocket = SkeletalMesh->FindSocket(FPCameraSocketName);
+			FPCameraSocket = SkeletalMesh->FindSocket(TMMPCameraFPSocketName);
 		}
 
 		if (!FPCameraSocket)
@@ -2820,6 +2887,7 @@ void ATMCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
+	TMEnsureMPCameraBoomAttachment(this);
 	UpdateLocalPlayerControlledFlag();
 	if (IsTouchMeRuntimeTraceEnabled())
 	{
@@ -2844,6 +2912,7 @@ void ATMCharacter::Tick(float DeltaSeconds)
 	TMUpdateFabrikFixerAlpha(GetMesh());
 	TMUpdateWeaponBoneFloorLock(this, GetMesh());
 	TMUpdateADSSocketAnimBridge(this, GetMesh());
+	TMApplyViewmodelCameraOffset(this);
 	TMApplyOpticCameraFOVGuard(this);
 	TMUpdateRightHandIKTargetGuard(GetMesh());
 	UpdateAnimCurveAudioMuffle(DeltaSeconds);

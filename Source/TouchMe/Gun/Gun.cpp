@@ -4,6 +4,7 @@
 
 #include "Animation/AnimInstance.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Components/ActorComponent.h"
 #include "FakeGunAnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneComponent.h"
@@ -15,9 +16,11 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
+#include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "Particles/ParticleSystem.h"
+#include "Particles/ParticleSystemComponent.h"
 #include "TimerManager.h"
 #include "UObject/UnrealType.h"
 #include "../Projectile/ProjectileImpactData.h"
@@ -42,6 +45,29 @@ namespace
 	const FName AcogRenderDiscSocketName(TEXT("RM_Scope"));
 	const FName AcogGlassSocketName(TEXT("RM_Glass"));
 	const FName AcogFOVParameterName(TEXT("FOV"));
+	constexpr float ImpactFXForcedCleanupDelay = 2.0f;
+
+	void ScheduleImpactFXCleanup(UWorld* World, UActorComponent* Component)
+	{
+		if (!World || !Component)
+		{
+			return;
+		}
+
+		TWeakObjectPtr<UActorComponent> WeakComponent(Component);
+		FTimerHandle CleanupHandle;
+		World->GetTimerManager().SetTimer(
+			CleanupHandle,
+			FTimerDelegate::CreateLambda([WeakComponent]()
+			{
+				if (UActorComponent* ComponentToDestroy = WeakComponent.Get())
+				{
+					ComponentToDestroy->DestroyComponent();
+				}
+			}),
+			ImpactFXForcedCleanupDelay,
+			false);
+	}
 
 	FString CleanGeneratedWeaponClassName(FString ClassName)
 	{
@@ -1682,16 +1708,36 @@ void AGun::Impact(
 
 		if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(Effects.Particle))
 		{
-			UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), CascadeSystem, ParticleTransform);
+			UParticleSystemComponent* ParticleComponent = UGameplayStatics::SpawnEmitterAtLocation(
+				GetWorld(),
+				CascadeSystem,
+				ParticleTransform,
+				true,
+				EPSCPoolMethod::None,
+				true);
+			if (ParticleComponent)
+			{
+				ParticleComponent->bAutoDestroy = true;
+				ScheduleImpactFXCleanup(GetWorld(), ParticleComponent);
+			}
 		}
 		else if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(Effects.Particle))
 		{
-			UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 				this,
 				NiagaraSystem,
 				ParticleTransform.GetLocation(),
 				ParticleTransform.Rotator(),
-				ParticleTransform.GetScale3D());
+				ParticleTransform.GetScale3D(),
+				true,
+				true,
+				ENCPoolMethod::None,
+				true);
+			if (NiagaraComponent)
+			{
+				NiagaraComponent->SetAutoDestroy(true);
+				ScheduleImpactFXCleanup(GetWorld(), NiagaraComponent);
+			}
 		}
 	}
 

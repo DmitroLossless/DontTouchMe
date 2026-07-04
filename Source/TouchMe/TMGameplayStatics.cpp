@@ -63,6 +63,18 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "UObject/UnrealType.h"
 
+#if WITH_EDITOR
+#include "AnimGraphNode_CopyBone.h"
+#include "AnimGraphNode_Fabrik.h"
+#include "AnimGraphNode_ModifyBone.h"
+#include "Animation/AnimBlueprint.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#endif
+
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TMGameplayStatics)
 
 #if WITH_ACCESSIBILITY
@@ -187,6 +199,186 @@ namespace TMGameplayStatics
 		const FString NormalizedAlias = NormalizeOverlayEnumText(Alias);
 		return Aliases.Contains(NormalizedAlias);
 	}
+
+#if WITH_EDITOR
+	bool IsWeaponPoseRelevantBone(const FName BoneName)
+	{
+		static const TSet<FName> RelevantBones = {
+			TEXT("Camera_FP"),
+			TEXT("FP_Camera"),
+			TEXT("VB Control"),
+			TEXT("VB Hand_R"),
+			TEXT("VB Hand_L"),
+			TEXT("VB LHS_ik_hand_l"),
+			TEXT("VB LHS_ik_hand_r"),
+			TEXT("VB RHS_ik_hand_l"),
+			TEXT("VB RHS_ik_hand_gun"),
+			TEXT("Weapon"),
+			TEXT("hand_r"),
+			TEXT("hand_l"),
+			TEXT("ik_hand_l"),
+			TEXT("ik_hand_r"),
+			TEXT("ik_hand_gun"),
+			TEXT("head")
+		};
+		return RelevantBones.Contains(BoneName);
+	}
+
+	FString DescribeGraphPinLinks(const UEdGraphPin* Pin)
+	{
+		if (!Pin)
+		{
+			return TEXT("None");
+		}
+
+		TArray<FString> Links;
+		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+			Links.Add(FString::Printf(
+				TEXT("%s.%s"),
+				LinkedNode ? *LinkedNode->GetName() : TEXT("None"),
+				LinkedPin ? *LinkedPin->PinName.ToString() : TEXT("None")));
+		}
+
+		return Links.Num() > 0 ? FString::Join(Links, TEXT(", ")) : TEXT("None");
+	}
+
+	bool ShouldDumpGraphPin(const UEdGraphPin* Pin)
+	{
+		return Pin
+			&& (Pin->LinkedTo.Num() > 0
+				|| Pin->PinName == TEXT("ComponentPose")
+				|| Pin->PinName == TEXT("Pose")
+				|| Pin->PinName == TEXT("Translation")
+				|| Pin->PinName == TEXT("Rotation")
+				|| Pin->PinName == TEXT("Scale")
+				|| Pin->PinName == TEXT("Alpha")
+				|| Pin->PinName == TEXT("EffectorTransform"));
+	}
+
+	void AppendNodePins(const UEdGraphNode* Node, FString& Dump)
+	{
+		if (!Node)
+		{
+			return;
+		}
+
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!ShouldDumpGraphPin(Pin))
+			{
+				continue;
+			}
+
+			Dump += FString::Printf(
+				TEXT("    Pin=%s Dir=%s Default={%s} Links=%s\n"),
+				*Pin->PinName.ToString(),
+				Pin->Direction == EGPD_Input ? TEXT("In") : TEXT("Out"),
+				*Pin->DefaultValue,
+				*DescribeGraphPinLinks(Pin));
+		}
+	}
+
+	void AppendAnimBlueprintGraphDump(const TCHAR* AssetPath, FString& Dump)
+	{
+		UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, AssetPath);
+		if (!AnimBlueprint)
+		{
+			Dump += FString::Printf(TEXT("FAILED load %s\n"), AssetPath);
+			return;
+		}
+
+		Dump += FString::Printf(TEXT("ASSET %s\n"), *AnimBlueprint->GetPathName());
+		TArray<UEdGraph*> Graphs;
+		AnimBlueprint->GetAllGraphs(Graphs);
+
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			for (UEdGraphNode* GraphNode : Graph->Nodes)
+			{
+				if (const UAnimGraphNode_ModifyBone* ModifyBoneNode = Cast<UAnimGraphNode_ModifyBone>(GraphNode))
+				{
+					const FName BoneName = ModifyBoneNode->Node.BoneToModify.BoneName;
+					if (!IsWeaponPoseRelevantBone(BoneName))
+					{
+						continue;
+					}
+
+					Dump += FString::Printf(
+						TEXT("  Graph=%s Node=%s Type=ModifyBone Comment={%s} Bone=%s TM=%d RM=%d TS=%d RS=%d Loc=%s Rot=%s\n"),
+						*Graph->GetName(),
+						*ModifyBoneNode->GetName(),
+						*ModifyBoneNode->NodeComment,
+						*BoneName.ToString(),
+						static_cast<int32>(ModifyBoneNode->Node.TranslationMode),
+						static_cast<int32>(ModifyBoneNode->Node.RotationMode),
+						static_cast<int32>(ModifyBoneNode->Node.TranslationSpace),
+						static_cast<int32>(ModifyBoneNode->Node.RotationSpace),
+						*ModifyBoneNode->Node.Translation.ToString(),
+						*ModifyBoneNode->Node.Rotation.ToString());
+					AppendNodePins(ModifyBoneNode, Dump);
+				}
+				else if (const UAnimGraphNode_CopyBone* CopyBoneNode = Cast<UAnimGraphNode_CopyBone>(GraphNode))
+				{
+					const FName SourceBoneName = CopyBoneNode->Node.SourceBone.BoneName;
+					const FName TargetBoneName = CopyBoneNode->Node.TargetBone.BoneName;
+					if (!IsWeaponPoseRelevantBone(SourceBoneName) && !IsWeaponPoseRelevantBone(TargetBoneName))
+					{
+						continue;
+					}
+
+					Dump += FString::Printf(
+						TEXT("  Graph=%s Node=%s Type=CopyBone Source=%s Target=%s CopyT=%d CopyR=%d CopyS=%d Space=%d\n"),
+						*Graph->GetName(),
+						*CopyBoneNode->GetName(),
+						*SourceBoneName.ToString(),
+						*TargetBoneName.ToString(),
+						CopyBoneNode->Node.bCopyTranslation ? 1 : 0,
+						CopyBoneNode->Node.bCopyRotation ? 1 : 0,
+						CopyBoneNode->Node.bCopyScale ? 1 : 0,
+						static_cast<int32>(CopyBoneNode->Node.ControlSpace));
+					AppendNodePins(CopyBoneNode, Dump);
+				}
+				else if (const UAnimGraphNode_Fabrik* FabrikNode = Cast<UAnimGraphNode_Fabrik>(GraphNode))
+				{
+					const FName RootBoneName = FabrikNode->Node.RootBone.BoneName;
+					const FName TipBoneName = FabrikNode->Node.TipBone.BoneName;
+					const FName EffectorTargetName = FabrikNode->Node.EffectorTarget.bUseSocket
+						? FabrikNode->Node.EffectorTarget.SocketReference.SocketName
+						: FabrikNode->Node.EffectorTarget.BoneReference.BoneName;
+					if (!IsWeaponPoseRelevantBone(RootBoneName)
+						&& !IsWeaponPoseRelevantBone(TipBoneName)
+						&& !IsWeaponPoseRelevantBone(EffectorTargetName))
+					{
+						continue;
+					}
+
+					Dump += FString::Printf(
+						TEXT("  Graph=%s Node=%s Type=FABRIK Root=%s Tip=%s EffectorTarget=%s UseSocket=%d ETSpace=%d ERSource=%d AlphaType=%d Alpha=%.3f AlphaCurve=%s Effector=%s\n"),
+						*Graph->GetName(),
+						*FabrikNode->GetName(),
+						*RootBoneName.ToString(),
+						*TipBoneName.ToString(),
+						*EffectorTargetName.ToString(),
+						FabrikNode->Node.EffectorTarget.bUseSocket ? 1 : 0,
+						static_cast<int32>(FabrikNode->Node.EffectorTransformSpace.GetValue()),
+						static_cast<int32>(FabrikNode->Node.EffectorRotationSource.GetValue()),
+						static_cast<int32>(FabrikNode->Node.AlphaInputType),
+						FabrikNode->Node.Alpha,
+						*FabrikNode->Node.AlphaCurveName.ToString(),
+						*FabrikNode->Node.EffectorTransform.ToString());
+					AppendNodePins(FabrikNode, Dump);
+				}
+			}
+		}
+	}
+#endif
 
 	TArray<FString> BuildOverlayStateAliases(const int64 PoseValue, const FString& PoseDisplayName)
 	{
@@ -1171,16 +1363,11 @@ namespace TMGameplayStatics
 
 		const FTransform SocketWorldTransform = AttachToComponent->GetSocketTransform(AttachPointName, RTS_World);
 		const FVector SocketWorldLocation = SocketWorldTransform.GetLocation();
-		const float DistanceFromSocketWorld = FVector::Dist(Location, SocketWorldLocation);
-		if (DistanceFromSocketWorld > 5.0f)
-		{
-			return;
-		}
 
 		UE_LOG(
 			LogTouchMeRuntimeTrace,
 			Display,
-			TEXT("[MuzzleFXAttachFix] Asset=%s AttachTo=%s AttachPoint=%s IncomingWorldLoc=%s IncomingRot=%s SocketWorldLoc=%s SocketWorldRot=%s LocationType=%s -> RelativeLoc=Zero RelativeRot=Zero"),
+			TEXT("[MuzzleFXAttachFix] Asset=%s AttachTo=%s AttachPoint=%s IncomingLoc=%s IncomingRot=%s SocketWorldLoc=%s SocketWorldRot=%s LocationType=%s -> RelativeLoc=Zero RelativeRot=Zero"),
 			*EmitterTemplate->GetPathName(),
 			*AttachToComponent->GetPathName(),
 			*AttachPointName.ToString(),
@@ -1630,6 +1817,32 @@ bool UTMGameplayStatics::ApplyALSTurnInPlaceState(ACharacter* Character, const f
 	}
 
 	return bChanged;
+}
+
+bool UTMGameplayStatics::DumpAnimBlueprintGraphLinks()
+{
+#if WITH_EDITOR
+	static const TCHAR* TargetAnimBlueprintPaths[] =
+	{
+		TEXT("/Game/MP_System_V3/Game/Blueprints/Core/AnimBP_MPS_Master.AnimBP_MPS_Master"),
+		TEXT("/Game/Test/MPVS_SkeletonProbe/ImportedOnALS/ABP_UE5_MPSBones_OnALS.ABP_UE5_MPSBones_OnALS")
+	};
+
+	FString Dump;
+	for (const TCHAR* TargetAnimBlueprintPath : TargetAnimBlueprintPaths)
+	{
+		TMGameplayStatics::AppendAnimBlueprintGraphDump(TargetAnimBlueprintPath, Dump);
+		Dump += TEXT("\n");
+	}
+
+	const FString OutPath = FPaths::ProjectSavedDir() / TEXT("Codex/anim_graph_dump_cpp.txt");
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(OutPath), true);
+	const bool bSaved = FFileHelper::SaveStringToFile(Dump, *OutPath);
+	UE_LOG(LogTemp, Display, TEXT("[TMAnimGraphDump] Saved=%d Path=%s"), bSaved ? 1 : 0, *OutPath);
+	return bSaved;
+#else
+	return false;
+#endif
 }
 
 AActor* UTMGameplayStatics::Shoot(

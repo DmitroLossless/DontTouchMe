@@ -95,6 +95,9 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, Category="TM|Animation")
 	static TOUCHME_API bool ApplyALSTurnInPlaceState(ACharacter* Character, float DeltaSeconds);
 
+	UFUNCTION(BlueprintCallable, Category="TM|Debug")
+	static TOUCHME_API bool DumpAnimBlueprintGraphLinks();
+
 	UFUNCTION(BlueprintCallable, Category="TM|Projectile", meta=(WorldContext="WorldContextObject"))
 	static TOUCHME_API AActor* Shoot(
 		const UObject* WorldContextObject,
