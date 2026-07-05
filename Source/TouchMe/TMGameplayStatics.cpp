@@ -2,6 +2,7 @@
 
 #include "TMGameplayStatics.h"
 #include "TouchMe.h"
+#include "Gun/Gun.h"
 #include "Engine/Blueprint.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -71,8 +72,11 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphPin.h"
 #include "HAL/FileManager.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "UObject/SavePackage.h"
 #endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TMGameplayStatics)
@@ -1637,6 +1641,17 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAttached(
 	return nullptr;
 }
 
+void UTMGameplayStatics::PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor)
+{
+	AGun* Gun = Cast<AGun>(WeaponActor);
+	if (!Gun)
+	{
+		return;
+	}
+
+	Gun->PlayWeaponSpawnFeedback();
+}
+
 void UTMGameplayStatics::MarketSoundRoom(bool enable)
 {
 	
@@ -1839,6 +1854,80 @@ bool UTMGameplayStatics::DumpAnimBlueprintGraphLinks()
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(OutPath), true);
 	const bool bSaved = FFileHelper::SaveStringToFile(Dump, *OutPath);
 	UE_LOG(LogTemp, Display, TEXT("[TMAnimGraphDump] Saved=%d Path=%s"), bSaved ? 1 : 0, *OutPath);
+	return bSaved;
+#else
+	return false;
+#endif
+}
+
+bool UTMGameplayStatics::FixMPSBonesAimTargetGraph()
+{
+#if WITH_EDITOR
+	static const TCHAR* TargetAnimBlueprintPath =
+		TEXT("/Game/Test/MPVS_SkeletonProbe/ImportedOnALS/ABP_UE5_MPSBones_OnALS.ABP_UE5_MPSBones_OnALS");
+
+	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, TargetAnimBlueprintPath);
+	if (!AnimBlueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[TMFixAimTargetGraph] Failed to load %s"), TargetAnimBlueprintPath);
+		return false;
+	}
+
+	bool bChanged = false;
+	TArray<UEdGraph*> Graphs;
+	AnimBlueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph || Graph->GetFName() != TEXT("Pose_AimTarget"))
+		{
+			continue;
+		}
+
+		for (UEdGraphNode* GraphNode : Graph->Nodes)
+		{
+			UAnimGraphNode_ModifyBone* ModifyBoneNode = Cast<UAnimGraphNode_ModifyBone>(GraphNode);
+			if (!ModifyBoneNode
+				|| ModifyBoneNode->Node.BoneToModify.BoneName != TEXT("VB Control")
+				|| !FMath::IsNearlyEqual(ModifyBoneNode->Node.Translation.Y, 16.0))
+			{
+				continue;
+			}
+
+			const FRotator MPRotation(-90.0, 0.0, 0.0);
+			if (!ModifyBoneNode->Node.Rotation.Equals(MPRotation, KINDA_SMALL_NUMBER))
+			{
+				AnimBlueprint->Modify();
+				Graph->Modify();
+				ModifyBoneNode->Modify();
+				ModifyBoneNode->Node.Rotation = MPRotation;
+				ModifyBoneNode->ReconstructNode();
+				bChanged = true;
+			}
+		}
+	}
+
+	if (!bChanged)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[TMFixAimTargetGraph] No changes needed for %s"), TargetAnimBlueprintPath);
+		return true;
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(AnimBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(AnimBlueprint);
+
+	UPackage* Package = AnimBlueprint->GetOutermost();
+	const FString PackageFilename =
+		FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	const bool bSaved = UPackage::SavePackage(Package, AnimBlueprint, *PackageFilename, SaveArgs);
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMFixAimTargetGraph] Changed=1 Saved=%d Asset=%s"),
+		bSaved ? 1 : 0,
+		*AnimBlueprint->GetPathName());
 	return bSaved;
 #else
 	return false;

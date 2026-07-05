@@ -18,17 +18,31 @@
 #include "EdGraphSchema_K2.h"
 #include "../Gun/FakeGunAnimInstance.h"
 #include "../Gun/Gun.h"
+#include "../TMGameplayStatics.h"
 #include "Engine/Blueprint.h"
 #include "Engine/DataTable.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/Texture2D.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/Border.h"
+#include "Components/Button.h"
+#include "Components/Image.h"
+#include "Components/ProgressBar.h"
+#include "Components/RichTextBlock.h"
+#include "Components/TextBlock.h"
+#include "Components/Widget.h"
+#include "EditorReimportHandler.h"
 #include "K2Node_BreakStruct.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_GetDataTableRow.h"
 #include "K2Node_Select.h"
+#include "K2Node_SpawnActorFromClass.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/EnumEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
 #include "UObject/Class.h"
@@ -4475,6 +4489,1489 @@ namespace
 
 		return TMSavePackageForAsset(AnimBlueprint, TEXT("TMLeftHandFabrikAlpha"));
 	}
+
+	bool TMRefreshAttachmentAssets()
+	{
+		UDataTable* MuzzleTable = LoadObject<UDataTable>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Muzzle.DT_Muzzle"));
+		if (MuzzleTable)
+		{
+			const TArray<FName> RowNames = MuzzleTable->GetRowNames();
+			FString RowList;
+			for (const FName RowName : RowNames)
+			{
+				RowList += RowName.ToString();
+				RowList += TEXT(" ");
+			}
+
+			UE_LOG(LogTemp, Display, TEXT("[TMAttachmentRefresh] DT_Muzzle rows: %s"), *RowList);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentRefresh] Failed to load DT_Muzzle."));
+			return false;
+		}
+
+		UEnum* MuzzleEnum = LoadObject<UEnum>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Enums/Attachments/ENUM_Muzzle.ENUM_Muzzle"));
+		if (MuzzleEnum)
+		{
+			FString EnumList;
+			for (int32 Index = 0; Index < MuzzleEnum->NumEnums(); ++Index)
+			{
+				EnumList += MuzzleEnum->GetNameStringByIndex(Index);
+				EnumList += TEXT(" ");
+			}
+
+			UE_LOG(LogTemp, Display, TEXT("[TMAttachmentRefresh] ENUM_Muzzle values: %s"), *EnumList);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentRefresh] Failed to load ENUM_Muzzle."));
+			return false;
+		}
+
+		const TCHAR* AttachmentBlueprintPaths[] =
+		{
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Weapon_Master.BP_Weapon_Master"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout")
+		};
+
+		bool bSuccess = true;
+		for (const TCHAR* BlueprintPath : AttachmentBlueprintPaths)
+		{
+			UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+			if (!Blueprint)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMAttachmentRefresh] Failed to load blueprint: %s"), BlueprintPath);
+				bSuccess = false;
+				continue;
+			}
+
+			UE_LOG(LogTemp, Display, TEXT("[TMAttachmentRefresh] Refreshing %s"), *Blueprint->GetPathName());
+			FBlueprintEditorUtils::RefreshAllNodes(Blueprint);
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+			FKismetEditorUtilities::CompileBlueprint(Blueprint);
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMAttachmentRefresh] Blueprint status after compile: %d"),
+				static_cast<int32>(Blueprint->Status));
+
+			if (Blueprint->Status == BS_Error)
+			{
+				bSuccess = false;
+				continue;
+			}
+
+			bSuccess &= TMSavePackageForAsset(Blueprint, TEXT("TMAttachmentRefresh"));
+		}
+
+		return bSuccess;
+	}
+
+	int32 TMFindEnumIndexByDisplayName(const UEnum* Enum, const TCHAR* DisplayName)
+	{
+		if (!Enum)
+		{
+			return INDEX_NONE;
+		}
+
+		for (int32 Index = 0; Index < Enum->NumEnums(); ++Index)
+		{
+			const FString NameString = Enum->GetNameStringByIndex(Index);
+			const FString DisplayNameString = Enum->GetDisplayNameTextByIndex(Index).ToString();
+			if (NameString.Equals(DisplayName, ESearchCase::IgnoreCase)
+				|| DisplayNameString.Equals(DisplayName, ESearchCase::IgnoreCase))
+			{
+				return Index;
+			}
+		}
+
+		return INDEX_NONE;
+	}
+
+	bool TMEnsureAttachmentEnumHasSilencerco(UUserDefinedEnum*& OutEnum, int64& OutSilencercoValue)
+	{
+		OutEnum = LoadObject<UUserDefinedEnum>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Enums/ENUM_Attachments.ENUM_Attachments"));
+		if (!OutEnum)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] Failed to load ENUM_Attachments."));
+			return false;
+		}
+
+		int32 SilencercoIndex = TMFindEnumIndexByDisplayName(OutEnum, TEXT("Silencerco"));
+		if (SilencercoIndex == INDEX_NONE)
+		{
+			OutEnum->Modify();
+			FEnumEditorUtils::AddNewEnumeratorForUserDefinedEnum(OutEnum);
+			SilencercoIndex = OutEnum->NumEnums() - 2;
+			if (SilencercoIndex < 0
+				|| !FEnumEditorUtils::SetEnumeratorDisplayName(OutEnum, SilencercoIndex, FText::FromString(TEXT("Silencerco"))))
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] Failed to add Silencerco to ENUM_Attachments."));
+				return false;
+			}
+
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMSilencerco] Added Silencerco to ENUM_Attachments at index %d."),
+				SilencercoIndex);
+			TMSavePackageForAsset(OutEnum, TEXT("TMSilencerco"));
+		}
+		else
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMSilencerco] Silencerco already present in ENUM_Attachments at index %d."),
+				SilencercoIndex);
+		}
+
+		OutSilencercoValue = OutEnum->GetValueByIndex(SilencercoIndex);
+		FString EnumList;
+		for (int32 Index = 0; Index < OutEnum->NumEnums(); ++Index)
+		{
+			EnumList += FString::Printf(
+				TEXT("%d:%s/%s=%lld "),
+				Index,
+				*OutEnum->GetNameStringByIndex(Index),
+				*OutEnum->GetDisplayNameTextByIndex(Index).ToString(),
+				static_cast<long long>(OutEnum->GetValueByIndex(Index)));
+		}
+		UE_LOG(LogTemp, Display, TEXT("[TMSilencerco] ENUM_Attachments values: %s"), *EnumList);
+		return true;
+	}
+
+	FArrayProperty* TMFindArrayPropertyByName(UClass* Class, const TCHAR* ExpectedName)
+	{
+		if (!Class)
+		{
+			return nullptr;
+		}
+
+		for (TFieldIterator<FArrayProperty> It(Class); It; ++It)
+		{
+			FArrayProperty* Property = *It;
+			if (!Property)
+			{
+				continue;
+			}
+
+			const FString PropertyName = Property->GetName();
+			if (PropertyName.Equals(ExpectedName, ESearchCase::IgnoreCase)
+				|| PropertyName.StartsWith(FString(ExpectedName) + TEXT("_"), ESearchCase::IgnoreCase)
+				|| Property->GetAuthoredName().Equals(ExpectedName, ESearchCase::IgnoreCase))
+			{
+				return Property;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool TMReadEnumArrayValue(const FProperty* InnerProperty, const void* ElementPtr, int64& OutValue)
+	{
+		if (!InnerProperty || !ElementPtr)
+		{
+			return false;
+		}
+
+		if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(InnerProperty))
+		{
+			OutValue = EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(ElementPtr);
+			return true;
+		}
+
+		if (const FNumericProperty* NumericProperty = CastField<FNumericProperty>(InnerProperty))
+		{
+			OutValue = NumericProperty->GetSignedIntPropertyValue(ElementPtr);
+			return true;
+		}
+
+		return false;
+	}
+
+	bool TMWriteEnumArrayValue(FProperty* InnerProperty, void* ElementPtr, const int64 Value)
+	{
+		if (!InnerProperty || !ElementPtr)
+		{
+			return false;
+		}
+
+		if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(InnerProperty))
+		{
+			EnumProperty->GetUnderlyingProperty()->SetIntPropertyValue(ElementPtr, Value);
+			return true;
+		}
+
+		if (FNumericProperty* NumericProperty = CastField<FNumericProperty>(InnerProperty))
+		{
+			NumericProperty->SetIntPropertyValue(ElementPtr, Value);
+			return true;
+		}
+
+		return false;
+	}
+
+	bool TMAddEnumValueToCompatibleAttachment(UBlueprint* Blueprint, UEnum* Enum, const int64 EnumValue)
+	{
+		if (!Blueprint || !Blueprint->GeneratedClass || !Enum)
+		{
+			return false;
+		}
+
+		UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+		FArrayProperty* CompatibleAttachmentProperty =
+			TMFindArrayPropertyByName(DefaultObject ? DefaultObject->GetClass() : nullptr, TEXT("CompatibleAttachment"));
+		if (!DefaultObject || !CompatibleAttachmentProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] CompatibleAttachment not found on %s."), *GetNameSafe(Blueprint));
+			return false;
+		}
+
+		FScriptArrayHelper ArrayHelper(CompatibleAttachmentProperty, CompatibleAttachmentProperty->ContainerPtrToValuePtr<void>(DefaultObject));
+		FString BeforeValues;
+		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+		{
+			int64 ExistingValue = 0;
+			if (TMReadEnumArrayValue(CompatibleAttachmentProperty->Inner, ArrayHelper.GetRawPtr(Index), ExistingValue))
+			{
+				BeforeValues += FString::Printf(
+					TEXT("%lld/%s "),
+					static_cast<long long>(ExistingValue),
+					*Enum->GetDisplayNameTextByValue(ExistingValue).ToString());
+				if (ExistingValue == EnumValue)
+				{
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMSilencerco] %s already has Silencerco in CompatibleAttachment. Values: %s"),
+						*Blueprint->GetPathName(),
+						*BeforeValues);
+					return true;
+				}
+			}
+		}
+
+		Blueprint->Modify();
+		DefaultObject->Modify();
+
+		const int32 NewIndex = ArrayHelper.AddValue();
+		if (!TMWriteEnumArrayValue(CompatibleAttachmentProperty->Inner, ArrayHelper.GetRawPtr(NewIndex), EnumValue))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] Failed to write Silencerco enum value on %s."), *Blueprint->GetPathName());
+			return false;
+		}
+
+		FString AfterValues;
+		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+		{
+			int64 ExistingValue = 0;
+			if (TMReadEnumArrayValue(CompatibleAttachmentProperty->Inner, ArrayHelper.GetRawPtr(Index), ExistingValue))
+			{
+				AfterValues += FString::Printf(
+					TEXT("%lld/%s "),
+					static_cast<long long>(ExistingValue),
+					*Enum->GetDisplayNameTextByValue(ExistingValue).ToString());
+			}
+		}
+
+		FPropertyChangedEvent PropertyChangedEvent(CompatibleAttachmentProperty);
+		DefaultObject->PostEditChangeProperty(PropertyChangedEvent);
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMSilencerco] Added Silencerco to %s CompatibleAttachment. Before: %s After: %s"),
+			*Blueprint->GetPathName(),
+			*BeforeValues,
+			*AfterValues);
+		return Blueprint->Status != BS_Error && TMSavePackageForAsset(Blueprint, TEXT("TMSilencerco"));
+	}
+
+	FString TMDescribeCompatibleAttachmentValues(FArrayProperty* ArrayProperty, FScriptArrayHelper& ArrayHelper, const UEnum* Enum)
+	{
+		FString Values;
+		if (!ArrayProperty || !Enum)
+		{
+			return Values;
+		}
+
+		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+		{
+			int64 ExistingValue = 0;
+			if (TMReadEnumArrayValue(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), ExistingValue))
+			{
+				Values += FString::Printf(
+					TEXT("%lld/%s "),
+					static_cast<long long>(ExistingValue),
+					*Enum->GetDisplayNameTextByValue(ExistingValue).ToString());
+			}
+		}
+
+		return Values;
+	}
+
+	bool TMShouldKeepDEMuzzleAttachment(const FString& AttachmentName)
+	{
+		return AttachmentName.Equals(TEXT("Silencerco"), ESearchCase::IgnoreCase)
+			|| AttachmentName.Equals(TEXT("Empty"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMCollectDEMuzzleValuesToRemove(const UEnum* AttachmentEnum, const int64 SilencercoValue, TSet<int64>& OutValuesToRemove)
+	{
+		if (!AttachmentEnum)
+		{
+			return false;
+		}
+
+		UDataTable* MuzzleTable = LoadObject<UDataTable>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Muzzle.DT_Muzzle"));
+		if (!MuzzleTable)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMDEMuzzle] Failed to load DT_Muzzle."));
+			return false;
+		}
+
+		FString MuzzleRows;
+		for (const FName RowName : MuzzleTable->GetRowNames())
+		{
+			const FString RowNameString = RowName.ToString();
+			MuzzleRows += RowNameString + TEXT(" ");
+
+			if (TMShouldKeepDEMuzzleAttachment(RowNameString))
+			{
+				continue;
+			}
+
+			const int32 AttachmentIndex = TMFindEnumIndexByDisplayName(AttachmentEnum, *RowNameString);
+			if (AttachmentIndex == INDEX_NONE)
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("[TMDEMuzzle] DT_Muzzle row has no matching ENUM_Attachments value: %s"),
+					*RowNameString);
+				continue;
+			}
+
+			const int64 AttachmentValue = AttachmentEnum->GetValueByIndex(AttachmentIndex);
+			if (AttachmentValue != SilencercoValue)
+			{
+				OutValuesToRemove.Add(AttachmentValue);
+			}
+		}
+
+		UE_LOG(LogTemp, Display, TEXT("[TMDEMuzzle] DT_Muzzle rows: %s"), *MuzzleRows);
+		return true;
+	}
+
+	bool TMPatchDESilencercoOnly()
+	{
+		UUserDefinedEnum* AttachmentEnum = nullptr;
+		int64 SilencercoValue = 0;
+		if (!TMEnsureAttachmentEnumHasSilencerco(AttachmentEnum, SilencercoValue))
+		{
+			return false;
+		}
+
+		TSet<int64> MuzzleValuesToRemove;
+		if (!TMCollectDEMuzzleValuesToRemove(AttachmentEnum, SilencercoValue, MuzzleValuesToRemove))
+		{
+			return false;
+		}
+
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/DE/BP_DE.BP_DE"));
+		if (!Blueprint || !Blueprint->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMDEMuzzle] Failed to load BP_DE."));
+			return false;
+		}
+
+		UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+		FArrayProperty* CompatibleAttachmentProperty =
+			TMFindArrayPropertyByName(DefaultObject ? DefaultObject->GetClass() : nullptr, TEXT("CompatibleAttachment"));
+		if (!DefaultObject || !CompatibleAttachmentProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMDEMuzzle] CompatibleAttachment not found on BP_DE."));
+			return false;
+		}
+
+		FScriptArrayHelper ArrayHelper(
+			CompatibleAttachmentProperty,
+			CompatibleAttachmentProperty->ContainerPtrToValuePtr<void>(DefaultObject));
+		const FString BeforeValues = TMDescribeCompatibleAttachmentValues(CompatibleAttachmentProperty, ArrayHelper, AttachmentEnum);
+		bool bChanged = false;
+		bool bHasSilencerco = false;
+
+		for (int32 Index = ArrayHelper.Num() - 1; Index >= 0; --Index)
+		{
+			int64 ExistingValue = 0;
+			if (!TMReadEnumArrayValue(CompatibleAttachmentProperty->Inner, ArrayHelper.GetRawPtr(Index), ExistingValue))
+			{
+				continue;
+			}
+
+			if (ExistingValue == SilencercoValue)
+			{
+				if (bHasSilencerco)
+				{
+					ArrayHelper.RemoveValues(Index);
+					bChanged = true;
+				}
+				else
+				{
+					bHasSilencerco = true;
+				}
+				continue;
+			}
+
+			if (MuzzleValuesToRemove.Contains(ExistingValue))
+			{
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMDEMuzzle] Removing muzzle attachment from BP_DE: %lld/%s"),
+					static_cast<long long>(ExistingValue),
+					*AttachmentEnum->GetDisplayNameTextByValue(ExistingValue).ToString());
+				ArrayHelper.RemoveValues(Index);
+				bChanged = true;
+			}
+		}
+
+		if (!bHasSilencerco)
+		{
+			const int32 NewIndex = ArrayHelper.AddValue();
+			if (!TMWriteEnumArrayValue(CompatibleAttachmentProperty->Inner, ArrayHelper.GetRawPtr(NewIndex), SilencercoValue))
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMDEMuzzle] Failed to write Silencerco enum value on BP_DE."));
+				return false;
+			}
+			bChanged = true;
+		}
+
+		const FString AfterValues = TMDescribeCompatibleAttachmentValues(CompatibleAttachmentProperty, ArrayHelper, AttachmentEnum);
+		UE_LOG(LogTemp, Display, TEXT("[TMDEMuzzle] BP_DE CompatibleAttachment before: %s"), *BeforeValues);
+		UE_LOG(LogTemp, Display, TEXT("[TMDEMuzzle] BP_DE CompatibleAttachment after: %s"), *AfterValues);
+
+		bool bSuccess = true;
+		if (bChanged)
+		{
+			Blueprint->Modify();
+			DefaultObject->Modify();
+			FPropertyChangedEvent PropertyChangedEvent(CompatibleAttachmentProperty);
+			DefaultObject->PostEditChangeProperty(PropertyChangedEvent);
+			FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+			FKismetEditorUtilities::CompileBlueprint(Blueprint);
+			bSuccess &= Blueprint->Status != BS_Error && TMSavePackageForAsset(Blueprint, TEXT("TMDEMuzzle"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Display, TEXT("[TMDEMuzzle] BP_DE already has only Silencerco muzzle compatibility."));
+		}
+
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Weapon_Master.BP_Weapon_Master"),
+			TEXT("TMDEMuzzle"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer"),
+			TEXT("TMDEMuzzle"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			TEXT("TMDEMuzzle"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			TEXT("TMDEMuzzle"));
+
+		return bSuccess;
+	}
+
+	bool TMPatchSilencercoM4TarCompatibility()
+	{
+		UUserDefinedEnum* AttachmentEnum = nullptr;
+		int64 SilencercoValue = 0;
+		if (!TMEnsureAttachmentEnumHasSilencerco(AttachmentEnum, SilencercoValue))
+		{
+			return false;
+		}
+
+		const TCHAR* WeaponBlueprintPaths[] =
+		{
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/M4/BP_M4.BP_M4"),
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/TAR/BP_TAR.BP_TAR")
+		};
+
+		bool bSuccess = true;
+		for (const TCHAR* BlueprintPath : WeaponBlueprintPaths)
+		{
+			UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+			if (!Blueprint)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] Failed to load blueprint: %s"), BlueprintPath);
+				bSuccess = false;
+				continue;
+			}
+
+			bSuccess &= TMAddEnumValueToCompatibleAttachment(Blueprint, AttachmentEnum, SilencercoValue);
+		}
+
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Weapon_Master.BP_Weapon_Master"),
+			TEXT("TMSilencerco"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer"),
+			TEXT("TMSilencerco"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			TEXT("TMSilencerco"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			TEXT("TMSilencerco"));
+
+		return bSuccess;
+	}
+
+	FLinearColor TMGetDirtyFolderYellow()
+	{
+		return FLinearColor::FromSRGBColor(FColor(214, 166, 44, 255));
+	}
+
+	FString TMFormatLinearColorDefault(const FLinearColor& Color)
+	{
+		return FString::Printf(
+			TEXT("(R=%.6f,G=%.6f,B=%.6f,A=%.6f)"),
+			Color.R,
+			Color.G,
+			Color.B,
+			Color.A);
+	}
+
+	FString TMFormatSlateColorDefault(const FLinearColor& Color)
+	{
+		return FString::Printf(
+			TEXT("(SpecifiedColor=%s,ColorUseRule=UseColor_Specified)"),
+			*TMFormatLinearColorDefault(Color));
+	}
+
+	bool TMSetLinkedPinDefault(UEdGraphPin* Pin, const FString& DefaultValue)
+	{
+		if (!Pin)
+		{
+			return false;
+		}
+
+		const bool bHadLinks = Pin->LinkedTo.Num() > 0;
+		const bool bChangedDefault = Pin->DefaultValue != DefaultValue;
+		if (!bHadLinks && !bChangedDefault)
+		{
+			return false;
+		}
+
+		Pin->Modify();
+		if (bHadLinks)
+		{
+			Pin->BreakAllPinLinks(false);
+		}
+
+		bool bSetBySchema = false;
+		if (const UEdGraphNode* Node = Pin->GetOwningNode())
+		{
+			if (const UEdGraph* Graph = Node->GetGraph())
+			{
+				if (const UEdGraphSchema* Schema = Graph->GetSchema())
+				{
+					Schema->TrySetDefaultValue(*Pin, DefaultValue);
+					bSetBySchema = true;
+				}
+			}
+		}
+
+		if (!bSetBySchema)
+		{
+			Pin->DefaultValue = DefaultValue;
+		}
+
+		return true;
+	}
+
+	bool TMSetGraphSlateColorPinYellow(UEdGraphPin* SlateColorPin, const FLinearColor& Yellow)
+	{
+		if (!SlateColorPin)
+		{
+			return false;
+		}
+
+		bool bChanged = false;
+		const FString LinearDefault = TMFormatLinearColorDefault(Yellow);
+		const FString SlateDefault = TMFormatSlateColorDefault(Yellow);
+
+		UEdGraphPin* SpecifiedColorPin = nullptr;
+		UEdGraphPin* ColorUseRulePin = nullptr;
+		for (UEdGraphPin* SubPin : SlateColorPin->SubPins)
+		{
+			if (!SubPin)
+			{
+				continue;
+			}
+
+			const FString SubPinName = SubPin->PinName.ToString();
+			if (SubPinName.Contains(TEXT("SpecifiedColor"), ESearchCase::IgnoreCase))
+			{
+				SpecifiedColorPin = SubPin;
+			}
+			else if (SubPinName.Contains(TEXT("ColorUseRule"), ESearchCase::IgnoreCase))
+			{
+				ColorUseRulePin = SubPin;
+			}
+		}
+
+		if (!SpecifiedColorPin)
+		{
+			SpecifiedColorPin = TMFindPinByName(
+				SlateColorPin->GetOwningNode(),
+				*FString::Printf(TEXT("%s_SpecifiedColor"), *SlateColorPin->PinName.ToString()),
+				EGPD_Input);
+		}
+
+		if (!ColorUseRulePin)
+		{
+			ColorUseRulePin = TMFindPinByName(
+				SlateColorPin->GetOwningNode(),
+				*FString::Printf(TEXT("%s_ColorUseRule"), *SlateColorPin->PinName.ToString()),
+				EGPD_Input);
+		}
+
+		if (SpecifiedColorPin)
+		{
+			bChanged |= TMSetLinkedPinDefault(SpecifiedColorPin, LinearDefault);
+			if (SlateColorPin->LinkedTo.Num() > 0)
+			{
+				SlateColorPin->Modify();
+				SlateColorPin->BreakAllPinLinks(false);
+				bChanged = true;
+			}
+		}
+		else
+		{
+			bChanged |= TMSetLinkedPinDefault(SlateColorPin, SlateDefault);
+		}
+
+		if (ColorUseRulePin)
+		{
+			bChanged |= TMSetLinkedPinDefault(ColorUseRulePin, TEXT("UseColor_Specified"));
+		}
+
+		return bChanged;
+	}
+
+	bool TMSetButtonForegroundStyleYellow(UButton* Button, const FSlateColor& SlateYellow)
+	{
+		if (!Button)
+		{
+			return false;
+		}
+
+		FButtonStyle Style = Button->GetStyle();
+		Style
+			.SetNormalForeground(SlateYellow)
+			.SetHoveredForeground(SlateYellow)
+			.SetPressedForeground(SlateYellow)
+			.SetDisabledForeground(SlateYellow);
+		Button->SetStyle(Style);
+		return true;
+	}
+
+	bool TMPatchYellowWidgetGraphColors(UBlueprint* Blueprint, int32& OutTextGraphCount, int32& OutButtonForegroundGraphCount)
+	{
+		if (!Blueprint)
+		{
+			return false;
+		}
+
+		const FLinearColor Yellow = TMGetDirtyFolderYellow();
+		bool bChanged = false;
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				UK2Node_CallFunction* CallFunctionNode = Cast<UK2Node_CallFunction>(Node);
+				if (!CallFunctionNode)
+				{
+					continue;
+				}
+
+				const FName FunctionName = CallFunctionNode->FunctionReference.GetMemberName();
+				UFunction* TargetFunction = CallFunctionNode->GetTargetFunction();
+				UClass* OwnerClass = TargetFunction ? TargetFunction->GetOwnerClass() : nullptr;
+
+				if (FunctionName == TEXT("SetColorAndOpacity")
+					&& OwnerClass
+					&& OwnerClass->IsChildOf(UTextBlock::StaticClass()))
+				{
+					if (UEdGraphPin* ColorPin = TMFindPinByName(CallFunctionNode, TEXT("InColorAndOpacity"), EGPD_Input))
+					{
+						if (TMSetGraphSlateColorPinYellow(ColorPin, Yellow))
+						{
+							++OutTextGraphCount;
+							bChanged = true;
+							UE_LOG(
+								LogTemp,
+								Display,
+								TEXT("[TMYellowUI] Patched TextBlock graph color: %s Graph=%s Node=%s"),
+								*Blueprint->GetPathName(),
+								*Graph->GetName(),
+								*Node->GetName());
+						}
+					}
+				}
+
+				if (FunctionName == TEXT("SetStyle")
+					&& OwnerClass
+					&& OwnerClass->IsChildOf(UButton::StaticClass()))
+				{
+					for (UEdGraphPin* Pin : Node->Pins)
+					{
+						if (!Pin || Pin->Direction != EGPD_Input)
+						{
+							continue;
+						}
+
+						const FString PinName = Pin->PinName.ToString();
+						if (!PinName.Contains(TEXT("Foreground"), ESearchCase::IgnoreCase))
+						{
+							continue;
+						}
+
+						const UObject* SubCategoryObject = Pin->PinType.PinSubCategoryObject.Get();
+						if (!GetNameSafe(SubCategoryObject).Contains(TEXT("SlateColor"), ESearchCase::IgnoreCase))
+						{
+							continue;
+						}
+
+						if (TMSetGraphSlateColorPinYellow(Pin, Yellow))
+						{
+							++OutButtonForegroundGraphCount;
+							bChanged = true;
+							UE_LOG(
+								LogTemp,
+								Display,
+								TEXT("[TMYellowUI] Patched Button foreground graph color: %s Graph=%s Node=%s Pin=%s"),
+								*Blueprint->GetPathName(),
+								*Graph->GetName(),
+								*Node->GetName(),
+								*PinName);
+						}
+					}
+				}
+			}
+		}
+
+		return bChanged;
+	}
+
+	bool TMContainsToken(const FString& Text, const TCHAR* Token)
+	{
+		return Text.Contains(Token, ESearchCase::IgnoreCase, ESearchDir::FromStart);
+	}
+
+	UWidgetTree* TMFindWidgetTree(UBlueprint* Blueprint)
+	{
+		if (!Blueprint)
+		{
+			return nullptr;
+		}
+
+		FProperty* WidgetTreeProperty = Blueprint->GetClass()->FindPropertyByName(FName(TEXT("WidgetTree")));
+		FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(WidgetTreeProperty);
+		if (!ObjectProperty)
+		{
+			return nullptr;
+		}
+
+		return Cast<UWidgetTree>(ObjectProperty->GetObjectPropertyValue_InContainer(Blueprint));
+	}
+
+	FString TMDescribeWidgetImage(UImage* Image)
+	{
+		FString Descriptor = Image ? Image->GetName() : FString();
+		if (Image)
+		{
+			if (UObject* ResourceObject = Image->GetBrush().GetResourceObject())
+			{
+				Descriptor += TEXT(" ");
+				Descriptor += ResourceObject->GetPathName();
+			}
+		}
+
+		return Descriptor;
+	}
+
+	bool TMShouldKeepHudImageWhite(const FString& Descriptor)
+	{
+		return TMContainsToken(Descriptor, TEXT("Crosshair"))
+			|| TMContainsToken(Descriptor, TEXT("Reticle"))
+			|| TMContainsToken(Descriptor, TEXT("Aiming"))
+			|| TMContainsToken(Descriptor, TEXT("Aim"))
+			|| TMContainsToken(Descriptor, TEXT("Sight"));
+	}
+
+	bool TMShouldTintHudImageYellow(const FString& Descriptor)
+	{
+		if (TMShouldKeepHudImageWhite(Descriptor)
+			|| TMContainsToken(Descriptor, TEXT("Background"))
+			|| TMContainsToken(Descriptor, TEXT("Blood"))
+			|| TMContainsToken(Descriptor, TEXT("Focus")))
+		{
+			return false;
+		}
+
+		return TMContainsToken(Descriptor, TEXT("Ammo"))
+			|| TMContainsToken(Descriptor, TEXT("Health"))
+			|| TMContainsToken(Descriptor, TEXT("Weapon"))
+			|| TMContainsToken(Descriptor, TEXT("Firemode"))
+			|| TMContainsToken(Descriptor, TEXT("Grenade"))
+			|| TMContainsToken(Descriptor, TEXT("Syringe"))
+			|| TMContainsToken(Descriptor, TEXT("Compass"))
+			|| TMContainsToken(Descriptor, TEXT("Hitmarker"))
+			|| TMContainsToken(Descriptor, TEXT("Hit_Wheel"))
+			|| TMContainsToken(Descriptor, TEXT("Circle"))
+			|| TMContainsToken(Descriptor, TEXT("Knife"))
+			|| TMContainsToken(Descriptor, TEXT("Frag"))
+			|| TMContainsToken(Descriptor, TEXT("Skull"))
+			|| TMContainsToken(Descriptor, TEXT("Score"))
+			|| TMContainsToken(Descriptor, TEXT("Objective"))
+			|| TMContainsToken(Descriptor, TEXT("FillImage"))
+			|| TMContainsToken(Descriptor, TEXT("Progress"));
+	}
+
+	bool TMShouldTintHudBrushWidgetYellow(const FString& WidgetName)
+	{
+		if (TMShouldKeepHudImageWhite(WidgetName)
+			|| TMContainsToken(WidgetName, TEXT("Background")))
+		{
+			return false;
+		}
+
+		return TMContainsToken(WidgetName, TEXT("Ammo"))
+			|| TMContainsToken(WidgetName, TEXT("Health"))
+			|| TMContainsToken(WidgetName, TEXT("Weapon"))
+			|| TMContainsToken(WidgetName, TEXT("Firemode"))
+			|| TMContainsToken(WidgetName, TEXT("Grenade"))
+			|| TMContainsToken(WidgetName, TEXT("Score"))
+			|| TMContainsToken(WidgetName, TEXT("Objective"))
+			|| TMContainsToken(WidgetName, TEXT("Progress"));
+	}
+
+	bool TMApplyYellowToWidgetBlueprint(const TCHAR* BlueprintPath, const bool bTintHudBrushes)
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMYellowUI] Failed to load widget blueprint: %s"), BlueprintPath);
+			return false;
+		}
+
+		UWidgetTree* WidgetTree = TMFindWidgetTree(Blueprint);
+		if (!WidgetTree)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMYellowUI] Failed to find WidgetTree in: %s"), *Blueprint->GetPathName());
+			return false;
+		}
+
+		const FLinearColor Yellow = TMGetDirtyFolderYellow();
+		const FSlateColor SlateYellow(Yellow);
+		int32 TextCount = 0;
+		int32 RichTextCount = 0;
+		int32 ButtonCount = 0;
+		int32 ImageCount = 0;
+		int32 ProgressBarCount = 0;
+		int32 BorderCount = 0;
+		int32 KeptWhiteCount = 0;
+		int32 TextGraphColorCount = 0;
+		int32 ButtonForegroundGraphCount = 0;
+		bool bChanged = false;
+
+		WidgetTree->ForEachWidget([&](UWidget* Widget)
+		{
+			if (!Widget)
+			{
+				return;
+			}
+
+			if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
+			{
+				TextBlock->SetColorAndOpacity(SlateYellow);
+				++TextCount;
+				bChanged = true;
+			}
+
+			if (URichTextBlock* RichTextBlock = Cast<URichTextBlock>(Widget))
+			{
+				RichTextBlock->SetDefaultColorAndOpacity(SlateYellow);
+				++RichTextCount;
+				bChanged = true;
+			}
+
+			if (UButton* Button = Cast<UButton>(Widget))
+			{
+				if (TMSetButtonForegroundStyleYellow(Button, SlateYellow))
+				{
+					++ButtonCount;
+					bChanged = true;
+				}
+			}
+
+			if (!bTintHudBrushes)
+			{
+				return;
+			}
+
+			if (UImage* Image = Cast<UImage>(Widget))
+			{
+				const FString Descriptor = TMDescribeWidgetImage(Image);
+				if (TMShouldKeepHudImageWhite(Descriptor))
+				{
+					++KeptWhiteCount;
+					UE_LOG(LogTemp, Display, TEXT("[TMYellowUI] Keeping HUD image white: %s"), *Descriptor);
+				}
+				else if (TMShouldTintHudImageYellow(Descriptor))
+				{
+					Image->SetColorAndOpacity(Yellow);
+					++ImageCount;
+					bChanged = true;
+				}
+			}
+
+			if (UProgressBar* ProgressBar = Cast<UProgressBar>(Widget))
+			{
+				ProgressBar->SetFillColorAndOpacity(Yellow);
+				++ProgressBarCount;
+				bChanged = true;
+			}
+
+			if (UBorder* Border = Cast<UBorder>(Widget))
+			{
+				const FString WidgetName = Border->GetName();
+				if (TMShouldTintHudBrushWidgetYellow(WidgetName))
+				{
+					Border->SetBrushColor(Yellow);
+					++BorderCount;
+					bChanged = true;
+				}
+			}
+		});
+
+		if (TMPatchYellowWidgetGraphColors(Blueprint, TextGraphColorCount, ButtonForegroundGraphCount))
+		{
+			bChanged = true;
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMYellowUI] %s: Text=%d RichText=%d Buttons=%d GraphTextColors=%d GraphButtonForegrounds=%d Images=%d ProgressBars=%d Borders=%d KeptWhiteImages=%d"),
+			*Blueprint->GetPathName(),
+			TextCount,
+			RichTextCount,
+			ButtonCount,
+			TextGraphColorCount,
+			ButtonForegroundGraphCount,
+			ImageCount,
+			ProgressBarCount,
+			BorderCount,
+			KeptWhiteCount);
+
+		if (!bChanged)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMYellowUI] No widgets were changed in %s"), *Blueprint->GetPathName());
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMYellowUI] Blueprint compile failed: %s"), *Blueprint->GetPathName());
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMYellowUI"));
+	}
+
+	void TMReimportYellowSplashTextures()
+	{
+		const TCHAR* SplashTexturePaths[] =
+		{
+			TEXT("/Game/Splash/Splash.Splash"),
+			TEXT("/Game/Splash/EdSplash.EdSplash")
+		};
+
+		for (const TCHAR* TexturePath : SplashTexturePaths)
+		{
+			UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, TexturePath);
+			if (!Texture)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[TMYellowUI] Splash texture asset not found for reimport: %s"), TexturePath);
+				continue;
+			}
+
+			if (!FReimportManager::Instance()->Reimport(Texture, false, false, FString(), nullptr, INDEX_NONE, false, true, false))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[TMYellowUI] Reimport failed for splash texture asset: %s"), TexturePath);
+				continue;
+			}
+
+			TMSavePackageForAsset(Texture, TEXT("TMYellowUI"));
+		}
+	}
+
+	bool TMTintYellowUI()
+	{
+		TMReimportYellowSplashTextures();
+
+		bool bSuccess = true;
+		bSuccess &= TMApplyYellowToWidgetBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu"),
+			false);
+		bSuccess &= TMApplyYellowToWidgetBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_InGameMenu.W_InGameMenu"),
+			false);
+		bSuccess &= TMApplyYellowToWidgetBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			false);
+		bSuccess &= TMApplyYellowToWidgetBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			false);
+		bSuccess &= TMApplyYellowToWidgetBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachment_Layer.W_Attachment_Layer"),
+			false);
+		bSuccess &= TMApplyYellowToWidgetBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_HUD.W_HUD"),
+			true);
+		bSuccess &= TMApplyYellowToWidgetBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Weapon_Layer.W_Weapon_Layer"),
+			true);
+
+		return bSuccess;
+	}
+
+	bool TMIsColorRelatedPin(const UEdGraphPin* Pin)
+	{
+		if (!Pin)
+		{
+			return false;
+		}
+
+		const FString PinName = Pin->PinName.ToString();
+		const FString FriendlyName = Pin->PinFriendlyName.ToString();
+		const FString PinCategory = Pin->PinType.PinCategory.ToString();
+		const FString PinSubCategory = Pin->PinType.PinSubCategory.ToString();
+		const UObject* SubCategoryObject = Pin->PinType.PinSubCategoryObject.Get();
+		const FString SubCategoryObjectName = GetNameSafe(SubCategoryObject);
+
+		return PinName.Contains(TEXT("Color"), ESearchCase::IgnoreCase)
+			|| FriendlyName.Contains(TEXT("Color"), ESearchCase::IgnoreCase)
+			|| PinCategory.Contains(TEXT("Color"), ESearchCase::IgnoreCase)
+			|| PinSubCategory.Contains(TEXT("Color"), ESearchCase::IgnoreCase)
+			|| SubCategoryObjectName.Contains(TEXT("Color"), ESearchCase::IgnoreCase)
+			|| PinName.Contains(TEXT("Foreground"), ESearchCase::IgnoreCase)
+			|| FriendlyName.Contains(TEXT("Foreground"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMIsYellowRelevantFunctionName(const FString& FunctionName)
+	{
+		return FunctionName.Contains(TEXT("Color"), ESearchCase::IgnoreCase)
+			|| FunctionName.Contains(TEXT("Foreground"), ESearchCase::IgnoreCase)
+			|| FunctionName.Contains(TEXT("Brush"), ESearchCase::IgnoreCase);
+	}
+
+	void TMDumpYellowWidgetColorGraph(const TCHAR* BlueprintPath)
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMYellowUIDump] Failed to load widget blueprint: %s"), BlueprintPath);
+			return;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+
+		for (const UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			for (const UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (!Node)
+				{
+					continue;
+				}
+
+				bool bShouldDumpNode = false;
+				FString FunctionName;
+				FString FunctionClassName;
+				if (const UK2Node_CallFunction* CallFunctionNode = Cast<UK2Node_CallFunction>(Node))
+				{
+					FunctionName = CallFunctionNode->FunctionReference.GetMemberName().ToString();
+					if (const UFunction* TargetFunction = CallFunctionNode->GetTargetFunction())
+					{
+						FunctionClassName = GetNameSafe(TargetFunction->GetOwnerClass());
+					}
+					bShouldDumpNode = TMIsYellowRelevantFunctionName(FunctionName);
+				}
+
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					bShouldDumpNode |= TMIsColorRelatedPin(Pin);
+				}
+
+				if (!bShouldDumpNode)
+				{
+					continue;
+				}
+
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMYellowUIDump] BP=%s Graph=%s Node=%s Class=%s Function=%s Owner=%s Pins=%d"),
+					*Blueprint->GetPathName(),
+					*Graph->GetName(),
+					*Node->GetName(),
+					*Node->GetClass()->GetName(),
+					*FunctionName,
+					*FunctionClassName,
+					Node->Pins.Num());
+
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					if (!Pin)
+					{
+						continue;
+					}
+
+					const UObject* SubCategoryObject = Pin->PinType.PinSubCategoryObject.Get();
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMYellowUIDump]   Pin=%s Friendly=%s Dir=%s Cat=%s SubCat=%s Obj=%s Default={%s} Auto={%s} Links=%s Parent=%s SubPins=%d"),
+						*Pin->PinName.ToString(),
+						*Pin->PinFriendlyName.ToString(),
+						Pin->Direction == EGPD_Input ? TEXT("In") : TEXT("Out"),
+						*Pin->PinType.PinCategory.ToString(),
+						*Pin->PinType.PinSubCategory.ToString(),
+						*GetNameSafe(SubCategoryObject),
+						*Pin->DefaultValue,
+						*Pin->AutogeneratedDefaultValue,
+						*TMDescribePinLinks(Pin),
+						Pin->ParentPin ? *Pin->ParentPin->PinName.ToString() : TEXT("None"),
+						Pin->SubPins.Num());
+				}
+			}
+		}
+	}
+
+	bool TMIsExecPin(const UEdGraphPin* Pin)
+	{
+		return Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+	}
+
+	bool TMIsLoadoutWeaponSelectionClickEvent(const UEdGraphNode* Node)
+	{
+		const UK2Node_ComponentBoundEvent* EventNode = Cast<UK2Node_ComponentBoundEvent>(Node);
+		if (!EventNode)
+		{
+			return false;
+		}
+
+		const FString ComponentName = EventNode->ComponentPropertyName.ToString();
+		const FString DelegateName = EventNode->DelegatePropertyName.ToString();
+		const FString NodeName = EventNode->GetName();
+		return ComponentName.Equals(TEXT("B_Selection"), ESearchCase::IgnoreCase)
+			&& (DelegateName.Contains(TEXT("Clicked"), ESearchCase::IgnoreCase)
+				|| NodeName.Contains(TEXT("OnButtonClickedEvent"), ESearchCase::IgnoreCase));
+	}
+
+	TArray<UEdGraphPin*> TMGetExecOutputPins(UEdGraphNode* Node)
+	{
+		TArray<UEdGraphPin*> Pins;
+		if (!Node)
+		{
+			return Pins;
+		}
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Output && TMIsExecPin(Pin))
+			{
+				Pins.Add(Pin);
+			}
+		}
+
+		return Pins;
+	}
+
+	void TMCollectExecReachableNodes(UEdGraphNode* StartNode, TSet<UEdGraphNode*>& OutNodes)
+	{
+		if (!StartNode || OutNodes.Contains(StartNode))
+		{
+			return;
+		}
+
+		OutNodes.Add(StartNode);
+		for (UEdGraphPin* OutputPin : TMGetExecOutputPins(StartNode))
+		{
+			for (UEdGraphPin* LinkedPin : OutputPin->LinkedTo)
+			{
+				if (!LinkedPin || !TMIsExecPin(LinkedPin))
+				{
+					continue;
+				}
+
+				TMCollectExecReachableNodes(LinkedPin->GetOwningNode(), OutNodes);
+			}
+		}
+	}
+
+	bool TMSpawnNodeAlreadyCallsWeaponSpawnFeedback(const UK2Node_SpawnActorFromClass* SpawnNode)
+	{
+		const UEdGraphPin* ThenPin = TMFindPinByNameConst(SpawnNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		if (!ThenPin)
+		{
+			return false;
+		}
+
+		for (const UEdGraphPin* LinkedPin : ThenPin->LinkedTo)
+		{
+			const UK2Node_CallFunction* CallNode = LinkedPin ? Cast<UK2Node_CallFunction>(LinkedPin->GetOwningNode()) : nullptr;
+			if (CallNode
+				&& CallNode->FunctionReference.GetMemberName() == GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, PlayWeaponSpawnFeedbackForActor))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMInsertLoadoutWeaponSpawnFeedbackAfterSpawn(UEdGraph* Graph, UK2Node_SpawnActorFromClass* SpawnNode)
+	{
+		if (!Graph || !SpawnNode)
+		{
+			return false;
+		}
+
+		if (TMSpawnNodeAlreadyCallsWeaponSpawnFeedback(SpawnNode))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMLoadoutWeaponFeedback] Spawn node already patched: %s"),
+				*SpawnNode->GetName());
+			return false;
+		}
+
+		const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
+		UEdGraphPin* SpawnThenPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* SpawnReturnPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_ReturnValue, EGPD_Output);
+		if (!Schema || !SpawnThenPin || !SpawnReturnPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutWeaponFeedback] Spawn node missing pins: %s Then=%d Return=%d"),
+				*GetNameSafe(SpawnNode),
+				SpawnThenPin ? 1 : 0,
+				SpawnReturnPin ? 1 : 0);
+			return false;
+		}
+
+		TArray<UEdGraphPin*> PreviousThenTargets = SpawnThenPin->LinkedTo;
+
+		FGraphNodeCreator<UK2Node_CallFunction> FeedbackCreator(*Graph);
+		UK2Node_CallFunction* FeedbackNode = FeedbackCreator.CreateNode();
+		FeedbackNode->FunctionReference.SetExternalMember(
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, PlayWeaponSpawnFeedbackForActor),
+			UTMGameplayStatics::StaticClass());
+		FeedbackNode->NodePosX = SpawnNode->NodePosX + 360;
+		FeedbackNode->NodePosY = SpawnNode->NodePosY + 80;
+		FeedbackNode->NodeComment = TEXT("TM: weapon spawn feedback on weapon UI click");
+		FeedbackCreator.Finalize();
+
+		UEdGraphPin* FeedbackExecPin = TMFindPinByName(FeedbackNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* FeedbackThenPin = TMFindPinByName(FeedbackNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* ActorPin = TMFindPinByName(FeedbackNode, TEXT("WeaponActor"), EGPD_Input);
+
+		if (!FeedbackExecPin || !FeedbackThenPin || !ActorPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutWeaponFeedback] Failed to create feedback call pins Exec=%d Then=%d Actor=%d"),
+				FeedbackExecPin ? 1 : 0,
+				FeedbackThenPin ? 1 : 0,
+				ActorPin ? 1 : 0);
+			Graph->RemoveNode(FeedbackNode);
+			return false;
+		}
+
+		SpawnThenPin->Modify();
+		SpawnThenPin->BreakAllPinLinks(false);
+
+		bool bSuccess = true;
+		bSuccess &= Schema->TryCreateConnection(SpawnThenPin, FeedbackExecPin);
+		bSuccess &= Schema->TryCreateConnection(SpawnReturnPin, ActorPin);
+
+		for (UEdGraphPin* PreviousThenTarget : PreviousThenTargets)
+		{
+			if (PreviousThenTarget)
+			{
+				bSuccess &= Schema->TryCreateConnection(FeedbackThenPin, PreviousThenTarget);
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutWeaponFeedback] Inserted PlayWeaponSpawnFeedbackForActor after %s in graph %s. OldThenTargets=%d Success=%d"),
+			*SpawnNode->GetName(),
+			*Graph->GetName(),
+			PreviousThenTargets.Num(),
+			bSuccess ? 1 : 0);
+		return bSuccess;
+	}
+
+	bool TMPatchLoadoutWeaponSelectionFeedback()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponFeedback] Failed to load W_Loadout."));
+			return false;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+
+		bool bChanged = false;
+		int32 SelectionEventCount = 0;
+		int32 ReachableSpawnCount = 0;
+
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			TArray<UEdGraphNode*> Nodes = Graph->Nodes;
+			for (UEdGraphNode* Node : Nodes)
+			{
+				if (!TMIsLoadoutWeaponSelectionClickEvent(Node))
+				{
+					continue;
+				}
+
+				++SelectionEventCount;
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMLoadoutWeaponFeedback] Found B_Selection click event: Graph=%s Node=%s"),
+					*Graph->GetName(),
+					*Node->GetName());
+
+				TSet<UEdGraphNode*> ReachableNodes;
+				TMCollectExecReachableNodes(Node, ReachableNodes);
+				for (UEdGraphNode* ReachableNode : ReachableNodes)
+				{
+					UK2Node_SpawnActorFromClass* SpawnNode = Cast<UK2Node_SpawnActorFromClass>(ReachableNode);
+					if (!SpawnNode)
+					{
+						continue;
+					}
+
+					++ReachableSpawnCount;
+					if (TMInsertLoadoutWeaponSpawnFeedbackAfterSpawn(Graph, SpawnNode))
+					{
+						bChanged = true;
+					}
+				}
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutWeaponFeedback] Summary: SelectionEvents=%d ReachableSpawnNodes=%d Changed=%d"),
+			SelectionEventCount,
+			ReachableSpawnCount,
+			bChanged ? 1 : 0);
+
+		if (SelectionEventCount == 0 || ReachableSpawnCount == 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponFeedback] Did not find B_Selection click -> SpawnActorFromClass path."));
+			return false;
+		}
+
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponFeedback] W_Loadout failed to compile after patch."));
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMLoadoutWeaponFeedback"));
+	}
+
+	bool TMDumpYellowUIGraphColors()
+	{
+		const TCHAR* WidgetBlueprintPaths[] =
+		{
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachment_Layer.W_Attachment_Layer")
+		};
+
+		for (const TCHAR* BlueprintPath : WidgetBlueprintPaths)
+		{
+			TMDumpYellowWidgetColorGraph(BlueprintPath);
+		}
+
+		return true;
+	}
 }
 
 int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
@@ -4487,6 +5984,36 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("FixDataTableRowStructs"), ESearchCase::IgnoreCase))
 	{
 		return TMFixBrokenDataTableRowStructBlueprints() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("RefreshAttachmentAssets"), ESearchCase::IgnoreCase))
+	{
+		return TMRefreshAttachmentAssets() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchSilencercoM4Tar"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchSilencercoM4TarCompatibility() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchDESilencercoOnly"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchDESilencercoOnly() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("TintYellowUI"), ESearchCase::IgnoreCase))
+	{
+		return TMTintYellowUI() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("DumpYellowUIGraphColors"), ESearchCase::IgnoreCase))
+	{
+		return TMDumpYellowUIGraphColors() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchLoadoutWeaponSelectionFeedback"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchLoadoutWeaponSelectionFeedback() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("PinLeftHandFabrikAlpha"), ESearchCase::IgnoreCase))

@@ -12,6 +12,7 @@
 #include "Engine/DataTable.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -21,6 +22,7 @@
 #include "NiagaraSystem.h"
 #include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
+#include "Sound/SoundBase.h"
 #include "TimerManager.h"
 #include "UObject/UnrealType.h"
 #include "../Projectile/ProjectileImpactData.h"
@@ -38,8 +40,16 @@ namespace
 	const TCHAR* AcogGlassMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Glass_Acog.M_Scope_Glass_Acog");
 	const TCHAR* AcogMaterialParameterCollectionPath = TEXT("/Game/Fps/Weapons/Camera/MPC_FP.MPC_FP");
 	const TCHAR* OpticsTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Optics.DT_Optics");
+	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Metal_Impact.P_Metal_Impact");
+	const TCHAR* DefaultAttachmentFeedbackSoundPath = TEXT("/Game/MP_System_V3/Game/Sounds/Cue/GUI_Select_02_Cue.GUI_Select_02_Cue");
+	const TCHAR* DefaultWeaponSpawnFeedbackFXPath = TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Dust_Dark.P_Dust_Dark");
+	const TCHAR* DefaultWeaponSpawnFeedbackSoundPath = TEXT("/Game/MP_System_V3/Game/Sounds/Cue/Select_Cue.Select_Cue");
+	constexpr float AttachmentFeedbackMonitorInterval = 0.05f;
+	constexpr float AttachmentFeedbackStartupSuppressSeconds = 0.35f;
 	const FName UnderbarrelDataPropertyName(TEXT("UnderbarrelData"));
 	const FName UnderbarrelSocketName(TEXT("Underbarrel"));
+	const FName MuzzleSocketName(TEXT("Muzzle"));
+	const FName SilencercoMuzzleSocketName(TEXT("MuzzleSilencerco"));
 	const FName AcogRenderDiscComponentName(TEXT("ACOG_RenderDisc"));
 	const FName AcogGlassComponentName(TEXT("ACOG_Glass"));
 	const FName AcogRenderDiscSocketName(TEXT("RM_Scope"));
@@ -135,6 +145,51 @@ namespace
 	{
 		return SocketName == UnderbarrelSocketName
 			|| SocketName.ToString().Contains(TEXT("Underbarrel"), ESearchCase::IgnoreCase);
+	}
+
+	FName ResolveCompatibleWeaponAttachmentSocketName(
+		const USceneComponent* AttachParent,
+		const FName RequestedSocketName)
+	{
+		if (!AttachParent || RequestedSocketName.IsNone())
+		{
+			return RequestedSocketName;
+		}
+
+		if (AttachParent->DoesSocketExist(RequestedSocketName))
+		{
+			return RequestedSocketName;
+		}
+
+		if (RequestedSocketName == SilencercoMuzzleSocketName
+			&& AttachParent->DoesSocketExist(MuzzleSocketName))
+		{
+			return MuzzleSocketName;
+		}
+
+		return RequestedSocketName;
+	}
+
+	bool TryNormalizeCompatibleWeaponAttachmentSocket(UStaticMeshComponent* Component)
+	{
+		if (!IsValid(Component))
+		{
+			return false;
+		}
+
+		USceneComponent* AttachParent = Component->GetAttachParent();
+		const FName CurrentSocketName = Component->GetAttachSocketName();
+		const FName ResolvedSocketName = ResolveCompatibleWeaponAttachmentSocketName(AttachParent, CurrentSocketName);
+		if (!AttachParent || ResolvedSocketName == CurrentSocketName)
+		{
+			return false;
+		}
+
+		Component->AttachToComponent(
+			AttachParent,
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+			ResolvedSocketName);
+		return true;
 	}
 
 	const FProperty* FindStructFieldByPrefix(const UScriptStruct* Struct, const TCHAR* Prefix)
@@ -302,6 +357,24 @@ namespace
 		}
 
 		return nullptr;
+	}
+
+	bool ReadBoolPropertyByName(const UObject* Object, const TCHAR* ExpectedName, bool& bOutValue)
+	{
+		bOutValue = false;
+		if (!Object)
+		{
+			return false;
+		}
+
+		const FBoolProperty* BoolProperty = CastField<FBoolProperty>(FindPropertyByName(Object->GetClass(), ExpectedName));
+		if (!BoolProperty)
+		{
+			return false;
+		}
+
+		bOutValue = BoolProperty->GetPropertyValue_InContainer(Object);
+		return true;
 	}
 
 	bool ReadStaticMeshAssetPath(const FProperty* Property, const void* Container, FString& OutAssetPath)
@@ -618,10 +691,24 @@ void AGun::BeginPlay()
 	ApplyFakeMode();
 	RefreshADSSocket();
 	RequestDeferredAttachmentSanitize();
+
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		AttachmentFeedbackSuppressUntilTime = World->GetTimeSeconds() + AttachmentFeedbackStartupSuppressSeconds;
+		GetWorldTimerManager().SetTimer(
+			AttachmentFeedbackMonitorTimerHandle,
+			this,
+			&AGun::MonitorAttachmentFeedbackState,
+			AttachmentFeedbackMonitorInterval,
+			true,
+			AttachmentFeedbackMonitorInterval);
+	}
 }
 
 void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GetWorldTimerManager().ClearTimer(AttachmentFeedbackMonitorTimerHandle);
 	DestroyAcogRenderComponents();
 
 	if (bFakeModeApplied)
@@ -709,7 +796,14 @@ void AGun::ProcessEvent(UFunction* Function, void* Parameters)
 
 	if (ShouldRequestAttachmentSanitizeForFunction(Function))
 	{
-		RequestDeferredAttachmentSanitize();
+		if (HasActorBegunPlay())
+		{
+			RequestDeferredAttachmentFeedback(Function);
+		}
+		else
+		{
+			RequestDeferredAttachmentSanitize();
+		}
 		RefreshADSSocket();
 	}
 
@@ -755,7 +849,25 @@ int32 AGun::SanitizeInvalidAttachmentComponents()
 	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
 	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
 	{
-		if (!IsValid(StaticMeshComponent) || !IsInvalidWeaponAttachmentComponent(StaticMeshComponent))
+		if (!IsValid(StaticMeshComponent))
+		{
+			continue;
+		}
+
+		const bool bNormalizedSocket = IsWeaponAttachmentMesh(StaticMeshComponent)
+			&& TryNormalizeCompatibleWeaponAttachmentSocket(StaticMeshComponent);
+		if (bNormalizedSocket)
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("Resolved compatible weapon attachment socket for '%s' on '%s' to '%s'."),
+				*StaticMeshComponent->GetName(),
+				*GetName(),
+				*StaticMeshComponent->GetAttachSocketName().ToString());
+		}
+
+		if (!IsInvalidWeaponAttachmentComponent(StaticMeshComponent))
 		{
 			continue;
 		}
@@ -859,6 +971,164 @@ bool AGun::GetActiveOpticZoomMultiplier(float& OutZoomMultiplier) const
 	return TryGetOpticZoomMultiplierForMesh(OpticComponent->GetStaticMesh(), OutZoomMultiplier);
 }
 
+void AGun::SpawnAttachmentFeedbackAtLocation(const FVector Location, const FRotator Rotation)
+{
+	UWorld* World = GetWorld();
+	if (!World || HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return;
+	}
+
+	UFXSystemAsset* FeedbackFX = AttachmentFeedbackFX;
+	if (!FeedbackFX)
+	{
+		FeedbackFX = LoadObject<UFXSystemAsset>(nullptr, DefaultAttachmentFeedbackFXPath);
+	}
+
+	if (FeedbackFX)
+	{
+		if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(FeedbackFX))
+		{
+			UParticleSystemComponent* ParticleComponent = UGameplayStatics::SpawnEmitterAtLocation(
+				World,
+				CascadeSystem,
+				FTransform(Rotation, Location, AttachmentFeedbackScale),
+				true,
+				EPSCPoolMethod::None,
+				true);
+			if (ParticleComponent)
+			{
+				ParticleComponent->bAutoDestroy = true;
+				ScheduleImpactFXCleanup(World, ParticleComponent);
+			}
+		}
+		else if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(FeedbackFX))
+		{
+			UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				this,
+				NiagaraSystem,
+				Location,
+				Rotation,
+				AttachmentFeedbackScale,
+				true,
+				true,
+				ENCPoolMethod::None,
+				true);
+			if (NiagaraComponent)
+			{
+				NiagaraComponent->SetAutoDestroy(true);
+				ScheduleImpactFXCleanup(World, NiagaraComponent);
+			}
+		}
+	}
+
+	USoundBase* FeedbackSound = AttachmentFeedbackSound;
+	if (!FeedbackSound)
+	{
+		FeedbackSound = LoadObject<USoundBase>(nullptr, DefaultAttachmentFeedbackSoundPath);
+	}
+
+	if (FeedbackSound)
+	{
+		if (bAttachmentFeedbackPlaySound2D)
+		{
+			UGameplayStatics::PlaySound2D(this, FeedbackSound, AttachmentFeedbackVolume, AttachmentFeedbackPitch);
+		}
+		else
+		{
+			UGameplayStatics::PlaySoundAtLocation(
+				this,
+				FeedbackSound,
+				Location,
+				Rotation,
+				AttachmentFeedbackVolume,
+				AttachmentFeedbackPitch);
+		}
+	}
+}
+
+void AGun::PlayWeaponSpawnFeedback()
+{
+	const FTransform FeedbackTransform = ResolveWeaponSpawnFeedbackTransform();
+	SpawnWeaponSpawnFeedbackAtLocation(FeedbackTransform.GetLocation(), FeedbackTransform.Rotator());
+}
+
+void AGun::SpawnWeaponSpawnFeedbackAtLocation(const FVector Location, const FRotator Rotation)
+{
+	UWorld* World = GetWorld();
+	if (!World || HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return;
+	}
+
+	UFXSystemAsset* FeedbackFX = WeaponSpawnFeedbackFX;
+	if (!FeedbackFX)
+	{
+		FeedbackFX = LoadObject<UFXSystemAsset>(nullptr, DefaultWeaponSpawnFeedbackFXPath);
+	}
+
+	if (FeedbackFX)
+	{
+		if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(FeedbackFX))
+		{
+			UParticleSystemComponent* ParticleComponent = UGameplayStatics::SpawnEmitterAtLocation(
+				World,
+				CascadeSystem,
+				FTransform(Rotation, Location, WeaponSpawnFeedbackScale),
+				true,
+				EPSCPoolMethod::None,
+				true);
+			if (ParticleComponent)
+			{
+				ParticleComponent->bAutoDestroy = true;
+				ScheduleImpactFXCleanup(World, ParticleComponent);
+			}
+		}
+		else if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(FeedbackFX))
+		{
+			UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				this,
+				NiagaraSystem,
+				Location,
+				Rotation,
+				WeaponSpawnFeedbackScale,
+				true,
+				true,
+				ENCPoolMethod::None,
+				true);
+			if (NiagaraComponent)
+			{
+				NiagaraComponent->SetAutoDestroy(true);
+				ScheduleImpactFXCleanup(World, NiagaraComponent);
+			}
+		}
+	}
+
+	USoundBase* FeedbackSound = WeaponSpawnFeedbackSound;
+	if (!FeedbackSound)
+	{
+		FeedbackSound = LoadObject<USoundBase>(nullptr, DefaultWeaponSpawnFeedbackSoundPath);
+	}
+
+	if (FeedbackSound)
+	{
+		if (bWeaponSpawnFeedbackPlaySound2D)
+		{
+			UGameplayStatics::PlaySound2D(this, FeedbackSound, WeaponSpawnFeedbackVolume, WeaponSpawnFeedbackPitch);
+		}
+		else
+		{
+			UGameplayStatics::PlaySoundAtLocation(
+				this,
+				FeedbackSound,
+				Location,
+				Rotation,
+				WeaponSpawnFeedbackVolume,
+				WeaponSpawnFeedbackPitch);
+		}
+	}
+}
+
 void AGun::RequestDeferredAttachmentSanitize()
 {
 	if (bAttachmentSanitizeRequested || bSanitizingAttachmentComponents || HasAnyFlags(RF_ClassDefaultObject))
@@ -876,13 +1146,500 @@ void AGun::RequestDeferredAttachmentSanitize()
 	GetWorldTimerManager().SetTimerForNextTick(this, &AGun::RunDeferredAttachmentSanitize);
 }
 
+void AGun::RequestDeferredAttachmentFeedback(const UFunction* Function)
+{
+	if (HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return;
+	}
+
+	const FName PreferredSocketName = ResolveAttachmentFeedbackPreferredSocket(Function);
+	if (!PreferredSocketName.IsNone())
+	{
+		AttachmentFeedbackPreferredSocketName = PreferredSocketName;
+	}
+
+	bAttachmentFeedbackRequested = true;
+	RequestDeferredAttachmentSanitize();
+}
+
 void AGun::RunDeferredAttachmentSanitize()
 {
+	const bool bShouldPlayAttachmentFeedback = bAttachmentFeedbackRequested;
+	bAttachmentFeedbackRequested = false;
 	bAttachmentSanitizeRequested = false;
 	SanitizeInvalidAttachmentComponents();
 	SynchronizeUnderbarrelAttachmentComponent();
 	SynchronizeAcogRenderComponents();
 	RefreshADSSocket();
+
+	if (bShouldPlayAttachmentFeedback)
+	{
+		if (AttachmentFeedbackPreferredSocketName.IsNone())
+		{
+			TMap<FName, FString> CurrentStateSignatures;
+			TMap<FName, FName> CurrentStateSockets;
+			BuildAttachmentFeedbackStateHash(&CurrentStateSignatures, &CurrentStateSockets);
+
+			const FName ChangedSocketName = ResolveChangedAttachmentFeedbackSocket(CurrentStateSignatures, CurrentStateSockets);
+			if (!ChangedSocketName.IsNone())
+			{
+				AttachmentFeedbackPreferredSocketName = ChangedSocketName;
+			}
+		}
+
+		PlayAttachmentFeedback();
+	}
+
+	UpdateAttachmentFeedbackStateSnapshot();
+	AttachmentFeedbackPreferredSocketName = NAME_None;
+}
+
+void AGun::PlayAttachmentFeedback()
+{
+	const FTransform FeedbackTransform = ResolveAttachmentFeedbackTransform();
+	SpawnAttachmentFeedbackAtLocation(FeedbackTransform.GetLocation(), FeedbackTransform.Rotator());
+}
+
+FTransform AGun::ResolveAttachmentFeedbackTransform() const
+{
+	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	const FName PreferredSocketName = AttachmentFeedbackPreferredSocketName;
+	FName ResolvedPreferredSocketName = NAME_None;
+
+	if (MainMesh && !PreferredSocketName.IsNone())
+	{
+		ResolvedPreferredSocketName = ResolveCompatibleWeaponAttachmentSocketName(MainMesh, PreferredSocketName);
+		if (!ResolvedPreferredSocketName.IsNone() && MainMesh->DoesSocketExist(ResolvedPreferredSocketName))
+		{
+			return MainMesh->GetSocketTransform(ResolvedPreferredSocketName, RTS_World);
+		}
+	}
+
+	UStaticMeshComponent* BestComponent = nullptr;
+	int32 BestScore = MIN_int32;
+	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
+	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
+	{
+		if (!IsValid(StaticMeshComponent)
+			|| !StaticMeshComponent->IsVisible()
+			|| !IsWeaponAttachmentMesh(StaticMeshComponent))
+		{
+			continue;
+		}
+
+		const USceneComponent* AttachParent = StaticMeshComponent->GetAttachParent();
+		if (MainMesh && AttachParent != MainMesh)
+		{
+			continue;
+		}
+
+		const FName AttachSocketName = StaticMeshComponent->GetAttachSocketName();
+		if (AttachSocketName.IsNone())
+		{
+			continue;
+		}
+
+		const FName ResolvedSocketName = ResolveCompatibleWeaponAttachmentSocketName(AttachParent, AttachSocketName);
+		if (AttachParent && !AttachParent->DoesSocketExist(ResolvedSocketName))
+		{
+			continue;
+		}
+
+		int32 Score = 100;
+		const FString SocketString = ResolvedSocketName.ToString();
+
+		if (!ResolvedPreferredSocketName.IsNone() && ResolvedSocketName == ResolvedPreferredSocketName)
+		{
+			Score += 1000;
+		}
+
+		if (ResolvedSocketName == MuzzleSocketName
+			|| ResolvedSocketName == SilencercoMuzzleSocketName
+			|| SocketString.Contains(TEXT("Muzzle"), ESearchCase::IgnoreCase))
+		{
+			Score += 120;
+		}
+		else if (IsUnderbarrelSocketName(ResolvedSocketName))
+		{
+			Score += 90;
+		}
+		else if (SocketString.Contains(TEXT("Optic"), ESearchCase::IgnoreCase)
+			|| SocketString.Contains(TEXT("Sight"), ESearchCase::IgnoreCase)
+			|| SocketString.Contains(TEXT("Rail"), ESearchCase::IgnoreCase)
+			|| SocketString.Contains(TEXT("Backup"), ESearchCase::IgnoreCase)
+			|| SocketString.Contains(TEXT("Canted"), ESearchCase::IgnoreCase))
+		{
+			Score += 70;
+		}
+
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			BestComponent = StaticMeshComponent;
+		}
+	}
+
+	if (BestComponent)
+	{
+		return BestComponent->GetComponentTransform();
+	}
+
+	if (MainMesh)
+	{
+		if (!ResolvedPreferredSocketName.IsNone() && MainMesh->DoesSocketExist(ResolvedPreferredSocketName))
+		{
+			return MainMesh->GetSocketTransform(ResolvedPreferredSocketName, RTS_World);
+		}
+
+		static const FName FallbackSocketNames[] =
+		{
+			MuzzleSocketName,
+			SilencercoMuzzleSocketName,
+			UnderbarrelSocketName,
+			TEXT("Optics"),
+			TEXT("AT_Backup"),
+			TEXT("SideRail")
+		};
+
+		for (const FName FallbackSocketName : FallbackSocketNames)
+		{
+			const FName ResolvedSocketName = ResolveCompatibleWeaponAttachmentSocketName(MainMesh, FallbackSocketName);
+			if (MainMesh->DoesSocketExist(ResolvedSocketName))
+			{
+				return MainMesh->GetSocketTransform(ResolvedSocketName, RTS_World);
+			}
+		}
+
+		return MainMesh->GetComponentTransform();
+	}
+
+	if (const USceneComponent* Root = GetRootComponent())
+	{
+		return Root->GetComponentTransform();
+	}
+
+	return GetActorTransform();
+}
+
+FTransform AGun::ResolveWeaponSpawnFeedbackTransform() const
+{
+	if (USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh())
+	{
+		if (!WeaponSpawnFeedbackSocketName.IsNone() && MainMesh->DoesSocketExist(WeaponSpawnFeedbackSocketName))
+		{
+			return MainMesh->GetSocketTransform(WeaponSpawnFeedbackSocketName, RTS_World);
+		}
+
+		return MainMesh->GetComponentTransform();
+	}
+
+	if (const USceneComponent* Root = GetRootComponent())
+	{
+		return Root->GetComponentTransform();
+	}
+
+	return GetActorTransform();
+}
+
+FName AGun::ResolveAttachmentFeedbackPreferredSocket(const UFunction* Function) const
+{
+	if (!Function)
+	{
+		return NAME_None;
+	}
+
+	const FString FunctionName = Function->GetName();
+	const FString FunctionPath = Function->GetPathName();
+	const auto ContainsToken = [&FunctionName, &FunctionPath](const TCHAR* Token)
+	{
+		return FunctionName.Contains(Token, ESearchCase::IgnoreCase)
+			|| FunctionPath.Contains(Token, ESearchCase::IgnoreCase);
+	};
+
+	if (ContainsToken(TEXT("Silencerco")))
+	{
+		return SilencercoMuzzleSocketName;
+	}
+
+	if (ContainsToken(TEXT("Muzzle")) || ContainsToken(TEXT("Silencer")))
+	{
+		return MuzzleSocketName;
+	}
+
+	if (ContainsToken(TEXT("Underbarrel")))
+	{
+		return UnderbarrelSocketName;
+	}
+
+	if (ContainsToken(TEXT("SideRail")) || ContainsToken(TEXT("Side")))
+	{
+		return WeaponSecondaryOpticsSocketName;
+	}
+
+	if (ContainsToken(TEXT("Optic"))
+		|| ContainsToken(TEXT("Scope"))
+		|| ContainsToken(TEXT("Sight"))
+		|| ContainsToken(TEXT("RDS")))
+	{
+		return bUseSecondaryADSSocket ? WeaponSecondaryOpticsSocketName : WeaponOpticsSocketName;
+	}
+
+	return NAME_None;
+}
+
+FName AGun::ResolveAttachmentFeedbackSocketFromContext(const FString& Context, const FName SocketName) const
+{
+	if (!SocketName.IsNone())
+	{
+		return SocketName;
+	}
+
+	const auto ContainsToken = [&Context](const TCHAR* Token)
+	{
+		return Context.Contains(Token, ESearchCase::IgnoreCase);
+	};
+
+	if (ContainsToken(TEXT("Silencerco")))
+	{
+		return SilencercoMuzzleSocketName;
+	}
+
+	if (ContainsToken(TEXT("Muzzle")) || ContainsToken(TEXT("Silencer")))
+	{
+		return MuzzleSocketName;
+	}
+
+	if (ContainsToken(TEXT("Underbarrel")))
+	{
+		return UnderbarrelSocketName;
+	}
+
+	if (ContainsToken(TEXT("SideRail")) || ContainsToken(TEXT("Side")))
+	{
+		return WeaponSecondaryOpticsSocketName;
+	}
+
+	if (ContainsToken(TEXT("Optic"))
+		|| ContainsToken(TEXT("Scope"))
+		|| ContainsToken(TEXT("Sight"))
+		|| ContainsToken(TEXT("RDS")))
+	{
+		return bUseSecondaryADSSocket ? WeaponSecondaryOpticsSocketName : WeaponOpticsSocketName;
+	}
+
+	return NAME_None;
+}
+
+FName AGun::ResolveChangedAttachmentFeedbackSocket(
+	const TMap<FName, FString>& CurrentStateSignatures,
+	const TMap<FName, FName>& CurrentStateSockets) const
+{
+	const auto SortNames = [](TArray<FName>& Names)
+	{
+		Names.Sort([](const FName& Left, const FName& Right)
+		{
+			return Left.ToString() < Right.ToString();
+		});
+	};
+
+	TArray<FName> CurrentKeys;
+	CurrentStateSignatures.GetKeys(CurrentKeys);
+	SortNames(CurrentKeys);
+
+	for (const FName Key : CurrentKeys)
+	{
+		const FString* CurrentSignature = CurrentStateSignatures.Find(Key);
+		const FString* PreviousSignature = LastAttachmentFeedbackStateSignatures.Find(Key);
+		if (!CurrentSignature || (PreviousSignature && *PreviousSignature == *CurrentSignature))
+		{
+			continue;
+		}
+
+		const FName ChangedSocketName = CurrentStateSockets.FindRef(Key);
+		if (!ChangedSocketName.IsNone())
+		{
+			return ChangedSocketName;
+		}
+	}
+
+	TArray<FName> PreviousKeys;
+	LastAttachmentFeedbackStateSignatures.GetKeys(PreviousKeys);
+	SortNames(PreviousKeys);
+
+	for (const FName Key : PreviousKeys)
+	{
+		if (CurrentStateSignatures.Contains(Key))
+		{
+			continue;
+		}
+
+		const FName RemovedSocketName = LastAttachmentFeedbackStateSockets.FindRef(Key);
+		if (!RemovedSocketName.IsNone())
+		{
+			return RemovedSocketName;
+		}
+	}
+
+	return NAME_None;
+}
+
+void AGun::MonitorAttachmentFeedbackState()
+{
+	if (HasAnyFlags(RF_ClassDefaultObject)
+		|| bAttachmentFeedbackRequested
+		|| bAttachmentSanitizeRequested
+		|| bSanitizingAttachmentComponents)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	TMap<FName, FString> CurrentStateSignatures;
+	TMap<FName, FName> CurrentStateSockets;
+	const uint32 CurrentHash = BuildAttachmentFeedbackStateHash(&CurrentStateSignatures, &CurrentStateSockets);
+	if (!bAttachmentFeedbackStateInitialized
+		|| World->GetTimeSeconds() < AttachmentFeedbackSuppressUntilTime)
+	{
+		LastAttachmentFeedbackStateHash = CurrentHash;
+		LastAttachmentFeedbackStateSignatures = MoveTemp(CurrentStateSignatures);
+		LastAttachmentFeedbackStateSockets = MoveTemp(CurrentStateSockets);
+		bAttachmentFeedbackStateInitialized = true;
+		return;
+	}
+
+	if (CurrentHash == LastAttachmentFeedbackStateHash)
+	{
+		return;
+	}
+
+	const FName ChangedSocketName = ResolveChangedAttachmentFeedbackSocket(CurrentStateSignatures, CurrentStateSockets);
+	LastAttachmentFeedbackStateHash = CurrentHash;
+	LastAttachmentFeedbackStateSignatures = MoveTemp(CurrentStateSignatures);
+	LastAttachmentFeedbackStateSockets = MoveTemp(CurrentStateSockets);
+	if (!ChangedSocketName.IsNone())
+	{
+		AttachmentFeedbackPreferredSocketName = ChangedSocketName;
+	}
+	RequestDeferredAttachmentFeedback(nullptr);
+}
+
+void AGun::UpdateAttachmentFeedbackStateSnapshot()
+{
+	LastAttachmentFeedbackStateHash = BuildAttachmentFeedbackStateHash(
+		&LastAttachmentFeedbackStateSignatures,
+		&LastAttachmentFeedbackStateSockets);
+	bAttachmentFeedbackStateInitialized = true;
+}
+
+uint32 AGun::BuildAttachmentFeedbackStateHash(
+	TMap<FName, FString>* OutStateSignatures,
+	TMap<FName, FName>* OutStateSockets) const
+{
+	TMap<FName, FString> StateSignatures;
+	TMap<FName, FName> StateSockets;
+	const auto AddState = [this, &StateSignatures, &StateSockets](
+		const FName Key,
+		const FString& Context,
+		const FString& MeshPath,
+		const FName SocketName,
+		const bool bVisible)
+	{
+		const FName FeedbackSocketName = ResolveAttachmentFeedbackSocketFromContext(Context, SocketName);
+		StateSignatures.Add(
+			Key,
+			FString::Printf(
+				TEXT("Mesh=%s;Socket=%s;Visible=%d"),
+				*MeshPath,
+				*FeedbackSocketName.ToString(),
+				bVisible ? 1 : 0));
+		StateSockets.Add(Key, FeedbackSocketName);
+	};
+
+	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
+	for (const UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
+	{
+		if (!IsValid(StaticMeshComponent) || !IsWeaponAttachmentMesh(StaticMeshComponent))
+		{
+			continue;
+		}
+
+		const UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh();
+		const FString MeshPath = StaticMesh ? StaticMesh->GetPathName() : FString();
+		const FName Key(*FString::Printf(TEXT("Component:%s"), *StaticMeshComponent->GetName()));
+		const FString Context = FString::Printf(
+			TEXT("Component:%s %s %s"),
+			*StaticMeshComponent->GetName(),
+			*MeshPath,
+			*StaticMeshComponent->GetAttachSocketName().ToString());
+		FName SocketName = StaticMeshComponent->GetAttachSocketName();
+		if (const USceneComponent* AttachParent = StaticMeshComponent->GetAttachParent())
+		{
+			SocketName = ResolveCompatibleWeaponAttachmentSocketName(AttachParent, SocketName);
+		}
+
+		AddState(Key, Context, MeshPath, SocketName, StaticMeshComponent->IsVisible());
+	}
+
+	for (TFieldIterator<FStructProperty> It(GetClass()); It; ++It)
+	{
+		const FStructProperty* StructProperty = *It;
+		if (!StructProperty)
+		{
+			continue;
+		}
+
+		const FString PropertyName = StructProperty->GetName();
+		const bool bAttachmentDataProperty =
+			PropertyName.Contains(TEXT("Muzzle"), ESearchCase::IgnoreCase)
+			|| PropertyName.Contains(TEXT("Optic"), ESearchCase::IgnoreCase)
+			|| PropertyName.Contains(TEXT("SideRail"), ESearchCase::IgnoreCase)
+			|| PropertyName.Contains(TEXT("Underbarrel"), ESearchCase::IgnoreCase);
+		if (!bAttachmentDataProperty)
+		{
+			continue;
+		}
+
+		const void* StructValue = StructProperty->ContainerPtrToValuePtr<void>(this);
+		const UStaticMesh* StaticMesh = ReadStaticMeshFieldByPrefix(StructProperty, StructValue, TEXT("Mesh"));
+		const FName SocketName = ReadSocketFieldByPrefix(StructProperty, StructValue, TEXT("Socket"));
+		const FString MeshPath = StaticMesh ? StaticMesh->GetPathName() : FString();
+		const FName Key(*FString::Printf(TEXT("Property:%s"), *PropertyName));
+		const FString Context = FString::Printf(TEXT("Property:%s %s"), *PropertyName, *MeshPath);
+
+		AddState(Key, Context, MeshPath, SocketName, true);
+	}
+
+	uint32 Hash = 0;
+	TArray<FName> Keys;
+	StateSignatures.GetKeys(Keys);
+	Keys.Sort([](const FName& Left, const FName& Right)
+	{
+		return Left.ToString() < Right.ToString();
+	});
+
+	for (const FName Key : Keys)
+	{
+		Hash = HashCombine(Hash, GetTypeHash(Key.ToString()));
+		Hash = HashCombine(Hash, GetTypeHash(StateSignatures.FindRef(Key)));
+	}
+
+	if (OutStateSignatures)
+	{
+		*OutStateSignatures = MoveTemp(StateSignatures);
+	}
+
+	if (OutStateSockets)
+	{
+		*OutStateSockets = MoveTemp(StateSockets);
+	}
+
+	return Hash;
 }
 
 bool AGun::IsInvalidWeaponAttachmentComponent(const UStaticMeshComponent* Component) const
@@ -910,7 +1667,8 @@ bool AGun::IsInvalidWeaponAttachmentComponent(const UStaticMeshComponent* Compon
 		return true;
 	}
 
-	return !AttachParent->DoesSocketExist(AttachSocketName);
+	const FName ResolvedSocketName = ResolveCompatibleWeaponAttachmentSocketName(AttachParent, AttachSocketName);
+	return !AttachParent->DoesSocketExist(ResolvedSocketName);
 }
 
 bool AGun::IsWeaponAttachmentMesh(const UStaticMeshComponent* Component)
@@ -1327,6 +2085,7 @@ bool AGun::ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutS
 {
 	OutParent = nullptr;
 	OutSocketName = NAME_None;
+	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
 
 	if (bUseSecondaryADSSocket)
 	{
@@ -1337,7 +2096,7 @@ bool AGun::ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutS
 			return true;
 		}
 
-		if (USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh())
+		if (MainMesh)
 		{
 			const FName SecondaryWeaponSocketName = ResolveSecondaryWeaponADSSocket(MainMesh);
 			if (!SecondaryWeaponSocketName.IsNone())
@@ -1349,6 +2108,17 @@ bool AGun::ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutS
 		}
 	}
 
+	if (bFakeMode && MainMesh)
+	{
+		const FName WeaponSocketName = ResolveWeaponADSSocket(MainMesh);
+		if (!WeaponSocketName.IsNone())
+		{
+			OutParent = MainMesh;
+			OutSocketName = WeaponSocketName;
+			return true;
+		}
+	}
+
 	if (UStaticMeshComponent* OpticComponent = ResolvePrimaryOpticComponent())
 	{
 		OutParent = OpticComponent;
@@ -1356,7 +2126,6 @@ bool AGun::ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutS
 		return true;
 	}
 
-	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
 	if (!MainMesh)
 	{
 		return false;
@@ -1591,6 +2360,12 @@ FName AGun::ResolveWeaponADSSocket(const USkeletalMeshComponent* Mesh) const
 	if (!Mesh)
 	{
 		return NAME_None;
+	}
+
+	static const FName MPAimTargetSocketName(TEXT("AimTarget"));
+	if (Mesh->DoesSocketExist(MPAimTargetSocketName))
+	{
+		return MPAimTargetSocketName;
 	}
 
 	if (!WeaponOpticsSocketName.IsNone() && Mesh->DoesSocketExist(WeaponOpticsSocketName))

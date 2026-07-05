@@ -83,6 +83,9 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 		EPSCPoolMethod PoolingMethod = EPSCPoolMethod::None,
 		bool bAutoActivate = true);
 
+	UFUNCTION(BlueprintCallable, Category = "TM|Loadout|Feedback", meta = (DisplayName = "Play Weapon Spawn Feedback For Actor"))
+	static TOUCHME_API void PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor);
+
 	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "5", UnsafeDuringActorConstruction = "true", Keywords = "play"))
 	static TOUCHME_API void MarketSoundRoom(bool enable);
 
@@ -97,6 +100,9 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 
 	UFUNCTION(BlueprintCallable, Category="TM|Debug")
 	static TOUCHME_API bool DumpAnimBlueprintGraphLinks();
+
+	UFUNCTION(BlueprintCallable, Category="TM|Debug")
+	static TOUCHME_API bool FixMPSBonesAimTargetGraph();
 
 	UFUNCTION(BlueprintCallable, Category="TM|Projectile", meta=(WorldContext="WorldContextObject"))
 	static TOUCHME_API AActor* Shoot(

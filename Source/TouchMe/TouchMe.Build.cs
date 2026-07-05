@@ -10,7 +10,7 @@ public class TouchMe : ModuleRules
 	
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "PhysicsCore" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "AudioMixer", "AudioSynesthesia", "AudioSynesthesiaCore", "Niagara", "PakFile", "UMG" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "AudioMixer", "AudioSynesthesia", "AudioSynesthesiaCore", "Niagara", "PakFile", "SlateCore", "UMG" });
 
 		if (Target.bBuildEditor)
 		{

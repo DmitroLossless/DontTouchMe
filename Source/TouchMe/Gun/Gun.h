@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "TimerManager.h"
 #include "Gun.generated.h"
 
 class USceneComponent;
@@ -13,6 +14,8 @@ class UStaticMeshComponent;
 class UPhysicalMaterial;
 class UProjectileImpactData;
 class UFakeGunAnimInstance;
+class UFXSystemAsset;
+class USoundBase;
 
 UCLASS(Blueprintable)
 class TOUCHME_API AGun : public AActor
@@ -42,6 +45,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Gun|Attachments")
 	int32 SanitizeInvalidAttachmentComponents();
+
+	UFUNCTION(BlueprintCallable, Category = "Gun|Attachments", meta = (DisplayName = "Spawn Attachment Feedback At Location"))
+	void SpawnAttachmentFeedbackAtLocation(FVector Location, FRotator Rotation = FRotator::ZeroRotator);
+
+	UFUNCTION(BlueprintCallable, Category = "Gun|Loadout|Feedback", meta = (DisplayName = "Play Weapon Spawn Feedback"))
+	void PlayWeaponSpawnFeedback();
+
+	UFUNCTION(BlueprintCallable, Category = "Gun|Loadout|Feedback", meta = (DisplayName = "Spawn Weapon Spawn Feedback At Location"))
+	void SpawnWeaponSpawnFeedbackAtLocation(FVector Location, FRotator Rotation = FRotator::ZeroRotator);
 
 	UFUNCTION(BlueprintCallable, Category = "Gun|ADS")
 	void RefreshADSSocket();
@@ -83,6 +95,48 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun")
 	TObjectPtr<UProjectileImpactData> Caliber;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback")
+	TObjectPtr<UFXSystemAsset> AttachmentFeedbackFX;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback")
+	TObjectPtr<USoundBase> AttachmentFeedbackSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback", meta = (ClampMin = "0.0"))
+	FVector AttachmentFeedbackScale = FVector(1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback", meta = (ClampMin = "0.0"))
+	float AttachmentFeedbackVolume = 0.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback", meta = (ClampMin = "0.0"))
+	float AttachmentFeedbackPitch = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback")
+	bool bAttachmentFeedbackPlaySound2D = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback")
+	TObjectPtr<UFXSystemAsset> WeaponSpawnFeedbackFX;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback")
+	TObjectPtr<USoundBase> WeaponSpawnFeedbackSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback", meta = (ClampMin = "0.0"))
+	FVector WeaponSpawnFeedbackScale = FVector(1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback", meta = (ClampMin = "0.0"))
+	float WeaponSpawnFeedbackVolume = 0.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback", meta = (ClampMin = "0.0"))
+	float WeaponSpawnFeedbackPitch = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback")
+	bool bWeaponSpawnFeedbackPlaySound2D = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback")
+	bool bAutoPlayWeaponSpawnFeedbackInLoadout = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback")
+	FName WeaponSpawnFeedbackSocketName = NAME_None;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gun", meta = (DisplayName = "Display Name"))
 	FText WeaponDisplayName;
@@ -163,7 +217,21 @@ private:
 	void ApplyFakeMode();
 	void RestoreFromFakeMode();
 	void RequestDeferredAttachmentSanitize();
+	void RequestDeferredAttachmentFeedback(const UFunction* Function);
 	void RunDeferredAttachmentSanitize();
+	void PlayAttachmentFeedback();
+	FTransform ResolveAttachmentFeedbackTransform() const;
+	FTransform ResolveWeaponSpawnFeedbackTransform() const;
+	FName ResolveAttachmentFeedbackPreferredSocket(const UFunction* Function) const;
+	FName ResolveAttachmentFeedbackSocketFromContext(const FString& Context, FName SocketName) const;
+	FName ResolveChangedAttachmentFeedbackSocket(
+		const TMap<FName, FString>& CurrentStateSignatures,
+		const TMap<FName, FName>& CurrentStateSockets) const;
+	void MonitorAttachmentFeedbackState();
+	void UpdateAttachmentFeedbackStateSnapshot();
+	uint32 BuildAttachmentFeedbackStateHash(
+		TMap<FName, FString>* OutStateSignatures = nullptr,
+		TMap<FName, FName>* OutStateSockets = nullptr) const;
 	bool IsInvalidWeaponAttachmentComponent(const UStaticMeshComponent* Component) const;
 	int32 SynchronizeUnderbarrelAttachmentComponent();
 	int32 SynchronizeAcogRenderComponents();
@@ -192,8 +260,16 @@ private:
 	TObjectPtr<UStaticMeshComponent> AcogGlassComponent;
 
 	bool bAttachmentSanitizeRequested = false;
+	bool bAttachmentFeedbackRequested = false;
+	bool bAttachmentFeedbackStateInitialized = false;
 	bool bSanitizingAttachmentComponents = false;
 	bool bFakeModeApplied = false;
 	bool bMainMeshWasVisible = true;
+	FName AttachmentFeedbackPreferredSocketName = NAME_None;
+	uint32 LastAttachmentFeedbackStateHash = 0;
+	TMap<FName, FString> LastAttachmentFeedbackStateSignatures;
+	TMap<FName, FName> LastAttachmentFeedbackStateSockets;
+	double AttachmentFeedbackSuppressUntilTime = 0.0;
+	FTimerHandle AttachmentFeedbackMonitorTimerHandle;
 	uint8 MainMeshPreviousAnimTickOption = 0;
 };

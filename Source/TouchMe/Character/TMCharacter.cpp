@@ -25,9 +25,11 @@
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "StaticMeshResources.h"
 #include "Sound/AudioSettings.h"
 #include "Sound/SoundClass.h"
 #include "Sound/SoundMix.h"
@@ -42,6 +44,7 @@
 namespace
 {
 	AGun* TMResolveActiveGun(const ATMCharacter* Character);
+	bool TMIsAimingForWeaponBoneLock(const ATMCharacter* Character, const UAnimInstance* AnimInstance);
 
 	bool TMIsTraceNoiseFunction(const FString& Name)
 	{
@@ -92,6 +95,60 @@ namespace
 		TEXT("Moves the local weapon and hands forward/backward in the camera view, in centimeters. Positive moves the camera forward."),
 		ECVF_Default);
 
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimLowerCm(
+		TEXT("tm.ViewmodelAimLowerCm"),
+		5.23f,
+		TEXT("Moves the local weapon and hands lower in ADS, in centimeters. Only applies while aiming."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimForwardCm(
+		TEXT("tm.ViewmodelAimForwardCm"),
+		12.0f,
+		TEXT("Moves the local weapon and hands forward/backward in ADS, in centimeters. Only applies while aiming."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimRightCm(
+		TEXT("tm.ViewmodelAimRightCm"),
+		0.75f,
+		TEXT("Moves the local weapon and hands right/left in ADS, in centimeters. Only applies while aiming."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<int32> CVarTMViewmodelAimCenterReticle(
+		TEXT("tm.ViewmodelAimCenterReticle"),
+		1,
+		TEXT("Centers the visible optic reticle/dot on the camera line while aiming."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimCenterMaxCm(
+		TEXT("tm.ViewmodelAimCenterMaxCm"),
+		5.0f,
+		TEXT("Maximum per-frame camera correction for centering the visible ADS reticle, in centimeters."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimReticleMinForwardCm(
+		TEXT("tm.ViewmodelAimReticleMinForwardCm"),
+		24.0f,
+		TEXT("Minimum forward eye relief from the camera to the visible ADS reticle, in centimeters."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimReticleMaxPullBackCm(
+		TEXT("tm.ViewmodelAimReticleMaxPullBackCm"),
+		25.0f,
+		TEXT("Maximum camera pull-back used to keep the visible ADS reticle out of the camera, in centimeters."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<int32> CVarTMShootADSUseReticleRay(
+		TEXT("tm.ShootADSUseReticleRay"),
+		1,
+		TEXT("Uses the visible ADS reticle/dot as the camera aim ray while aiming."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<int32> CVarTMShootADSNoRandomSpread(
+		TEXT("tm.ShootADSNoRandomSpread"),
+		1,
+		TEXT("Disables random bullet spread while aiming so ADS hits the visible reticle line."),
+		ECVF_Default);
+
 	struct FTMDebugBoneScaleDelegate
 	{
 		TWeakObjectPtr<USkeletalMeshComponent> Mesh;
@@ -102,6 +159,266 @@ namespace
 
 	TArray<FTMDebugBoneScaleDelegate> GTMDebugBoneScaleDelegates;
 	TSet<uint32> GTMDebugBoneScaleReportedMeshIds;
+
+	bool TMTextLooksLikeReticleSlot(const FString& Text)
+	{
+		const FString UpperText = Text.ToUpper();
+		return UpperText.Contains(TEXT("RETICLE"))
+			|| UpperText.Contains(TEXT("DOTSIGHTDOT"))
+			|| UpperText.Contains(TEXT("SIGHTDOT"))
+			|| UpperText.Contains(TEXT("SIGHT_DOT"))
+			|| UpperText.Contains(TEXT("I_DOT"));
+	}
+
+	bool TMMaterialSlotLooksLikeReticle(
+		const UStaticMeshComponent* Component,
+		const UStaticMesh* StaticMesh,
+		const int32 MaterialIndex)
+	{
+		if (!Component || !StaticMesh || MaterialIndex < 0)
+		{
+			return false;
+		}
+
+		const TArray<FStaticMaterial>& StaticMaterials = StaticMesh->GetStaticMaterials();
+		if (StaticMaterials.IsValidIndex(MaterialIndex)
+			&& TMTextLooksLikeReticleSlot(StaticMaterials[MaterialIndex].MaterialSlotName.ToString()))
+		{
+			return true;
+		}
+
+		if (const UMaterialInterface* ComponentMaterial = Component->GetMaterial(MaterialIndex))
+		{
+			if (TMTextLooksLikeReticleSlot(ComponentMaterial->GetPathName()))
+			{
+				return true;
+			}
+		}
+
+		if (StaticMaterials.IsValidIndex(MaterialIndex))
+		{
+			if (const UMaterialInterface* MeshMaterial = StaticMaterials[MaterialIndex].MaterialInterface)
+			{
+				if (TMTextLooksLikeReticleSlot(MeshMaterial->GetPathName()))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	bool TMTryGetKnownReticleLocalCenter(const UStaticMesh* StaticMesh, FVector& OutLocalCenter)
+	{
+		if (!StaticMesh)
+		{
+			return false;
+		}
+
+		const FString MeshPath = StaticMesh->GetPathName().ToUpper();
+		if (MeshPath.Contains(TEXT("SM_DOTSIGHT")))
+		{
+			OutLocalCenter = FVector(4.8730764389, 0.0000027418, 4.1800785065);
+			return true;
+		}
+
+		return false;
+	}
+
+	bool TMGetStaticMeshMaterialSectionLocalCenter(
+		const UStaticMeshComponent* Component,
+		const int32 MaterialIndex,
+		FVector& OutLocalCenter)
+	{
+		if (!Component || MaterialIndex < 0)
+		{
+			return false;
+		}
+
+		const UStaticMesh* StaticMesh = Component->GetStaticMesh();
+		if (!StaticMesh)
+		{
+			return false;
+		}
+
+		if (TMTryGetKnownReticleLocalCenter(StaticMesh, OutLocalCenter))
+		{
+			return true;
+		}
+
+		const FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData();
+		if (RenderData && RenderData->LODResources.Num() > 0)
+		{
+			const FStaticMeshLODResources& LODResources = RenderData->LODResources[0];
+			const FPositionVertexBuffer& PositionVertexBuffer = LODResources.VertexBuffers.PositionVertexBuffer;
+			const FIndexArrayView Indices = LODResources.IndexBuffer.GetArrayView();
+			const uint32 VertexCount = PositionVertexBuffer.GetNumVertices();
+			FBox LocalBounds(EForceInit::ForceInit);
+
+			for (const FStaticMeshSection& Section : LODResources.Sections)
+			{
+				if (Section.MaterialIndex != MaterialIndex)
+				{
+					continue;
+				}
+
+				const uint32 SectionFirstIndex = Section.FirstIndex;
+				const uint32 SectionIndexCount = Section.NumTriangles * 3;
+				for (uint32 SectionIndexOffset = 0; SectionIndexOffset < SectionIndexCount; ++SectionIndexOffset)
+				{
+					const int32 IndexBufferIndex = static_cast<int32>(SectionFirstIndex + SectionIndexOffset);
+					if (IndexBufferIndex < 0 || IndexBufferIndex >= Indices.Num())
+					{
+						continue;
+					}
+
+					const uint32 VertexIndex = Indices[IndexBufferIndex];
+					if (VertexIndex >= VertexCount)
+					{
+						continue;
+					}
+
+					LocalBounds += FVector(PositionVertexBuffer.VertexPosition(VertexIndex));
+				}
+			}
+
+			if (LocalBounds.IsValid)
+			{
+				OutLocalCenter = LocalBounds.GetCenter();
+				return true;
+			}
+		}
+
+		return TMTryGetKnownReticleLocalCenter(StaticMesh, OutLocalCenter);
+	}
+
+	bool TMGetVisibleReticleWorldLocation(const AGun* ActiveGun, FVector& OutWorldLocation)
+	{
+		if (!ActiveGun)
+		{
+			return false;
+		}
+
+		TArray<UStaticMeshComponent*> StaticMeshComponents;
+		ActiveGun->GetComponents(StaticMeshComponents);
+		for (const UStaticMeshComponent* Component : StaticMeshComponents)
+		{
+			if (!Component || !Component->IsVisible())
+			{
+				continue;
+			}
+
+			const UStaticMesh* StaticMesh = Component->GetStaticMesh();
+			if (!StaticMesh)
+			{
+				continue;
+			}
+
+			const int32 MaterialCount = Component->GetNumMaterials();
+			for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
+			{
+				if (!TMMaterialSlotLooksLikeReticle(Component, StaticMesh, MaterialIndex))
+				{
+					continue;
+				}
+
+				FVector LocalCenter = FVector::ZeroVector;
+				if (!TMGetStaticMeshMaterialSectionLocalCenter(Component, MaterialIndex, LocalCenter))
+				{
+					continue;
+				}
+
+				OutWorldLocation = Component->GetComponentTransform().TransformPosition(LocalCenter);
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMGetADSCenterTargetWorldLocation(const ATMCharacter* Character, FVector& OutWorldLocation)
+	{
+		AGun* ActiveGun = TMResolveActiveGun(Character);
+		if (!ActiveGun)
+		{
+			return false;
+		}
+
+		if (TMGetVisibleReticleWorldLocation(ActiveGun, OutWorldLocation))
+		{
+			return true;
+		}
+
+		FTransform ADSSocketWorldTransform = FTransform::Identity;
+		if (ActiveGun->GetADSSocketWorldTransform(ADSSocketWorldTransform))
+		{
+			OutWorldLocation = ADSSocketWorldTransform.GetLocation();
+			return true;
+		}
+
+		return false;
+	}
+
+	void TMCenterADSTargetOnCameraLine(const ATMCharacter* Character, UCameraComponent* CameraComponent)
+	{
+		if (!Character || !CameraComponent || CVarTMViewmodelAimCenterReticle.GetValueOnGameThread() == 0)
+		{
+			return;
+		}
+
+		FVector TargetWorldLocation = FVector::ZeroVector;
+		if (!TMGetADSCenterTargetWorldLocation(Character, TargetWorldLocation))
+		{
+			return;
+		}
+
+		const FTransform CameraWorldTransform = CameraComponent->GetComponentTransform();
+		const FVector CameraWorldLocation = CameraWorldTransform.GetLocation();
+		const FVector CameraRight = CameraWorldTransform.GetUnitAxis(EAxis::Y);
+		const FVector CameraUp = CameraWorldTransform.GetUnitAxis(EAxis::Z);
+		const FVector CameraForward = CameraWorldTransform.GetUnitAxis(EAxis::X);
+		const FVector CameraToTarget = TargetWorldLocation - CameraWorldLocation;
+		FVector CameraPlaneOffset =
+			CameraRight * FVector::DotProduct(CameraToTarget, CameraRight)
+			+ CameraUp * FVector::DotProduct(CameraToTarget, CameraUp);
+
+		const float MaxCorrectionCm = FMath::Max(0.0f, CVarTMViewmodelAimCenterMaxCm.GetValueOnGameThread());
+		if (MaxCorrectionCm > 0.0f && CameraPlaneOffset.SizeSquared() > FMath::Square(MaxCorrectionCm))
+		{
+			CameraPlaneOffset = FVector::ZeroVector;
+		}
+
+		FVector CameraDepthOffset = FVector::ZeroVector;
+		const float TargetForwardCm = FVector::DotProduct(CameraToTarget, CameraForward);
+		const float MinForwardCm = FMath::Max(0.0f, CVarTMViewmodelAimReticleMinForwardCm.GetValueOnGameThread());
+		if (MinForwardCm > 0.0f && TargetForwardCm > UE_SMALL_NUMBER && TargetForwardCm < MinForwardCm)
+		{
+			const float MaxPullBackCm = FMath::Max(0.0f, CVarTMViewmodelAimReticleMaxPullBackCm.GetValueOnGameThread());
+			const float PullBackCm = FMath::Min(MinForwardCm - TargetForwardCm, MaxPullBackCm);
+			CameraDepthOffset = -CameraForward * PullBackCm;
+		}
+
+		const FVector CameraWorldOffset = CameraPlaneOffset + CameraDepthOffset;
+		if (CameraWorldOffset.IsNearlyZero(KINDA_SMALL_NUMBER))
+		{
+			return;
+		}
+
+		const FVector CorrectedWorldLocation = CameraWorldLocation + CameraWorldOffset;
+		const USceneComponent* ParentComponent = CameraComponent->GetAttachParent();
+		const FVector CorrectedRelativeLocation = ParentComponent
+			? ParentComponent->GetComponentTransform().InverseTransformPosition(CorrectedWorldLocation)
+			: CorrectedWorldLocation;
+		if (!CameraComponent->GetRelativeLocation().Equals(CorrectedRelativeLocation, KINDA_SMALL_NUMBER))
+		{
+			CameraComponent->SetRelativeLocation(
+				CorrectedRelativeLocation,
+				false,
+				nullptr,
+				ETeleportType::TeleportPhysics);
+		}
+	}
 
 	void TMEnsureMPCameraBoomAttachment(ATMCharacter* Character)
 	{
@@ -143,10 +460,12 @@ namespace
 			return;
 		}
 
+		const UAnimInstance* AnimInstance = Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr;
+		const bool bAiming = TMIsAimingForWeaponBoneLock(Character, AnimInstance);
 		const FVector DesiredRelativeLocation(
-			CVarTMViewmodelForwardCm.GetValueOnGameThread(),
-			0.0f,
-			CVarTMViewmodelLowerCm.GetValueOnGameThread());
+			bAiming ? CVarTMViewmodelAimForwardCm.GetValueOnGameThread() : CVarTMViewmodelForwardCm.GetValueOnGameThread(),
+			bAiming ? CVarTMViewmodelAimRightCm.GetValueOnGameThread() : 0.0f,
+			bAiming ? CVarTMViewmodelAimLowerCm.GetValueOnGameThread() : CVarTMViewmodelLowerCm.GetValueOnGameThread());
 		if (!CameraComponent->GetRelativeLocation().Equals(DesiredRelativeLocation, KINDA_SMALL_NUMBER))
 		{
 			CameraComponent->SetRelativeLocation(
@@ -154,6 +473,11 @@ namespace
 				false,
 				nullptr,
 				ETeleportType::TeleportPhysics);
+		}
+
+		if (bAiming)
+		{
+			TMCenterADSTargetOnCameraLine(Character, CameraComponent);
 		}
 	}
 
@@ -576,13 +900,18 @@ namespace
 
 	bool TMIsCharacterAimingForCameraWeaponOffset(const ATMCharacter* Character, const UAnimInstance* AnimInstance)
 	{
+		if (TMIsAimingForWeaponBoneLock(Character, AnimInstance))
+		{
+			return true;
+		}
+
 		bool bAiming = false;
 		if (TMReadAimStateBoolProperty(Character, bAiming))
 		{
 			return bAiming;
 		}
 
-		return TMIsAimingForWeaponBoneLock(Character, AnimInstance);
+		return false;
 	}
 
 	void TMApplyOpticCameraFOVGuard(ATMCharacter* Character)
@@ -1863,6 +2192,7 @@ namespace
 		const FVector& Location,
 		const FVector& Normal,
 		const FVector& TraceStart,
+		const FVector& HitDirection,
 		UPhysicalMaterial* PhysicalMaterial,
 		AActor* HitActor,
 		const FName HitBone,
@@ -1871,14 +2201,15 @@ namespace
 		return TMInvokeBlueprintFunction(
 			Character,
 			TEXT("Svr_LineTrace"),
-			[Distance, &Location, &Normal, &TraceStart, PhysicalMaterial, HitActor, HitBone, &HitInfo](
+			[Distance, &Location, &Normal, &TraceStart, &HitDirection, PhysicalMaterial, HitActor, HitBone, &HitInfo](
 				UFunction* Function,
 				void* Parameters)
 			{
 				TMSetNumericFunctionParameter(Function, Parameters, { TEXT("Distance") }, Distance);
 				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("Location") }, Location);
 				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("Normal"), TEXT("Rotation") }, Normal);
-				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("TraceStart"), TEXT("HitDirection") }, TraceStart);
+				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("TraceStart") }, TraceStart);
+				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("HitDirection") }, HitDirection);
 				TMSetObjectFunctionParameter(
 					Function,
 					Parameters,
@@ -2042,6 +2373,11 @@ namespace
 			CameraLocation = CameraComponent->GetComponentLocation();
 			CameraForward = CameraComponent->GetForwardVector();
 		}
+		CameraForward = CameraForward.GetSafeNormal();
+		if (CameraForward.IsNearlyZero())
+		{
+			CameraForward = Character->GetActorForwardVector().GetSafeNormal();
+		}
 
 		double RecoilX = 0.0;
 		double RecoilY = 0.0;
@@ -2054,14 +2390,38 @@ namespace
 			SpreadReduction = 1.0;
 		}
 
-		bool bAiming = false;
-		TMReadAimStateBoolProperty(Character, bAiming);
+		const UAnimInstance* AnimInstance = Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr;
+		bool bAiming = TMIsCharacterAimingForCameraWeaponOffset(Character, AnimInstance);
+		if (!bAiming)
+		{
+			TMReadAimStateBoolProperty(Character, bAiming);
+		}
+
+		FVector AimDirection = CameraForward;
+		if (bAiming && CVarTMShootADSUseReticleRay.GetValueOnGameThread() != 0)
+		{
+			FVector ReticleWorldLocation = FVector::ZeroVector;
+			if (TMGetADSCenterTargetWorldLocation(Character, ReticleWorldLocation))
+			{
+				const FVector CameraToReticle = ReticleWorldLocation - CameraLocation;
+				const FVector ReticleDirection = CameraToReticle.GetSafeNormal();
+				if (!ReticleDirection.IsNearlyZero()
+					&& FVector::DotProduct(ReticleDirection, CameraForward) > 0.25f)
+				{
+					AimDirection = ReticleDirection;
+				}
+			}
+		}
+
 		const float MaxYawInDegrees = static_cast<float>(bAiming ? RecoilX / SpreadReduction : RecoilX);
 		const float MaxPitchInDegrees = static_cast<float>(bAiming ? RecoilY / SpreadReduction : RecoilY);
-		const FVector SpreadDirection = UKismetMathLibrary::RandomUnitVectorInEllipticalConeInDegrees(
-			CameraForward,
-			MaxYawInDegrees,
-			MaxPitchInDegrees);
+		const bool bUseRandomSpread = !bAiming || CVarTMShootADSNoRandomSpread.GetValueOnGameThread() == 0;
+		const FVector TraceDirection = bUseRandomSpread
+			? UKismetMathLibrary::RandomUnitVectorInEllipticalConeInDegrees(
+				AimDirection,
+				MaxYawInDegrees,
+				MaxPitchInDegrees)
+			: AimDirection;
 
 		TArray<AActor*> ActorsToIgnore;
 		ActorsToIgnore.Add(ActiveGun);
@@ -2073,7 +2433,7 @@ namespace
 			return false;
 		}
 
-		const FVector CameraTraceEnd = CameraLocation + SpreadDirection * TraceDistance;
+		const FVector CameraTraceEnd = CameraLocation + TraceDirection * TraceDistance;
 		FHitResult CameraHit;
 		const bool bCameraHit = UKismetSystemLibrary::LineTraceSingle(
 			Character,
@@ -2091,7 +2451,7 @@ namespace
 
 		const FVector MuzzleLocation = ItemMesh->GetSocketLocation(TEXT("Muzzle"));
 		const FVector WeaponTraceEnd = bCameraHit
-			? CameraHit.Location + CameraForward
+			? CameraHit.Location + TraceDirection
 			: CameraTraceEnd;
 		const FVector BulletDirection = UKismetMathLibrary::GetDirectionUnitVector(MuzzleLocation, WeaponTraceEnd);
 		const FVector TrailVelocity = BulletDirection * 20000.0;
@@ -2114,25 +2474,23 @@ namespace
 
 		if (!bWeaponHit)
 		{
-			TMSpawnFallbackPhysicalBullet(Character, WeaponTraceEnd, BulletDirection);
+			TMSpawnFallbackPhysicalBullet(Character, MuzzleLocation, BulletDirection);
 			return true;
 		}
 
-		TMInvokeBulletPenetration(Character, CameraTraceEnd, WeaponHit, ActorsToIgnore);
+		TMInvokeBulletPenetration(Character, TrailVelocity, WeaponHit, ActorsToIgnore);
 
 		const double HitDelay = static_cast<double>(WeaponHit.Distance) / 20000.0;
 		TMWriteNumericProperty(Character, TEXT("HitDelay"), HitDelay);
 		TMInvokeSvrDelay(Character, HitDelay);
 
-		const FVector HitDirection = UKismetMathLibrary::GetDirectionUnitVector(
-			WeaponHit.ImpactNormal,
-			WeaponHit.TraceStart);
 		TMInvokeSvrLineTrace(
 			Character,
 			WeaponHit.Distance,
 			WeaponHit.ImpactPoint,
 			WeaponHit.ImpactNormal,
-			HitDirection,
+			WeaponHit.TraceStart,
+			BulletDirection,
 			WeaponHit.PhysMaterial.Get(),
 			WeaponHit.GetActor(),
 			WeaponHit.BoneName,
@@ -2190,13 +2548,14 @@ namespace
 			return false;
 		}
 
-		FTransform SocketCameraOffset = FTransform::Identity;
-		TMReadTransformProperty(AnimInstance, CameraWeaponOffsetAimingPropertyName, SocketCameraOffset);
-
 		const FTransform CurrentWeaponBoneWorldTransform = Mesh->GetSocketTransform(WeaponBoneName, RTS_World);
 		const FTransform ADSSocketRelativeToWeaponBone =
 			ADSSocketWorldTransform.GetRelativeTransform(CurrentWeaponBoneWorldTransform);
 
+		FTransform SocketCameraOffset = FTransform::Identity;
+		TMReadTransformProperty(AnimInstance, CameraWeaponOffsetAimingPropertyName, SocketCameraOffset);
+		SocketCameraOffset.SetRotation(FQuat::Identity);
+		SocketCameraOffset.SetScale3D(FVector::OneVector);
 		OutDesiredSocketWorldTransform = SocketCameraOffset * TMGetCameraWorldTransform(Character);
 		const FTransform FullySolvedWeaponBoneWorldTransform =
 			ADSSocketRelativeToWeaponBone.Inverse() * OutDesiredSocketWorldTransform;
