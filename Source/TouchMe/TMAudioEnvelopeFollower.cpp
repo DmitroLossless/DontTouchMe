@@ -97,6 +97,21 @@ UAudioComponent* UTMAudioEnvelopeFollower::GetAudioComponent() const
 	return AudioComponent;
 }
 
+int32 UTMAudioEnvelopeFollower::GetBeatCounter() const
+{
+	return BeatCounter;
+}
+
+float UTMAudioEnvelopeFollower::GetLastBeatTimeSeconds() const
+{
+	return LastBeatTimeSeconds;
+}
+
+float UTMAudioEnvelopeFollower::GetLastBeatStrength() const
+{
+	return LastBeatStrength;
+}
+
 void UTMAudioEnvelopeFollower::PollAudioAnalysis()
 {
 	if (!bIsAnalyzing || !AudioComponent || !LoudnessAnalyzer)
@@ -174,6 +189,7 @@ void UTMAudioEnvelopeFollower::PollAudioAnalysis()
 	LastBeatTimeSeconds = CurrentTimeSeconds;
 
 	const float BeatStrength = NormalizedEnvelopeValue;
+	LastBeatStrength = BeatStrength;
 	OnBeat.Broadcast(BeatCounter, BeatStrength, CurrentTimeSeconds);
 
 	if (BeatsPerBar > 0 && ((BeatCounter - 1) % BeatsPerBar) == 0)
@@ -208,6 +224,7 @@ void UTMAudioEnvelopeFollower::ResetAnalysisState()
 	DynamicThreshold = MinimumBeatThreshold;
 	EstimatedBeatInterval = 0.0f;
 	LastBeatTimeSeconds = -1.0f;
+	LastBeatStrength = 0.0f;
 	bAboveThreshold = false;
 	BeatCounter = 0;
 	BarCounter = 0;

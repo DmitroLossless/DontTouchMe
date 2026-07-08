@@ -98,6 +98,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "TM|Audio Analysis")
 	UAudioComponent* GetAudioComponent() const;
 
+	UFUNCTION(BlueprintPure, Category = "TM|Audio Analysis")
+	int32 GetBeatCounter() const;
+
+	UFUNCTION(BlueprintPure, Category = "TM|Audio Analysis")
+	float GetLastBeatTimeSeconds() const;
+
+	UFUNCTION(BlueprintPure, Category = "TM|Audio Analysis")
+	float GetLastBeatStrength() const;
+
 protected:
 	UFUNCTION()
 	void HandleAudioFinished();
@@ -122,6 +131,7 @@ protected:
 	float AnalysisStartTimeSeconds = 0.0f;
 	float CurrentPlaybackTimeSeconds = 0.0f;
 	float LastBeatTimeSeconds = -1.0f;
+	float LastBeatStrength = 0.0f;
 	bool bAboveThreshold = false;
 	int32 BeatCounter = 0;
 	int32 BarCounter = 0;

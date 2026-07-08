@@ -8,9 +8,9 @@ public class TouchMe : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "PhysicsCore" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "PhysicsCore", "UMG" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "AudioMixer", "AudioSynesthesia", "AudioSynesthesiaCore", "Niagara", "PakFile", "SlateCore", "UMG" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "AudioMixer", "AudioSynesthesia", "AudioSynesthesiaCore", "Niagara", "PakFile", "SlateCore" });
 
 		if (Target.bBuildEditor)
 		{

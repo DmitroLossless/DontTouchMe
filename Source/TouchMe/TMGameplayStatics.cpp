@@ -24,6 +24,7 @@
 #include "GameFramework/DamageType.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "SceneView.h"
+#include "Blueprint/UserWidget.h"
 #include "Components/PrimitiveComponent.h"
 #include "Math/InverseRotationMatrix.h"
 #include "UObject/Package.h"
@@ -70,12 +71,11 @@
 #include "AnimGraphNode_ModifyBone.h"
 #include "Animation/AnimBlueprint.h"
 #include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
-#include "HAL/FileManager.h"
+#include "K2Node_CallFunction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
 #include "UObject/SavePackage.h"
 #endif
 
@@ -1652,6 +1652,67 @@ void UTMGameplayStatics::PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor)
 	Gun->PlayWeaponSpawnFeedback();
 }
 
+namespace
+{
+	UUserWidget* TMResolveLoadoutWidget(UUserWidget* OwnerWidget)
+	{
+		if (!OwnerWidget)
+		{
+			return nullptr;
+		}
+
+		if (FindFProperty<FObjectPropertyBase>(OwnerWidget->GetClass(), TEXT("ActiveWeapon")))
+		{
+			return OwnerWidget;
+		}
+
+		static const FName LoadoutWidgetNames[] =
+		{
+			TEXT("W_Loadout_C_0"),
+			TEXT("W_Loadout")
+		};
+
+		for (const FName LoadoutWidgetName : LoadoutWidgetNames)
+		{
+			if (UUserWidget* LoadoutWidget = Cast<UUserWidget>(OwnerWidget->GetWidgetFromName(LoadoutWidgetName)))
+			{
+				return LoadoutWidget;
+			}
+		}
+
+		return nullptr;
+	}
+}
+
+void UTMGameplayStatics::CleanupLoadoutPreview(UUserWidget* OwnerWidget)
+{
+	UUserWidget* LoadoutWidget = TMResolveLoadoutWidget(OwnerWidget);
+	if (!LoadoutWidget)
+	{
+		return;
+	}
+
+	FObjectPropertyBase* ActiveWeaponProperty =
+		FindFProperty<FObjectPropertyBase>(LoadoutWidget->GetClass(), TEXT("ActiveWeapon"));
+	if (!ActiveWeaponProperty)
+	{
+		return;
+	}
+
+	AActor* ActiveWeapon = Cast<AActor>(ActiveWeaponProperty->GetObjectPropertyValue_InContainer(LoadoutWidget));
+	if (IsValid(ActiveWeapon) && !ActiveWeapon->IsActorBeingDestroyed())
+	{
+		ActiveWeapon->Destroy();
+	}
+
+	ActiveWeaponProperty->SetObjectPropertyValue_InContainer(LoadoutWidget, nullptr);
+
+	if (FBoolProperty* IsViewerProperty = FindFProperty<FBoolProperty>(LoadoutWidget->GetClass(), TEXT("IsViewer?")))
+	{
+		IsViewerProperty->SetPropertyValue_InContainer(LoadoutWidget, false);
+	}
+}
+
 void UTMGameplayStatics::MarketSoundRoom(bool enable)
 {
 	
@@ -1928,6 +1989,109 @@ bool UTMGameplayStatics::FixMPSBonesAimTargetGraph()
 		TEXT("[TMFixAimTargetGraph] Changed=1 Saved=%d Asset=%s"),
 		bSaved ? 1 : 0,
 		*AnimBlueprint->GetPathName());
+	return bSaved;
+#else
+	return false;
+#endif
+}
+
+bool UTMGameplayStatics::PatchMenuViewerNoReinitPose()
+{
+#if WITH_EDITOR
+	static const TCHAR* TargetBlueprintPath =
+		TEXT("/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer");
+
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, TargetBlueprintPath);
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[TMMenuViewerNoReinitPose] Failed to load %s"), TargetBlueprintPath);
+		return false;
+	}
+
+	bool bChanged = false;
+	int32 PatchedPinCount = 0;
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph || Graph->GetFName() != TEXT("DefineMesh"))
+		{
+			continue;
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			UK2Node_CallFunction* CallFunctionNode = Cast<UK2Node_CallFunction>(Node);
+			if (!CallFunctionNode || CallFunctionNode->GetFunctionName() != TEXT("SetSkinnedAssetAndUpdate"))
+			{
+				continue;
+			}
+
+			UEdGraphPin* ReinitPosePin = CallFunctionNode->FindPin(TEXT("bReinitPose"), EGPD_Input);
+			if (!ReinitPosePin || ReinitPosePin->LinkedTo.Num() > 0)
+			{
+				continue;
+			}
+
+			++PatchedPinCount;
+			if (!ReinitPosePin->DefaultValue.Equals(TEXT("false"), ESearchCase::IgnoreCase))
+			{
+				Blueprint->Modify();
+				Graph->Modify();
+				CallFunctionNode->Modify();
+				ReinitPosePin->Modify();
+				ReinitPosePin->DefaultValue = TEXT("false");
+				CallFunctionNode->PinDefaultValueChanged(ReinitPosePin);
+				bChanged = true;
+
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMMenuViewerNoReinitPose] Patched %s.%s bReinitPose=false"),
+					*Graph->GetName(),
+					*CallFunctionNode->GetName());
+			}
+		}
+	}
+
+	if (PatchedPinCount != 2)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMMenuViewerNoReinitPose] Expected 2 SetSkinnedAssetAndUpdate pins, found %d in %s"),
+			PatchedPinCount,
+			*Blueprint->GetPathName());
+	}
+
+	if (!bChanged)
+	{
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMenuViewerNoReinitPose] No changes needed for %s. PinsFound=%d"),
+			*Blueprint->GetPathName(),
+			PatchedPinCount);
+		return PatchedPinCount == 2;
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	UPackage* Package = Blueprint->GetOutermost();
+	const FString PackageFilename =
+		FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	const bool bSaved = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMMenuViewerNoReinitPose] Changed=1 Saved=%d Asset=%s PinsFound=%d"),
+		bSaved ? 1 : 0,
+		*Blueprint->GetPathName(),
+		PatchedPinCount);
 	return bSaved;
 #else
 	return false;

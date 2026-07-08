@@ -35,8 +35,10 @@
 #include "K2Node_BreakStruct.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_ComponentBoundEvent.h"
+#include "K2Node_FunctionEntry.h"
 #include "K2Node_GetDataTableRow.h"
 #include "K2Node_Select.h"
+#include "K2Node_Self.h"
 #include "K2Node_SpawnActorFromClass.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
@@ -5956,6 +5958,317 @@ namespace
 		return TMSavePackageForAsset(Blueprint, TEXT("TMLoadoutWeaponFeedback"));
 	}
 
+	bool TMIsMainMenuLoadoutCleanupTargetComponent(const FString& ComponentName)
+	{
+		static const TCHAR* TargetComponents[] =
+		{
+			TEXT("B_Settings"),
+			TEXT("B_Settings_Hide"),
+			TEXT("B_Singleplayer"),
+			TEXT("B_Singleplayer_R"),
+			TEXT("B_Multiplayer"),
+			TEXT("B_Multiplayer_R"),
+			TEXT("B_MultiplayerHeader"),
+			TEXT("B_Return_1"),
+			TEXT("Button_0"),
+			TEXT("B_NG"),
+			TEXT("B_L_Select"),
+			TEXT("B_ContinueGame"),
+			TEXT("B_Join"),
+			TEXT("B_Host"),
+			TEXT("Level_01"),
+			TEXT("Level_02"),
+			TEXT("Level_03"),
+			TEXT("B_Loadout_Hide"),
+			TEXT("B_Quit")
+		};
+
+		for (const TCHAR* TargetComponent : TargetComponents)
+		{
+			if (ComponentName.Equals(TargetComponent, ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMIsMainMenuLoadoutCleanupFunctionGraph(const UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return false;
+		}
+
+		const FString GraphName = Graph->GetName();
+		if (!GraphName.Contains(TEXT("OnButtonClickedEvent"), ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+
+		static const TCHAR* TargetComponents[] =
+		{
+			TEXT("B_Settings"),
+			TEXT("B_Settings_Hide"),
+			TEXT("B_Singleplayer"),
+			TEXT("B_Singleplayer_R"),
+			TEXT("B_Multiplayer"),
+			TEXT("B_Multiplayer_R"),
+			TEXT("B_MultiplayerHeader"),
+			TEXT("B_Return_1"),
+			TEXT("Button_0"),
+			TEXT("B_NG"),
+			TEXT("B_L_Select"),
+			TEXT("B_ContinueGame"),
+			TEXT("B_Join"),
+			TEXT("B_Host"),
+			TEXT("Level_01"),
+			TEXT("Level_02"),
+			TEXT("Level_03"),
+			TEXT("B_Loadout_Hide"),
+			TEXT("B_Quit")
+		};
+
+		for (const TCHAR* TargetComponent : TargetComponents)
+		{
+			if (GraphName.Contains(FString::Printf(TEXT("__%s_"), TargetComponent), ESearchCase::IgnoreCase)
+				|| GraphName.Contains(FString::Printf(TEXT("_%s_"), TargetComponent), ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMIsMainMenuLoadoutCleanupClickEvent(const UEdGraphNode* Node)
+	{
+		const UK2Node_ComponentBoundEvent* EventNode = Cast<UK2Node_ComponentBoundEvent>(Node);
+		if (!EventNode)
+		{
+			return false;
+		}
+
+		const FString ComponentName = EventNode->ComponentPropertyName.ToString();
+		const FString DelegateName = EventNode->DelegatePropertyName.ToString();
+		const FString NodeName = EventNode->GetName();
+		return TMIsMainMenuLoadoutCleanupTargetComponent(ComponentName)
+			&& (DelegateName.Contains(TEXT("Clicked"), ESearchCase::IgnoreCase)
+				|| NodeName.Contains(TEXT("OnButtonClickedEvent"), ESearchCase::IgnoreCase));
+	}
+
+	bool TMGraphAlreadyCallsLoadoutCleanup(const UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return false;
+		}
+
+		for (const UEdGraphNode* Node : Graph->Nodes)
+		{
+			const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+			if (CallNode
+				&& CallNode->FunctionReference.GetMemberName()
+					== GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, CleanupLoadoutPreview))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	UEdGraphNode* TMFindMainMenuLoadoutCleanupStartNode(UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return nullptr;
+		}
+
+		if (TMIsMainMenuLoadoutCleanupFunctionGraph(Graph))
+		{
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Cast<UK2Node_FunctionEntry>(Node))
+				{
+					return Node;
+				}
+			}
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (TMIsMainMenuLoadoutCleanupClickEvent(Node))
+			{
+				return Node;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool TMInsertMainMenuLoadoutCleanupCall(UEdGraph* Graph, UEdGraphNode* StartNode)
+	{
+		if (!Graph || !StartNode)
+		{
+			return false;
+		}
+
+		if (TMGraphAlreadyCallsLoadoutCleanup(Graph))
+		{
+			UE_LOG(LogTemp, Display, TEXT("[TMMainMenuLoadoutCleanup] Graph already patched: %s"), *Graph->GetName());
+			return false;
+		}
+
+		const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
+		TArray<UEdGraphPin*> StartExecOutputs = TMGetExecOutputPins(StartNode);
+		UEdGraphPin* StartThenPin = StartExecOutputs.Num() > 0 ? StartExecOutputs[0] : nullptr;
+		if (!Schema || !StartThenPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMMainMenuLoadoutCleanup] Missing start exec pin in graph %s node %s"),
+				*GetNameSafe(Graph),
+				*GetNameSafe(StartNode));
+			return false;
+		}
+
+		TArray<UEdGraphPin*> PreviousThenTargets = StartThenPin->LinkedTo;
+
+		FGraphNodeCreator<UK2Node_CallFunction> CleanupCreator(*Graph);
+		UK2Node_CallFunction* CleanupNode = CleanupCreator.CreateNode();
+		CleanupNode->FunctionReference.SetExternalMember(
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, CleanupLoadoutPreview),
+			UTMGameplayStatics::StaticClass());
+		CleanupNode->NodePosX = StartNode->NodePosX + 300;
+		CleanupNode->NodePosY = StartNode->NodePosY;
+		CleanupNode->NodeComment = TEXT("TM: cleanup loadout weapon preview before leaving loadout");
+		CleanupCreator.Finalize();
+
+		FGraphNodeCreator<UK2Node_Self> SelfCreator(*Graph);
+		UK2Node_Self* SelfNode = SelfCreator.CreateNode();
+		SelfNode->NodePosX = StartNode->NodePosX + 300;
+		SelfNode->NodePosY = StartNode->NodePosY + 170;
+		SelfCreator.Finalize();
+
+		UEdGraphPin* CleanupExecPin = TMFindPinByName(CleanupNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* CleanupThenPin = TMFindPinByName(CleanupNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* OwnerWidgetPin = TMFindPinByName(CleanupNode, TEXT("OwnerWidget"), EGPD_Input);
+		if (!OwnerWidgetPin)
+		{
+			OwnerWidgetPin = TMFindFirstDataPin(CleanupNode, EGPD_Input);
+		}
+
+		UEdGraphPin* SelfOutputPin = TMFindPinByName(SelfNode, UEdGraphSchema_K2::PN_Self, EGPD_Output);
+		if (!SelfOutputPin)
+		{
+			SelfOutputPin = TMFindFirstDataPin(SelfNode, EGPD_Output);
+		}
+
+		if (!CleanupExecPin || !CleanupThenPin || !OwnerWidgetPin || !SelfOutputPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMainMenuLoadoutCleanup] Failed to create cleanup pins in graph %s Exec=%d Then=%d Owner=%d Self=%d"),
+				*Graph->GetName(),
+				CleanupExecPin ? 1 : 0,
+				CleanupThenPin ? 1 : 0,
+				OwnerWidgetPin ? 1 : 0,
+				SelfOutputPin ? 1 : 0);
+			Graph->RemoveNode(CleanupNode);
+			Graph->RemoveNode(SelfNode);
+			return false;
+		}
+
+		StartThenPin->Modify();
+		StartThenPin->BreakAllPinLinks(false);
+
+		bool bSuccess = true;
+		bSuccess &= Schema->TryCreateConnection(StartThenPin, CleanupExecPin);
+		bSuccess &= Schema->TryCreateConnection(SelfOutputPin, OwnerWidgetPin);
+
+		for (UEdGraphPin* PreviousThenTarget : PreviousThenTargets)
+		{
+			if (PreviousThenTarget)
+			{
+				bSuccess &= Schema->TryCreateConnection(CleanupThenPin, PreviousThenTarget);
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMainMenuLoadoutCleanup] Inserted CleanupLoadoutPreview in graph %s after %s. OldThenTargets=%d Success=%d"),
+			*Graph->GetName(),
+			*StartNode->GetName(),
+			PreviousThenTargets.Num(),
+			bSuccess ? 1 : 0);
+		return bSuccess;
+	}
+
+	bool TMPatchMainMenuLoadoutPreviewCleanup()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuLoadoutCleanup] Failed to load W_MainMenu."));
+			return false;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+
+		bool bChanged = false;
+		int32 CandidateGraphCount = 0;
+		for (UEdGraph* Graph : Graphs)
+		{
+			UEdGraphNode* StartNode = TMFindMainMenuLoadoutCleanupStartNode(Graph);
+			if (!StartNode)
+			{
+				continue;
+			}
+
+			++CandidateGraphCount;
+			if (TMInsertMainMenuLoadoutCleanupCall(Graph, StartNode))
+			{
+				bChanged = true;
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMainMenuLoadoutCleanup] Summary: CandidateGraphs=%d Changed=%d"),
+			CandidateGraphCount,
+			bChanged ? 1 : 0);
+
+		if (CandidateGraphCount == 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuLoadoutCleanup] Did not find main menu leave-loadout handlers."));
+			return false;
+		}
+
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuLoadoutCleanup] W_MainMenu failed to compile after patch."));
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMMainMenuLoadoutCleanup"));
+	}
+
 	bool TMDumpYellowUIGraphColors()
 	{
 		const TCHAR* WidgetBlueprintPaths[] =
@@ -6014,6 +6327,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("PatchLoadoutWeaponSelectionFeedback"), ESearchCase::IgnoreCase))
 	{
 		return TMPatchLoadoutWeaponSelectionFeedback() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchMainMenuLoadoutPreviewCleanup"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchMainMenuLoadoutPreviewCleanup() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("PinLeftHandFabrikAlpha"), ESearchCase::IgnoreCase))

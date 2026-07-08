@@ -13,8 +13,11 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/GameModeBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "NiagaraComponent.h"
@@ -56,6 +59,22 @@ namespace
 	const FName AcogGlassSocketName(TEXT("RM_Glass"));
 	const FName AcogFOVParameterName(TEXT("FOV"));
 	constexpr float ImpactFXForcedCleanupDelay = 2.0f;
+	constexpr float CustomizationSkinPreviewHoldSeconds = 5.5f;
+	constexpr float CustomizationSkinPreviewBlendSeconds = 5.0f;
+	const FName CustomizationSkinPreviewAlphaParameterNames[] =
+	{
+		TEXT("SkinAlpha"),
+		TEXT("Skin Alpha"),
+		TEXT("SkinBlend"),
+		TEXT("Skin Blend"),
+		TEXT("BlendAlpha"),
+		TEXT("Blend Alpha"),
+		TEXT("MaterialSkin"),
+		TEXT("Skin"),
+		TEXT("Alpha"),
+		TEXT("ConstAlpha"),
+		TEXT("Opacity")
+	};
 
 	void ScheduleImpactFXCleanup(UWorld* World, UActorComponent* Component)
 	{
@@ -691,6 +710,7 @@ void AGun::BeginPlay()
 	ApplyFakeMode();
 	RefreshADSSocket();
 	RequestDeferredAttachmentSanitize();
+	RequestDeferredCustomizationSkinPreviewCycle();
 
 	UWorld* World = GetWorld();
 	if (World)
@@ -709,6 +729,8 @@ void AGun::BeginPlay()
 void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	GetWorldTimerManager().ClearTimer(AttachmentFeedbackMonitorTimerHandle);
+	GetWorldTimerManager().ClearTimer(CustomizationSkinPreviewStartTimerHandle);
+	StopCustomizationSkinPreviewCycle();
 	DestroyAcogRenderComponents();
 
 	if (bFakeModeApplied)
@@ -727,21 +749,24 @@ void AGun::Tick(const float DeltaSeconds)
 	if (!IsValid(AcogOpticComponent))
 	{
 		DestroyAcogRenderComponents();
-		return;
 	}
-
-	const bool bVisible = AcogOpticComponent->IsVisible();
-	if (IsValid(AcogRenderDiscComponent))
+	else
 	{
-		AcogRenderDiscComponent->SetVisibility(bVisible, true);
+		const bool bVisible = AcogOpticComponent->IsVisible();
+		if (IsValid(AcogRenderDiscComponent))
+		{
+			AcogRenderDiscComponent->SetVisibility(bVisible, true);
+		}
+
+		if (IsValid(AcogGlassComponent))
+		{
+			AcogGlassComponent->SetVisibility(bVisible, true);
+		}
+
+		UpdateAcogMaterialParameterCollection();
 	}
 
-	if (IsValid(AcogGlassComponent))
-	{
-		AcogGlassComponent->SetVisibility(bVisible, true);
-	}
-
-	UpdateAcogMaterialParameterCollection();
+	UpdateCustomizationSkinPreviewCycle(DeltaSeconds);
 }
 
 void AGun::SetFakeMode(const bool bEnabled)
@@ -1051,6 +1076,7 @@ void AGun::PlayWeaponSpawnFeedback()
 {
 	const FTransform FeedbackTransform = ResolveWeaponSpawnFeedbackTransform();
 	SpawnWeaponSpawnFeedbackAtLocation(FeedbackTransform.GetLocation(), FeedbackTransform.Rotator());
+	StartCustomizationSkinPreviewCycle();
 }
 
 void AGun::SpawnWeaponSpawnFeedbackAtLocation(const FVector Location, const FRotator Rotation)
@@ -1163,6 +1189,27 @@ void AGun::RequestDeferredAttachmentFeedback(const UFunction* Function)
 	RequestDeferredAttachmentSanitize();
 }
 
+void AGun::RequestDeferredCustomizationSkinPreviewCycle()
+{
+	if (HasAnyFlags(RF_ClassDefaultObject) || bCustomizationSkinPreviewCycleActive)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	GetWorldTimerManager().SetTimer(
+		CustomizationSkinPreviewStartTimerHandle,
+		this,
+		&AGun::RunDeferredCustomizationSkinPreviewCycle,
+		0.1f,
+		false);
+}
+
 void AGun::RunDeferredAttachmentSanitize()
 {
 	const bool bShouldPlayAttachmentFeedback = bAttachmentFeedbackRequested;
@@ -1193,6 +1240,12 @@ void AGun::RunDeferredAttachmentSanitize()
 
 	UpdateAttachmentFeedbackStateSnapshot();
 	AttachmentFeedbackPreferredSocketName = NAME_None;
+	RequestDeferredCustomizationSkinPreviewCycle();
+}
+
+void AGun::RunDeferredCustomizationSkinPreviewCycle()
+{
+	StartCustomizationSkinPreviewCycle();
 }
 
 void AGun::PlayAttachmentFeedback()
@@ -1901,7 +1954,8 @@ int32 AGun::SynchronizeAcogRenderComponents()
 	RenderDiscComponent->SetVisibility(bVisible, true);
 	GlassComponent->SetVisibility(bVisible, true);
 	UpdateAcogMaterialParameterCollection();
-	SetActorTickEnabled(true);
+	bAcogRenderTickActive = true;
+	RefreshActorTickEnabled();
 	return 2;
 }
 
@@ -1919,7 +1973,8 @@ void AGun::DestroyAcogRenderComponents()
 	}
 	AcogGlassComponent = nullptr;
 
-	SetActorTickEnabled(false);
+	bAcogRenderTickActive = false;
+	RefreshActorTickEnabled();
 }
 
 void AGun::UpdateAcogMaterialParameterCollection() const
@@ -1950,6 +2005,291 @@ void AGun::UpdateAcogMaterialParameterCollection() const
 	}
 
 	CollectionInstance->SetScalarParameterValue(AcogFOVParameterName, CurrentFOV);
+}
+
+void AGun::RefreshActorTickEnabled()
+{
+	SetActorTickEnabled(bAcogRenderTickActive || bCustomizationSkinPreviewCycleActive);
+}
+
+bool AGun::IsCustomizationSkinPreviewAllowed() const
+{
+	UWorld* World = GetWorld();
+	if (HasAnyFlags(RF_ClassDefaultObject) || !World)
+	{
+		return false;
+	}
+
+	const FString MapName = World->GetMapName();
+	const FString WorldPath = World->GetPathName();
+	if (MapName.Contains(TEXT("Map_MainMenu"), ESearchCase::IgnoreCase)
+		|| WorldPath.Contains(TEXT("/MP_System_V3/Maps/Map_MainMenu"), ESearchCase::IgnoreCase)
+		|| WorldPath.Contains(TEXT("MainMenu"), ESearchCase::IgnoreCase))
+	{
+		return true;
+	}
+
+	const AGameModeBase* GameMode = UGameplayStatics::GetGameMode(this);
+	const UClass* GameModeClass = GameMode ? GameMode->GetClass() : nullptr;
+	if (!GameModeClass)
+	{
+		return false;
+	}
+
+	const FString GameModePath = GameModeClass->GetPathName();
+	return GameModePath.Contains(TEXT("/MainMenuPawn/GM_Menu."), ESearchCase::IgnoreCase)
+		|| GameModePath.Contains(TEXT("GM_Menu_C"), ESearchCase::IgnoreCase);
+}
+
+void AGun::StartCustomizationSkinPreviewCycle()
+{
+	StopCustomizationSkinPreviewCycle();
+
+	if (!IsCustomizationSkinPreviewAllowed())
+	{
+		return;
+	}
+
+	ApplyFakeMode();
+	if (!TryInitializeCustomizationSkinPreviewCycle())
+	{
+		return;
+	}
+
+	CustomizationSkinPreviewElapsedSeconds = 0.0f;
+	bCustomizationSkinPreviewCycleActive = true;
+	ApplyCustomizationSkinPreviewAlpha(0.0f);
+	RefreshActorTickEnabled();
+}
+
+void AGun::StopCustomizationSkinPreviewCycle()
+{
+	const int32 EntryCount = CustomizationSkinPreviewComponents.Num();
+	for (int32 EntryIndex = 0; EntryIndex < EntryCount; ++EntryIndex)
+	{
+		USkeletalMeshComponent* Component = CustomizationSkinPreviewComponents[EntryIndex].Get();
+		const int32 MaterialIndex = CustomizationSkinPreviewMaterialIndices.IsValidIndex(EntryIndex)
+			? CustomizationSkinPreviewMaterialIndices[EntryIndex]
+			: INDEX_NONE;
+		UMaterialInterface* BaseMaterial = CustomizationSkinPreviewBaseMaterials.IsValidIndex(EntryIndex)
+			? CustomizationSkinPreviewBaseMaterials[EntryIndex].Get()
+			: nullptr;
+
+		if (IsValid(Component) && MaterialIndex >= 0 && BaseMaterial)
+		{
+			Component->SetMaterial(MaterialIndex, BaseMaterial);
+		}
+	}
+
+	CustomizationSkinPreviewComponents.Reset();
+	CustomizationSkinPreviewMaterialIndices.Reset();
+	CustomizationSkinPreviewBaseMaterials.Reset();
+	CustomizationSkinPreviewSkinMaterials.Reset();
+	CustomizationSkinPreviewDynamicMaterials.Reset();
+	CustomizationSkinPreviewElapsedSeconds = 0.0f;
+	bCustomizationSkinPreviewCycleActive = false;
+	RefreshActorTickEnabled();
+}
+
+bool AGun::TryInitializeCustomizationSkinPreviewCycle()
+{
+	USkeletalMeshComponent* PreviewMesh = ResolveCustomizationSkinPreviewMesh();
+	if (!IsValid(PreviewMesh))
+	{
+		return false;
+	}
+
+	const int32 MaterialCount = PreviewMesh->GetNumMaterials();
+	for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
+	{
+		UMaterialInterface* BaseMaterial = PreviewMesh->GetMaterial(MaterialIndex);
+		UMaterialInterface* SkinMaterial = ResolveCustomizationSkinPreviewMaterial(BaseMaterial);
+		if (!BaseMaterial || !SkinMaterial || BaseMaterial == SkinMaterial)
+		{
+			continue;
+		}
+
+		UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(SkinMaterial, this);
+		if (!DynamicMaterial)
+		{
+			continue;
+		}
+
+		CustomizationSkinPreviewComponents.Add(PreviewMesh);
+		CustomizationSkinPreviewMaterialIndices.Add(MaterialIndex);
+		CustomizationSkinPreviewBaseMaterials.Add(BaseMaterial);
+		CustomizationSkinPreviewSkinMaterials.Add(SkinMaterial);
+		CustomizationSkinPreviewDynamicMaterials.Add(DynamicMaterial);
+	}
+
+	return CustomizationSkinPreviewDynamicMaterials.Num() > 0;
+}
+
+void AGun::UpdateCustomizationSkinPreviewCycle(const float DeltaSeconds)
+{
+	if (!bCustomizationSkinPreviewCycleActive)
+	{
+		return;
+	}
+
+	if (!IsCustomizationSkinPreviewAllowed())
+	{
+		StopCustomizationSkinPreviewCycle();
+		return;
+	}
+
+	constexpr float SafeBlendSeconds = CustomizationSkinPreviewBlendSeconds > UE_SMALL_NUMBER
+		? CustomizationSkinPreviewBlendSeconds
+		: UE_SMALL_NUMBER;
+	const float SegmentSeconds = CustomizationSkinPreviewHoldSeconds + SafeBlendSeconds;
+	const float CycleSeconds = SegmentSeconds * 2.0f;
+
+	CustomizationSkinPreviewElapsedSeconds += FMath::Max(DeltaSeconds, 0.0f);
+	const float Phase = FMath::Fmod(CustomizationSkinPreviewElapsedSeconds, CycleSeconds);
+
+	float Alpha = 0.0f;
+	if (Phase < CustomizationSkinPreviewHoldSeconds)
+	{
+		Alpha = 0.0f;
+	}
+	else if (Phase < SegmentSeconds)
+	{
+		Alpha = (Phase - CustomizationSkinPreviewHoldSeconds) / SafeBlendSeconds;
+	}
+	else if (Phase < SegmentSeconds + CustomizationSkinPreviewHoldSeconds)
+	{
+		Alpha = 1.0f;
+	}
+	else
+	{
+		Alpha = 1.0f - ((Phase - SegmentSeconds - CustomizationSkinPreviewHoldSeconds) / SafeBlendSeconds);
+	}
+
+	ApplyCustomizationSkinPreviewAlpha(FMath::Clamp(Alpha, 0.0f, 1.0f));
+}
+
+void AGun::ApplyCustomizationSkinPreviewAlpha(const float Alpha)
+{
+	const bool bUseBaseMaterial = Alpha <= UE_KINDA_SMALL_NUMBER;
+	const bool bUseSkinMaterial = Alpha >= 1.0f - UE_KINDA_SMALL_NUMBER;
+	const int32 EntryCount = CustomizationSkinPreviewComponents.Num();
+
+	for (int32 EntryIndex = 0; EntryIndex < EntryCount; ++EntryIndex)
+	{
+		USkeletalMeshComponent* Component = CustomizationSkinPreviewComponents[EntryIndex].Get();
+		const int32 MaterialIndex = CustomizationSkinPreviewMaterialIndices.IsValidIndex(EntryIndex)
+			? CustomizationSkinPreviewMaterialIndices[EntryIndex]
+			: INDEX_NONE;
+		UMaterialInterface* BaseMaterial = CustomizationSkinPreviewBaseMaterials.IsValidIndex(EntryIndex)
+			? CustomizationSkinPreviewBaseMaterials[EntryIndex].Get()
+			: nullptr;
+		UMaterialInterface* SkinMaterial = CustomizationSkinPreviewSkinMaterials.IsValidIndex(EntryIndex)
+			? CustomizationSkinPreviewSkinMaterials[EntryIndex].Get()
+			: nullptr;
+		UMaterialInstanceDynamic* DynamicMaterial = CustomizationSkinPreviewDynamicMaterials.IsValidIndex(EntryIndex)
+			? CustomizationSkinPreviewDynamicMaterials[EntryIndex].Get()
+			: nullptr;
+
+		if (!IsValid(Component) || MaterialIndex < 0 || !BaseMaterial || !SkinMaterial || !DynamicMaterial)
+		{
+			continue;
+		}
+
+		UMaterialInterface* DesiredMaterial = DynamicMaterial;
+		if (bUseBaseMaterial)
+		{
+			DesiredMaterial = BaseMaterial;
+		}
+		else if (bUseSkinMaterial)
+		{
+			DesiredMaterial = SkinMaterial;
+		}
+		else
+		{
+			if (UMaterialInstance* BaseInstance = Cast<UMaterialInstance>(BaseMaterial))
+			{
+				if (UMaterialInstance* SkinInstance = Cast<UMaterialInstance>(SkinMaterial))
+				{
+					DynamicMaterial->K2_InterpolateMaterialInstanceParams(BaseInstance, SkinInstance, Alpha);
+				}
+			}
+
+			for (const FName ParameterName : CustomizationSkinPreviewAlphaParameterNames)
+			{
+				DynamicMaterial->SetScalarParameterValue(ParameterName, Alpha);
+			}
+		}
+
+		if (Component->GetMaterial(MaterialIndex) != DesiredMaterial)
+		{
+			Component->SetMaterial(MaterialIndex, DesiredMaterial);
+		}
+	}
+}
+
+USkeletalMeshComponent* AGun::ResolveCustomizationSkinPreviewMesh() const
+{
+	if (IsValid(FakeSkeletalMeshComponent)
+		&& FakeSkeletalMeshComponent->IsVisible()
+		&& FakeSkeletalMeshComponent->GetSkeletalMeshAsset())
+	{
+		return FakeSkeletalMeshComponent;
+	}
+
+	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	return IsValid(MainMesh) ? MainMesh : nullptr;
+}
+
+UMaterialInterface* AGun::ResolveCustomizationSkinPreviewMaterial(const UMaterialInterface* BaseMaterial) const
+{
+	if (!BaseMaterial)
+	{
+		return nullptr;
+	}
+
+	const FString PackageName = BaseMaterial->GetOutermost() ? BaseMaterial->GetOutermost()->GetName() : FString();
+	const FString AssetName = BaseMaterial->GetName();
+	FString DirectoryName;
+	if (!PackageName.Split(TEXT("/"), &DirectoryName, nullptr, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
+	{
+		return nullptr;
+	}
+
+	TArray<FString> CandidateAssetNames;
+	auto AddCandidateBySuffix = [&CandidateAssetNames, &AssetName](const TCHAR* Suffix, const TCHAR* Replacement)
+	{
+		if (!AssetName.EndsWith(Suffix, ESearchCase::IgnoreCase))
+		{
+			return;
+		}
+
+		FString CandidateName = AssetName;
+		CandidateName.LeftChopInline(FCString::Strlen(Suffix), EAllowShrinking::No);
+		CandidateName += Replacement;
+		CandidateAssetNames.AddUnique(CandidateName);
+	};
+
+	AddCandidateBySuffix(TEXT("_Skin_Mat_Inst"), TEXT("_Mat_Inst"));
+	AddCandidateBySuffix(TEXT("_Color_Mat_Inst"), TEXT("_Skin_Mat_Inst"));
+	AddCandidateBySuffix(TEXT("_Mat_Inst"), TEXT("_Skin_Mat_Inst"));
+	AddCandidateBySuffix(TEXT("_Mat"), TEXT("_Skin_Mat_Inst"));
+
+	for (const FString& CandidateAssetName : CandidateAssetNames)
+	{
+		const FString CandidatePackageName = DirectoryName + TEXT("/") + CandidateAssetName;
+		if (CandidatePackageName.Equals(PackageName, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		const FString CandidateObjectPath = CandidatePackageName + TEXT(".") + CandidateAssetName;
+		if (UMaterialInterface* CandidateMaterial = LoadObject<UMaterialInterface>(nullptr, *CandidateObjectPath))
+		{
+			return CandidateMaterial;
+		}
+	}
+
+	return nullptr;
 }
 
 void AGun::ApplyFakeMode()

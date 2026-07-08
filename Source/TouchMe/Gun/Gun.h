@@ -15,6 +15,8 @@ class UPhysicalMaterial;
 class UProjectileImpactData;
 class UFakeGunAnimInstance;
 class UFXSystemAsset;
+class UMaterialInstanceDynamic;
+class UMaterialInterface;
 class USoundBase;
 
 UCLASS(Blueprintable)
@@ -54,6 +56,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Gun|Loadout|Feedback", meta = (DisplayName = "Spawn Weapon Spawn Feedback At Location"))
 	void SpawnWeaponSpawnFeedbackAtLocation(FVector Location, FRotator Rotation = FRotator::ZeroRotator);
+
+	UFUNCTION(BlueprintCallable, Category = "Gun|Customization", meta = (DisplayName = "Start Customization Skin Preview Cycle"))
+	void StartCustomizationSkinPreviewCycle();
+
+	UFUNCTION(BlueprintCallable, Category = "Gun|Customization", meta = (DisplayName = "Stop Customization Skin Preview Cycle"))
+	void StopCustomizationSkinPreviewCycle();
 
 	UFUNCTION(BlueprintCallable, Category = "Gun|ADS")
 	void RefreshADSSocket();
@@ -218,7 +226,9 @@ private:
 	void RestoreFromFakeMode();
 	void RequestDeferredAttachmentSanitize();
 	void RequestDeferredAttachmentFeedback(const UFunction* Function);
+	void RequestDeferredCustomizationSkinPreviewCycle();
 	void RunDeferredAttachmentSanitize();
+	void RunDeferredCustomizationSkinPreviewCycle();
 	void PlayAttachmentFeedback();
 	FTransform ResolveAttachmentFeedbackTransform() const;
 	FTransform ResolveWeaponSpawnFeedbackTransform() const;
@@ -237,6 +247,13 @@ private:
 	int32 SynchronizeAcogRenderComponents();
 	void DestroyAcogRenderComponents();
 	void UpdateAcogMaterialParameterCollection() const;
+	void RefreshActorTickEnabled();
+	bool IsCustomizationSkinPreviewAllowed() const;
+	bool TryInitializeCustomizationSkinPreviewCycle();
+	void UpdateCustomizationSkinPreviewCycle(float DeltaSeconds);
+	void ApplyCustomizationSkinPreviewAlpha(float Alpha);
+	USkeletalMeshComponent* ResolveCustomizationSkinPreviewMesh() const;
+	UMaterialInterface* ResolveCustomizationSkinPreviewMaterial(const UMaterialInterface* BaseMaterial) const;
 	USkeletalMeshComponent* ResolveMainSkeletalMesh() const;
 	bool ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutSocketName) const;
 	UStaticMeshComponent* ResolvePrimaryOpticComponent() const;
@@ -265,11 +282,30 @@ private:
 	bool bSanitizingAttachmentComponents = false;
 	bool bFakeModeApplied = false;
 	bool bMainMeshWasVisible = true;
+	bool bAcogRenderTickActive = false;
+	bool bCustomizationSkinPreviewCycleActive = false;
 	FName AttachmentFeedbackPreferredSocketName = NAME_None;
 	uint32 LastAttachmentFeedbackStateHash = 0;
 	TMap<FName, FString> LastAttachmentFeedbackStateSignatures;
 	TMap<FName, FName> LastAttachmentFeedbackStateSockets;
 	double AttachmentFeedbackSuppressUntilTime = 0.0;
 	FTimerHandle AttachmentFeedbackMonitorTimerHandle;
+	FTimerHandle CustomizationSkinPreviewStartTimerHandle;
 	uint8 MainMeshPreviousAnimTickOption = 0;
+	float CustomizationSkinPreviewElapsedSeconds = 0.0f;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USkeletalMeshComponent>> CustomizationSkinPreviewComponents;
+
+	UPROPERTY(Transient)
+	TArray<int32> CustomizationSkinPreviewMaterialIndices;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInterface>> CustomizationSkinPreviewBaseMaterials;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInterface>> CustomizationSkinPreviewSkinMaterials;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> CustomizationSkinPreviewDynamicMaterials;
 };
