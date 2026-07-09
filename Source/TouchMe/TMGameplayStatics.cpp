@@ -25,7 +25,9 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "SceneView.h"
 #include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/Widget.h"
 #include "Math/InverseRotationMatrix.h"
 #include "UObject/Package.h"
 #include "Engine/CollisionProfile.h"
@@ -64,6 +66,7 @@
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "UObject/UnrealType.h"
+#include "UObject/UObjectIterator.h"
 
 #if WITH_EDITOR
 #include "AnimGraphNode_CopyBone.h"
@@ -1654,16 +1657,29 @@ void UTMGameplayStatics::PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor)
 
 namespace
 {
-	UUserWidget* TMResolveLoadoutWidget(UUserWidget* OwnerWidget)
+	bool TMIsLoadoutPreviewWidget(UUserWidget* Widget)
+	{
+		if (!Widget)
+		{
+			return false;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		return WidgetClass
+			&& WidgetClass->GetPathName().Contains(TEXT("W_Loadout"))
+			&& FindFProperty<FObjectPropertyBase>(WidgetClass, TEXT("ActiveWeapon")) != nullptr;
+	}
+
+	void TMCollectLoadoutPreviewWidgets(UUserWidget* OwnerWidget, TArray<UUserWidget*>& OutWidgets)
 	{
 		if (!OwnerWidget)
 		{
-			return nullptr;
+			return;
 		}
 
-		if (FindFProperty<FObjectPropertyBase>(OwnerWidget->GetClass(), TEXT("ActiveWeapon")))
+		if (TMIsLoadoutPreviewWidget(OwnerWidget))
 		{
-			return OwnerWidget;
+			OutWidgets.AddUnique(OwnerWidget);
 		}
 
 		static const FName LoadoutWidgetNames[] =
@@ -1676,40 +1692,100 @@ namespace
 		{
 			if (UUserWidget* LoadoutWidget = Cast<UUserWidget>(OwnerWidget->GetWidgetFromName(LoadoutWidgetName)))
 			{
-				return LoadoutWidget;
+				if (TMIsLoadoutPreviewWidget(LoadoutWidget))
+				{
+					OutWidgets.AddUnique(LoadoutWidget);
+				}
 			}
 		}
 
-		return nullptr;
+		if (!OwnerWidget->WidgetTree)
+		{
+			return;
+		}
+
+		OwnerWidget->WidgetTree->ForEachWidget(
+			[&OutWidgets](UWidget* Widget)
+			{
+				UUserWidget* UserWidget = Cast<UUserWidget>(Widget);
+				if (TMIsLoadoutPreviewWidget(UserWidget))
+				{
+					OutWidgets.AddUnique(UserWidget);
+				}
+			});
+
+		UWorld* OwnerWorld = OwnerWidget->GetWorld();
+		for (TObjectIterator<UUserWidget> It; It; ++It)
+		{
+			UUserWidget* CandidateWidget = *It;
+			if (!CandidateWidget || CandidateWidget->HasAnyFlags(RF_ClassDefaultObject))
+			{
+				continue;
+			}
+
+			if (OwnerWorld && CandidateWidget->GetWorld() != OwnerWorld)
+			{
+				continue;
+			}
+
+			if (TMIsLoadoutPreviewWidget(CandidateWidget))
+			{
+				OutWidgets.AddUnique(CandidateWidget);
+			}
+		}
+	}
+
+	void TMCleanupLoadoutPreviewWidget(UUserWidget* LoadoutWidget)
+	{
+		if (!LoadoutWidget)
+		{
+			return;
+		}
+
+		FObjectPropertyBase* ActiveWeaponProperty =
+			FindFProperty<FObjectPropertyBase>(LoadoutWidget->GetClass(), TEXT("ActiveWeapon"));
+		if (!ActiveWeaponProperty)
+		{
+			return;
+		}
+
+		AActor* ActiveWeapon = Cast<AActor>(ActiveWeaponProperty->GetObjectPropertyValue_InContainer(LoadoutWidget));
+		if (IsValid(ActiveWeapon) && !ActiveWeapon->IsActorBeingDestroyed())
+		{
+			ActiveWeapon->SetActorHiddenInGame(true);
+			ActiveWeapon->SetActorEnableCollision(false);
+			TArray<UPrimitiveComponent*> PrimitiveComponents;
+			ActiveWeapon->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+			for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+			{
+				if (!PrimitiveComponent)
+				{
+					continue;
+				}
+
+				PrimitiveComponent->SetVisibility(false, true);
+				PrimitiveComponent->SetHiddenInGame(true, true);
+				PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			}
+			ActiveWeapon->Destroy();
+		}
+
+		ActiveWeaponProperty->SetObjectPropertyValue_InContainer(LoadoutWidget, nullptr);
+
+		if (FBoolProperty* IsViewerProperty = FindFProperty<FBoolProperty>(LoadoutWidget->GetClass(), TEXT("IsViewer?")))
+		{
+			IsViewerProperty->SetPropertyValue_InContainer(LoadoutWidget, false);
+		}
 	}
 }
 
 void UTMGameplayStatics::CleanupLoadoutPreview(UUserWidget* OwnerWidget)
 {
-	UUserWidget* LoadoutWidget = TMResolveLoadoutWidget(OwnerWidget);
-	if (!LoadoutWidget)
+	TArray<UUserWidget*> LoadoutWidgets;
+	TMCollectLoadoutPreviewWidgets(OwnerWidget, LoadoutWidgets);
+	for (UUserWidget* LoadoutWidget : LoadoutWidgets)
 	{
-		return;
-	}
-
-	FObjectPropertyBase* ActiveWeaponProperty =
-		FindFProperty<FObjectPropertyBase>(LoadoutWidget->GetClass(), TEXT("ActiveWeapon"));
-	if (!ActiveWeaponProperty)
-	{
-		return;
-	}
-
-	AActor* ActiveWeapon = Cast<AActor>(ActiveWeaponProperty->GetObjectPropertyValue_InContainer(LoadoutWidget));
-	if (IsValid(ActiveWeapon) && !ActiveWeapon->IsActorBeingDestroyed())
-	{
-		ActiveWeapon->Destroy();
-	}
-
-	ActiveWeaponProperty->SetObjectPropertyValue_InContainer(LoadoutWidget, nullptr);
-
-	if (FBoolProperty* IsViewerProperty = FindFProperty<FBoolProperty>(LoadoutWidget->GetClass(), TEXT("IsViewer?")))
-	{
-		IsViewerProperty->SetPropertyValue_InContainer(LoadoutWidget, false);
+		TMCleanupLoadoutPreviewWidget(LoadoutWidget);
 	}
 }
 

@@ -1,10 +1,12 @@
 #include "TMMenuViewerMeshTransitionSubsystem.h"
 
 #include "Blueprint/UserWidget.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Gun/Gun.h"
 #include "TMAudioEnvelopeFollower.h"
 #include "TouchMe.h"
 #include "UObject/UObjectIterator.h"
@@ -104,6 +106,10 @@ void UTMMenuViewerMeshTransitionSubsystem::TrackMenuViewer(AActor* Actor, const 
 		return;
 	}
 
+	FMenuViewerState& State = MenuViewerStates.FindOrAdd(Actor);
+	State.Actor = Actor;
+	UpdateAttachedWeaponVisibility(Actor, State, IsLoadoutPreviewVisible(Actor->GetWorld()));
+
 	USkeletalMeshComponent* VestComponent = ReadMeshComponentProperty(Actor, TEXT("Vest"));
 	if (!VestComponent || !VestComponent->IsRegistered())
 	{
@@ -116,8 +122,6 @@ void UTMMenuViewerMeshTransitionSubsystem::TrackMenuViewer(AActor* Actor, const 
 		return;
 	}
 
-	FMenuViewerState& State = MenuViewerStates.FindOrAdd(Actor);
-	State.Actor = Actor;
 	State.VestComponent = VestComponent;
 	const FBeatSyncSnapshot BeatSync = FindActiveBeatSync(Actor->GetWorld());
 
@@ -236,6 +240,155 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsMenuViewerActor(const AActor* Actor
 {
 	const UClass* ActorClass = Actor ? Actor->GetClass() : nullptr;
 	return ActorClass && ActorClass->GetPathName().Contains(TEXT("BP_MenuViewer"));
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsAttachedWeaponActor(const AActor* Actor)
+{
+	if (!Actor)
+	{
+		return false;
+	}
+
+	if (Actor->IsA(AGun::StaticClass()))
+	{
+		return true;
+	}
+
+	const UClass* ActorClass = Actor->GetClass();
+	const FString ActorPath = Actor->GetPathName();
+	const FString ClassPath = ActorClass ? ActorClass->GetPathName() : FString();
+	return ActorPath.Contains(TEXT("/Weapons/")) || ClassPath.Contains(TEXT("/Weapons/"));
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutPreviewVisible(UWorld* World)
+{
+	if (!World)
+	{
+		return false;
+	}
+
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!Widget || Widget->HasAnyFlags(RF_ClassDefaultObject))
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Loadout")))
+		{
+			continue;
+		}
+
+		if (Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const ESlateVisibility Visibility = Widget->GetVisibility();
+		if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+		{
+			continue;
+		}
+
+		const FObjectPropertyBase* ActiveWeaponProperty =
+			FindFProperty<FObjectPropertyBase>(WidgetClass, TEXT("ActiveWeapon"));
+		if (!ActiveWeaponProperty)
+		{
+			continue;
+		}
+
+		if (IsValid(Cast<AActor>(ActiveWeaponProperty->GetObjectPropertyValue_InContainer(Widget))))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachedWeaponVisibility(
+	AActor* Actor,
+	FMenuViewerState& State,
+	const bool bHide)
+{
+	if (bHide)
+	{
+		HideAttachedWeaponActors(Actor, State);
+	}
+	else
+	{
+		RestoreAttachedWeaponActors(State);
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::HideAttachedWeaponActors(AActor* Actor, FMenuViewerState& State)
+{
+	if (!Actor)
+	{
+		return;
+	}
+
+	TArray<AActor*> AttachedActors;
+	Actor->GetAttachedActors(AttachedActors, true, true);
+	for (AActor* AttachedActor : AttachedActors)
+	{
+		if (!IsAttachedWeaponActor(AttachedActor))
+		{
+			continue;
+		}
+
+		if (!State.AttachedWeaponActorHiddenStates.Contains(AttachedActor))
+		{
+			State.AttachedWeaponActorHiddenStates.Add(AttachedActor, AttachedActor->IsHidden());
+		}
+		AttachedActor->SetActorHiddenInGame(true);
+
+		TArray<UPrimitiveComponent*> PrimitiveComponents;
+		AttachedActor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+		for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+		{
+			if (!PrimitiveComponent)
+			{
+				continue;
+			}
+
+			if (!State.AttachedWeaponComponentVisibilityStates.Contains(PrimitiveComponent))
+			{
+				FComponentVisibilityState VisibilityState;
+				VisibilityState.bVisible = PrimitiveComponent->IsVisible();
+				VisibilityState.bHiddenInGame = PrimitiveComponent->bHiddenInGame;
+				State.AttachedWeaponComponentVisibilityStates.Add(PrimitiveComponent, VisibilityState);
+			}
+
+			PrimitiveComponent->SetVisibility(false, true);
+			PrimitiveComponent->SetHiddenInGame(true, true);
+		}
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreAttachedWeaponActors(FMenuViewerState& State)
+{
+	for (const TPair<TWeakObjectPtr<AActor>, bool>& ActorState : State.AttachedWeaponActorHiddenStates)
+	{
+		if (AActor* Actor = ActorState.Key.Get())
+		{
+			Actor->SetActorHiddenInGame(ActorState.Value);
+		}
+	}
+	State.AttachedWeaponActorHiddenStates.Empty();
+
+	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, FComponentVisibilityState>& ComponentState :
+		State.AttachedWeaponComponentVisibilityStates)
+	{
+		if (UPrimitiveComponent* PrimitiveComponent = ComponentState.Key.Get())
+		{
+			PrimitiveComponent->SetVisibility(ComponentState.Value.bVisible, true);
+			PrimitiveComponent->SetHiddenInGame(ComponentState.Value.bHiddenInGame, true);
+		}
+	}
+	State.AttachedWeaponComponentVisibilityStates.Empty();
 }
 
 USkeletalMeshComponent* UTMMenuViewerMeshTransitionSubsystem::ReadMeshComponentProperty(UObject* Object, const FName PropertyName)

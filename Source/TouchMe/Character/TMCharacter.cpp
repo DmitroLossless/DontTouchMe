@@ -26,6 +26,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
@@ -113,6 +114,42 @@ namespace
 		TEXT("Moves the local weapon and hands right/left in ADS, in centimeters. Only applies while aiming."),
 		ECVF_Default);
 
+	static TAutoConsoleVariable<float> CVarTMViewmodelPitchDeg(
+		TEXT("tm.ViewmodelPitchDeg"),
+		0.0f,
+		TEXT("Rotates the local weapon and hands forward/backward around pitch, in degrees. Positive pitches up."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelYawDeg(
+		TEXT("tm.ViewmodelYawDeg"),
+		0.0f,
+		TEXT("Rotates the local weapon and hands left/right around yaw, in degrees."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelRollDeg(
+		TEXT("tm.ViewmodelRollDeg"),
+		0.0f,
+		TEXT("Rolls the local weapon and hands around the view axis, in degrees."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimPitchDeg(
+		TEXT("tm.ViewmodelAimPitchDeg"),
+		0.0f,
+		TEXT("Rotates the local weapon and hands forward/backward around pitch in ADS, in degrees. Only applies while aiming."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimYawDeg(
+		TEXT("tm.ViewmodelAimYawDeg"),
+		0.0f,
+		TEXT("Rotates the local weapon and hands left/right around yaw in ADS, in degrees. Only applies while aiming."),
+		ECVF_Default);
+
+	static TAutoConsoleVariable<float> CVarTMViewmodelAimRollDeg(
+		TEXT("tm.ViewmodelAimRollDeg"),
+		0.0f,
+		TEXT("Rolls the local weapon and hands around the view axis in ADS, in degrees. Only applies while aiming."),
+		ECVF_Default);
+
 	static TAutoConsoleVariable<int32> CVarTMViewmodelAimCenterReticle(
 		TEXT("tm.ViewmodelAimCenterReticle"),
 		1,
@@ -148,6 +185,347 @@ namespace
 		1,
 		TEXT("Disables random bullet spread while aiming so ADS hits the visible reticle line."),
 		ECVF_Default);
+
+	struct FTMViewmodelConsoleProfile
+	{
+		float LowerCm = 9.0f;
+		float ForwardCm = 15.0f;
+		float AimLowerCm = 5.23f;
+		float AimForwardCm = 12.0f;
+		float AimRightCm = 0.75f;
+		float PitchDeg = 0.0f;
+		float YawDeg = 0.0f;
+		float RollDeg = 0.0f;
+		float AimPitchDeg = 0.0f;
+		float AimYawDeg = 0.0f;
+		float AimRollDeg = 0.0f;
+		int32 AimCenterReticle = 1;
+		float AimCenterMaxCm = 5.0f;
+		float AimReticleMinForwardCm = 24.0f;
+		float AimReticleMaxPullBackCm = 25.0f;
+	};
+
+	struct FTMViewmodelConsoleProfileRuntimeState
+	{
+		FString ActiveWeaponKey;
+		bool bHasActiveWeaponKey = false;
+		bool bHasInitialized = false;
+	};
+
+	TMap<FString, FTMViewmodelConsoleProfile> GTMViewmodelConsoleProfiles;
+	TSet<FString> GTMViewmodelConsoleProfileConfigLookups;
+	TSet<FString> GTMViewmodelConsoleProfileConfigWriteKeys;
+	TWeakObjectPtr<const ATMCharacter> GTMViewmodelConsoleProfileCharacter;
+	FTMViewmodelConsoleProfileRuntimeState GTMViewmodelConsoleProfileState;
+
+	bool TMNearlyEqualViewmodelValue(const float Left, const float Right)
+	{
+		return FMath::IsNearlyEqual(Left, Right, 0.001f);
+	}
+
+	bool TMViewmodelConsoleProfilesEqual(const FTMViewmodelConsoleProfile& Left, const FTMViewmodelConsoleProfile& Right)
+	{
+		return TMNearlyEqualViewmodelValue(Left.LowerCm, Right.LowerCm)
+			&& TMNearlyEqualViewmodelValue(Left.ForwardCm, Right.ForwardCm)
+			&& TMNearlyEqualViewmodelValue(Left.AimLowerCm, Right.AimLowerCm)
+			&& TMNearlyEqualViewmodelValue(Left.AimForwardCm, Right.AimForwardCm)
+			&& TMNearlyEqualViewmodelValue(Left.AimRightCm, Right.AimRightCm)
+			&& TMNearlyEqualViewmodelValue(Left.PitchDeg, Right.PitchDeg)
+			&& TMNearlyEqualViewmodelValue(Left.YawDeg, Right.YawDeg)
+			&& TMNearlyEqualViewmodelValue(Left.RollDeg, Right.RollDeg)
+			&& TMNearlyEqualViewmodelValue(Left.AimPitchDeg, Right.AimPitchDeg)
+			&& TMNearlyEqualViewmodelValue(Left.AimYawDeg, Right.AimYawDeg)
+			&& TMNearlyEqualViewmodelValue(Left.AimRollDeg, Right.AimRollDeg)
+			&& Left.AimCenterReticle == Right.AimCenterReticle
+			&& TMNearlyEqualViewmodelValue(Left.AimCenterMaxCm, Right.AimCenterMaxCm)
+			&& TMNearlyEqualViewmodelValue(Left.AimReticleMinForwardCm, Right.AimReticleMinForwardCm)
+			&& TMNearlyEqualViewmodelValue(Left.AimReticleMaxPullBackCm, Right.AimReticleMaxPullBackCm);
+	}
+
+	FTMViewmodelConsoleProfile TMReadViewmodelConsoleProfileFromCVars()
+	{
+		FTMViewmodelConsoleProfile Profile;
+		Profile.LowerCm = CVarTMViewmodelLowerCm.GetValueOnGameThread();
+		Profile.ForwardCm = CVarTMViewmodelForwardCm.GetValueOnGameThread();
+		Profile.AimLowerCm = CVarTMViewmodelAimLowerCm.GetValueOnGameThread();
+		Profile.AimForwardCm = CVarTMViewmodelAimForwardCm.GetValueOnGameThread();
+		Profile.AimRightCm = CVarTMViewmodelAimRightCm.GetValueOnGameThread();
+		Profile.PitchDeg = CVarTMViewmodelPitchDeg.GetValueOnGameThread();
+		Profile.YawDeg = CVarTMViewmodelYawDeg.GetValueOnGameThread();
+		Profile.RollDeg = CVarTMViewmodelRollDeg.GetValueOnGameThread();
+		Profile.AimPitchDeg = CVarTMViewmodelAimPitchDeg.GetValueOnGameThread();
+		Profile.AimYawDeg = CVarTMViewmodelAimYawDeg.GetValueOnGameThread();
+		Profile.AimRollDeg = CVarTMViewmodelAimRollDeg.GetValueOnGameThread();
+		Profile.AimCenterReticle = CVarTMViewmodelAimCenterReticle.GetValueOnGameThread();
+		Profile.AimCenterMaxCm = CVarTMViewmodelAimCenterMaxCm.GetValueOnGameThread();
+		Profile.AimReticleMinForwardCm = CVarTMViewmodelAimReticleMinForwardCm.GetValueOnGameThread();
+		Profile.AimReticleMaxPullBackCm = CVarTMViewmodelAimReticleMaxPullBackCm.GetValueOnGameThread();
+		return Profile;
+	}
+
+	void TMSetFloatConsoleVariable(const TCHAR* Name, const float Value)
+	{
+		if (IConsoleVariable* ConsoleVariable = IConsoleManager::Get().FindConsoleVariable(Name))
+		{
+			ConsoleVariable->Set(Value, ECVF_SetByConsole);
+		}
+	}
+
+	void TMSetIntConsoleVariable(const TCHAR* Name, const int32 Value)
+	{
+		if (IConsoleVariable* ConsoleVariable = IConsoleManager::Get().FindConsoleVariable(Name))
+		{
+			ConsoleVariable->Set(Value, ECVF_SetByConsole);
+		}
+	}
+
+	void TMApplyViewmodelConsoleProfileToCVars(const FTMViewmodelConsoleProfile& Profile)
+	{
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelLowerCm"), Profile.LowerCm);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelForwardCm"), Profile.ForwardCm);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimLowerCm"), Profile.AimLowerCm);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimForwardCm"), Profile.AimForwardCm);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimRightCm"), Profile.AimRightCm);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelPitchDeg"), Profile.PitchDeg);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelYawDeg"), Profile.YawDeg);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelRollDeg"), Profile.RollDeg);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimPitchDeg"), Profile.AimPitchDeg);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimYawDeg"), Profile.AimYawDeg);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimRollDeg"), Profile.AimRollDeg);
+		TMSetIntConsoleVariable(TEXT("tm.ViewmodelAimCenterReticle"), Profile.AimCenterReticle);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimCenterMaxCm"), Profile.AimCenterMaxCm);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimReticleMinForwardCm"), Profile.AimReticleMinForwardCm);
+		TMSetFloatConsoleVariable(TEXT("tm.ViewmodelAimReticleMaxPullBackCm"), Profile.AimReticleMaxPullBackCm);
+	}
+
+	FString TMGetViewmodelConsoleProfilesIniPath()
+	{
+		return FPaths::Combine(FPaths::GeneratedConfigDir(), TEXT("TouchMeViewmodelProfiles.ini"));
+	}
+
+	FString TMSanitizeViewmodelProfileSectionToken(FString Token)
+	{
+		for (TCHAR& Character : Token)
+		{
+			if (!FChar::IsAlnum(Character))
+			{
+				Character = TEXT('_');
+			}
+		}
+		return Token;
+	}
+
+	FString TMGetViewmodelConsoleProfileSection(const FString& WeaponKey)
+	{
+		return FString::Printf(TEXT("TMViewmodelConsoleProfile.%s"), *TMSanitizeViewmodelProfileSectionToken(WeaponKey));
+	}
+
+	FString TMGetViewmodelConsoleProfileConfigWriteKey(const FString& WeaponKey)
+	{
+		return TMGetViewmodelConsoleProfilesIniPath() + TEXT("|") + WeaponKey;
+	}
+
+	FString TMGetViewmodelConsoleProfileWeaponKey(const AGun* ActiveGun)
+	{
+		const UClass* WeaponClass = ActiveGun ? ActiveGun->GetClass() : nullptr;
+		return WeaponClass ? WeaponClass->GetPathName() : FString();
+	}
+
+	bool TMReadViewmodelConsoleProfileFromConfig(const FString& WeaponKey, FTMViewmodelConsoleProfile& OutProfile)
+	{
+		if (!GConfig || WeaponKey.IsEmpty())
+		{
+			return false;
+		}
+
+		const FString IniPath = TMGetViewmodelConsoleProfilesIniPath();
+		if (!FPaths::FileExists(IniPath))
+		{
+			return false;
+		}
+
+		GConfig->LoadFile(IniPath);
+
+		const FString Section = TMGetViewmodelConsoleProfileSection(WeaponKey);
+		FString StoredWeaponKey;
+		if (!GConfig->GetString(*Section, TEXT("WeaponClassPath"), StoredWeaponKey, IniPath) || StoredWeaponKey != WeaponKey)
+		{
+			return false;
+		}
+
+		bool bReadAnyValue = false;
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("LowerCm"), OutProfile.LowerCm, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("ForwardCm"), OutProfile.ForwardCm, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimLowerCm"), OutProfile.AimLowerCm, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimForwardCm"), OutProfile.AimForwardCm, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimRightCm"), OutProfile.AimRightCm, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("PitchDeg"), OutProfile.PitchDeg, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("YawDeg"), OutProfile.YawDeg, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("RollDeg"), OutProfile.RollDeg, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimPitchDeg"), OutProfile.AimPitchDeg, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimYawDeg"), OutProfile.AimYawDeg, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimRollDeg"), OutProfile.AimRollDeg, IniPath);
+		bReadAnyValue |= GConfig->GetInt(*Section, TEXT("AimCenterReticle"), OutProfile.AimCenterReticle, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimCenterMaxCm"), OutProfile.AimCenterMaxCm, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimReticleMinForwardCm"), OutProfile.AimReticleMinForwardCm, IniPath);
+		bReadAnyValue |= GConfig->GetFloat(*Section, TEXT("AimReticleMaxPullBackCm"), OutProfile.AimReticleMaxPullBackCm, IniPath);
+		return bReadAnyValue;
+	}
+
+	void TMSaveViewmodelConsoleProfileToConfig(const FString& WeaponKey, const FTMViewmodelConsoleProfile& Profile)
+	{
+		if (WeaponKey.IsEmpty())
+		{
+			return;
+		}
+
+		GTMViewmodelConsoleProfiles.Add(WeaponKey, Profile);
+
+		const FString IniPath = TMGetViewmodelConsoleProfilesIniPath();
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(IniPath), true);
+
+		TArray<FString> WeaponKeys;
+		GTMViewmodelConsoleProfiles.GenerateKeyArray(WeaponKeys);
+		WeaponKeys.Sort();
+
+		FString Output = TEXT("; TouchMe viewmodel console profiles\n\n");
+		for (const FString& SavedWeaponKey : WeaponKeys)
+		{
+			const FTMViewmodelConsoleProfile* SavedProfile = GTMViewmodelConsoleProfiles.Find(SavedWeaponKey);
+			if (!SavedProfile)
+			{
+				continue;
+			}
+
+			Output += FString::Printf(TEXT("[%s]\n"), *TMGetViewmodelConsoleProfileSection(SavedWeaponKey));
+			Output += FString::Printf(TEXT("WeaponClassPath=%s\n"), *SavedWeaponKey);
+			Output += FString::Printf(TEXT("LowerCm=%.6f\n"), SavedProfile->LowerCm);
+			Output += FString::Printf(TEXT("ForwardCm=%.6f\n"), SavedProfile->ForwardCm);
+			Output += FString::Printf(TEXT("AimLowerCm=%.6f\n"), SavedProfile->AimLowerCm);
+			Output += FString::Printf(TEXT("AimForwardCm=%.6f\n"), SavedProfile->AimForwardCm);
+			Output += FString::Printf(TEXT("AimRightCm=%.6f\n"), SavedProfile->AimRightCm);
+			Output += FString::Printf(TEXT("PitchDeg=%.6f\n"), SavedProfile->PitchDeg);
+			Output += FString::Printf(TEXT("YawDeg=%.6f\n"), SavedProfile->YawDeg);
+			Output += FString::Printf(TEXT("RollDeg=%.6f\n"), SavedProfile->RollDeg);
+			Output += FString::Printf(TEXT("AimPitchDeg=%.6f\n"), SavedProfile->AimPitchDeg);
+			Output += FString::Printf(TEXT("AimYawDeg=%.6f\n"), SavedProfile->AimYawDeg);
+			Output += FString::Printf(TEXT("AimRollDeg=%.6f\n"), SavedProfile->AimRollDeg);
+			Output += FString::Printf(TEXT("AimCenterReticle=%d\n"), SavedProfile->AimCenterReticle);
+			Output += FString::Printf(TEXT("AimCenterMaxCm=%.6f\n"), SavedProfile->AimCenterMaxCm);
+			Output += FString::Printf(TEXT("AimReticleMinForwardCm=%.6f\n"), SavedProfile->AimReticleMinForwardCm);
+			Output += FString::Printf(TEXT("AimReticleMaxPullBackCm=%.6f\n\n"), SavedProfile->AimReticleMaxPullBackCm);
+			GTMViewmodelConsoleProfileConfigWriteKeys.Add(TMGetViewmodelConsoleProfileConfigWriteKey(SavedWeaponKey));
+		}
+
+		FFileHelper::SaveStringToFile(Output, *IniPath);
+	}
+
+	FTMViewmodelConsoleProfile TMGetOrCreateViewmodelConsoleProfile(const FString& WeaponKey, const bool bCaptureCurrentIfMissing)
+	{
+		if (const FTMViewmodelConsoleProfile* ExistingProfile = GTMViewmodelConsoleProfiles.Find(WeaponKey))
+		{
+			return *ExistingProfile;
+		}
+
+		FTMViewmodelConsoleProfile Profile;
+		if (!GTMViewmodelConsoleProfileConfigLookups.Contains(WeaponKey))
+		{
+			GTMViewmodelConsoleProfileConfigLookups.Add(WeaponKey);
+			if (TMReadViewmodelConsoleProfileFromConfig(WeaponKey, Profile))
+			{
+				GTMViewmodelConsoleProfiles.Add(WeaponKey, Profile);
+				GTMViewmodelConsoleProfileConfigWriteKeys.Add(TMGetViewmodelConsoleProfileConfigWriteKey(WeaponKey));
+				return Profile;
+			}
+		}
+
+		Profile = bCaptureCurrentIfMissing ? TMReadViewmodelConsoleProfileFromCVars() : FTMViewmodelConsoleProfile();
+		GTMViewmodelConsoleProfiles.Add(WeaponKey, Profile);
+		TMSaveViewmodelConsoleProfileToConfig(WeaponKey, Profile);
+		return Profile;
+	}
+
+	void TMSaveCurrentViewmodelConsoleProfileForWeapon(const FString& WeaponKey)
+	{
+		if (WeaponKey.IsEmpty())
+		{
+			return;
+		}
+
+		const FTMViewmodelConsoleProfile CurrentProfile = TMReadViewmodelConsoleProfileFromCVars();
+		const FTMViewmodelConsoleProfile* ExistingProfile = GTMViewmodelConsoleProfiles.Find(WeaponKey);
+		if (ExistingProfile
+			&& TMViewmodelConsoleProfilesEqual(*ExistingProfile, CurrentProfile)
+			&& GTMViewmodelConsoleProfileConfigWriteKeys.Contains(TMGetViewmodelConsoleProfileConfigWriteKey(WeaponKey)))
+		{
+			return;
+		}
+
+		GTMViewmodelConsoleProfiles.Add(WeaponKey, CurrentProfile);
+		GTMViewmodelConsoleProfileConfigLookups.Add(WeaponKey);
+		TMSaveViewmodelConsoleProfileToConfig(WeaponKey, CurrentProfile);
+	}
+
+	void TMUpdateViewmodelConsoleWeaponProfile(const ATMCharacter* Character)
+	{
+		if (!Character || !Character->IsLocallyControlled())
+		{
+			return;
+		}
+
+		if (GTMViewmodelConsoleProfileCharacter.Get() != Character)
+		{
+			if (GTMViewmodelConsoleProfileState.bHasActiveWeaponKey)
+			{
+				TMSaveCurrentViewmodelConsoleProfileForWeapon(GTMViewmodelConsoleProfileState.ActiveWeaponKey);
+			}
+
+			GTMViewmodelConsoleProfileCharacter = Character;
+			GTMViewmodelConsoleProfileState = FTMViewmodelConsoleProfileRuntimeState();
+		}
+
+		const FString NewWeaponKey = TMGetViewmodelConsoleProfileWeaponKey(TMResolveActiveGun(Character));
+		if (NewWeaponKey.IsEmpty())
+		{
+			if (GTMViewmodelConsoleProfileState.bHasActiveWeaponKey)
+			{
+				TMSaveCurrentViewmodelConsoleProfileForWeapon(GTMViewmodelConsoleProfileState.ActiveWeaponKey);
+				GTMViewmodelConsoleProfileState.ActiveWeaponKey.Reset();
+				GTMViewmodelConsoleProfileState.bHasActiveWeaponKey = false;
+			}
+			return;
+		}
+
+		if (!GTMViewmodelConsoleProfileState.bHasActiveWeaponKey || GTMViewmodelConsoleProfileState.ActiveWeaponKey != NewWeaponKey)
+		{
+			if (GTMViewmodelConsoleProfileState.bHasActiveWeaponKey)
+			{
+				TMSaveCurrentViewmodelConsoleProfileForWeapon(GTMViewmodelConsoleProfileState.ActiveWeaponKey);
+			}
+
+			const bool bCaptureCurrentIfMissing = !GTMViewmodelConsoleProfileState.bHasInitialized;
+			const FTMViewmodelConsoleProfile NewProfile = TMGetOrCreateViewmodelConsoleProfile(NewWeaponKey, bCaptureCurrentIfMissing);
+			TMApplyViewmodelConsoleProfileToCVars(NewProfile);
+			GTMViewmodelConsoleProfileState.ActiveWeaponKey = NewWeaponKey;
+			GTMViewmodelConsoleProfileState.bHasActiveWeaponKey = true;
+			GTMViewmodelConsoleProfileState.bHasInitialized = true;
+			return;
+		}
+
+		TMSaveCurrentViewmodelConsoleProfileForWeapon(NewWeaponKey);
+	}
+
+	void TMFlushViewmodelConsoleWeaponProfile(const ATMCharacter* Character)
+	{
+		if (GTMViewmodelConsoleProfileCharacter.Get() != Character || !GTMViewmodelConsoleProfileState.bHasActiveWeaponKey)
+		{
+			return;
+		}
+
+		TMSaveCurrentViewmodelConsoleProfileForWeapon(GTMViewmodelConsoleProfileState.ActiveWeaponKey);
+		GTMViewmodelConsoleProfileState.ActiveWeaponKey.Reset();
+		GTMViewmodelConsoleProfileState.bHasActiveWeaponKey = false;
+	}
 
 	struct FTMDebugBoneScaleDelegate
 	{
@@ -1063,6 +1441,33 @@ namespace
 			&& ActiveGun->GetClass()->GetPathName().Contains(TEXT("BP_Kriss"));
 	}
 
+	void TMApplyViewmodelAxisRotation(FQuat& Rotation, const FVector& Axis, const float Degrees)
+	{
+		if (FMath::IsNearlyZero(Degrees))
+		{
+			return;
+		}
+
+		Rotation = (Rotation * FQuat(Axis.GetSafeNormal(), FMath::DegreesToRadians(Degrees))).GetNormalized();
+	}
+
+	void TMApplyViewmodelRotationConsoleOffset(FTransform& CameraWeaponOffset, const bool bAiming)
+	{
+		const float PitchDeg = bAiming ? CVarTMViewmodelAimRollDeg.GetValueOnGameThread() : CVarTMViewmodelRollDeg.GetValueOnGameThread();
+		const float YawDeg = bAiming ? CVarTMViewmodelAimYawDeg.GetValueOnGameThread() : CVarTMViewmodelYawDeg.GetValueOnGameThread();
+		const float RollDeg = bAiming ? CVarTMViewmodelAimPitchDeg.GetValueOnGameThread() : CVarTMViewmodelPitchDeg.GetValueOnGameThread();
+		if (FMath::IsNearlyZero(PitchDeg) && FMath::IsNearlyZero(YawDeg) && FMath::IsNearlyZero(RollDeg))
+		{
+			return;
+		}
+
+		FQuat Rotation = CameraWeaponOffset.GetRotation();
+		TMApplyViewmodelAxisRotation(Rotation, FVector::RightVector, PitchDeg);
+		TMApplyViewmodelAxisRotation(Rotation, FVector::UpVector, YawDeg);
+		TMApplyViewmodelAxisRotation(Rotation, FVector::ForwardVector, RollDeg);
+		CameraWeaponOffset.SetRotation(Rotation);
+	}
+
 	FTransform TMGetDefaultCameraWeaponOffset(const AGun* ActiveGun)
 	{
 		const AGun* DefaultGun = TMGetGunDefaults(ActiveGun);
@@ -1132,13 +1537,16 @@ namespace
 				*GTMDebugKrissNoAimOffsetPulseOffset.ToString());
 		}
 
+		TMApplyViewmodelRotationConsoleOffset(CameraWeaponOffset, false);
 		return CameraWeaponOffset;
 	}
 
 	FTransform TMGetDefaultCameraWeaponOffsetAiming(const AGun* ActiveGun)
 	{
 		const AGun* DefaultGun = TMGetGunDefaults(ActiveGun);
-		return DefaultGun ? DefaultGun->GetCameraWeaponOffsetAiming() : FTransform::Identity;
+		FTransform CameraWeaponOffset = DefaultGun ? DefaultGun->GetCameraWeaponOffsetAiming() : FTransform::Identity;
+		TMApplyViewmodelRotationConsoleOffset(CameraWeaponOffset, true);
+		return CameraWeaponOffset;
 	}
 
 	bool TMInferAimStateFromFunctionName(const UFunction* Function, bool& bOutAiming)
@@ -3257,6 +3665,7 @@ void ATMCharacter::BeginPlay()
 
 void ATMCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	TMFlushViewmodelConsoleWeaponProfile(this);
 	PopAudioMuffleSoundMix();
 
 	Super::EndPlay(EndPlayReason);
@@ -3267,6 +3676,7 @@ void ATMCharacter::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 
 	UpdateLocalPlayerControlledFlag();
+	TMUpdateViewmodelConsoleWeaponProfile(this);
 	UTMGameplayStatics::ApplyALSTurnInPlaceState(this, DeltaSeconds);
 	TMUpdateFabrikFixerAlpha(GetMesh());
 	TMUpdateWeaponBoneFloorLock(this, GetMesh());

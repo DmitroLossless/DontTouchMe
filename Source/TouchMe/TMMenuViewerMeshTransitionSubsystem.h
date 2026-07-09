@@ -5,6 +5,7 @@
 #include "TMMenuViewerMeshTransitionSubsystem.generated.h"
 
 class AActor;
+class UPrimitiveComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
 class UTMAudioEnvelopeFollower;
@@ -20,11 +21,19 @@ public:
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
 
 private:
+	struct FComponentVisibilityState
+	{
+		bool bVisible = true;
+		bool bHiddenInGame = false;
+	};
+
 	struct FMenuViewerState
 	{
 		TWeakObjectPtr<AActor> Actor;
 		TWeakObjectPtr<USkeletalMeshComponent> VestComponent;
 		TWeakObjectPtr<USkeletalMesh> LastMesh;
+		TMap<TWeakObjectPtr<AActor>, bool> AttachedWeaponActorHiddenStates;
+		TMap<TWeakObjectPtr<UPrimitiveComponent>, FComponentVisibilityState> AttachedWeaponComponentVisibilityStates;
 		float AutoCycleElapsedSeconds = 0.f;
 		int32 LastObservedBeatIndex = 0;
 		bool bRhythmPulseWasHigh = false;
@@ -51,6 +60,11 @@ private:
 		const FBeatSyncSnapshot& BeatSync);
 
 	static bool IsMenuViewerActor(const AActor* Actor);
+	static bool IsAttachedWeaponActor(const AActor* Actor);
+	static bool IsLoadoutPreviewVisible(UWorld* World);
+	static void UpdateAttachedWeaponVisibility(AActor* Actor, FMenuViewerState& State, bool bHide);
+	static void HideAttachedWeaponActors(AActor* Actor, FMenuViewerState& State);
+	static void RestoreAttachedWeaponActors(FMenuViewerState& State);
 	static USkeletalMeshComponent* ReadMeshComponentProperty(UObject* Object, FName PropertyName);
 	static USkeletalMeshComponent* ResolveLeaderComponent(AActor* Actor, USkeletalMeshComponent* VestComponent);
 	static bool IsAutoCycleEnabled();

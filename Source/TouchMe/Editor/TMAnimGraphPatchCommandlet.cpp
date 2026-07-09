@@ -5781,6 +5781,139 @@ namespace
 		return false;
 	}
 
+	bool TMSpawnNodeAlreadyCleansLoadoutPreviewBeforeSpawn(const UK2Node_SpawnActorFromClass* SpawnNode)
+	{
+		const UEdGraphPin* ExecutePin = TMFindPinByNameConst(SpawnNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		if (!ExecutePin)
+		{
+			return false;
+		}
+
+		for (const UEdGraphPin* LinkedPin : ExecutePin->LinkedTo)
+		{
+			const UK2Node_CallFunction* CallNode = LinkedPin ? Cast<UK2Node_CallFunction>(LinkedPin->GetOwningNode()) : nullptr;
+			if (CallNode
+				&& CallNode->FunctionReference.GetMemberName() == GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, CleanupLoadoutPreview))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMInsertLoadoutPreviewCleanupBeforeSpawn(UEdGraph* Graph, UK2Node_SpawnActorFromClass* SpawnNode)
+	{
+		if (!Graph || !SpawnNode)
+		{
+			return false;
+		}
+
+		if (TMSpawnNodeAlreadyCleansLoadoutPreviewBeforeSpawn(SpawnNode))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMLoadoutPreviewCleanup] Spawn node already has pre-spawn cleanup: %s"),
+				*SpawnNode->GetName());
+			return false;
+		}
+
+		const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
+		UEdGraphPin* SpawnExecPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		if (!Schema || !SpawnExecPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutPreviewCleanup] Spawn node missing exec pin: %s Exec=%d"),
+				*GetNameSafe(SpawnNode),
+				SpawnExecPin ? 1 : 0);
+			return false;
+		}
+
+		TArray<UEdGraphPin*> PreviousExecSources = SpawnExecPin->LinkedTo;
+		if (PreviousExecSources.IsEmpty())
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutPreviewCleanup] Spawn node has no incoming exec links: %s"),
+				*GetNameSafe(SpawnNode));
+			return false;
+		}
+
+		FGraphNodeCreator<UK2Node_CallFunction> CleanupCreator(*Graph);
+		UK2Node_CallFunction* CleanupNode = CleanupCreator.CreateNode();
+		CleanupNode->FunctionReference.SetExternalMember(
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, CleanupLoadoutPreview),
+			UTMGameplayStatics::StaticClass());
+		CleanupNode->NodePosX = SpawnNode->NodePosX - 360;
+		CleanupNode->NodePosY = SpawnNode->NodePosY - 80;
+		CleanupNode->NodeComment = TEXT("TM: cleanup previous loadout weapon preview before spawning another");
+		CleanupCreator.Finalize();
+
+		FGraphNodeCreator<UK2Node_Self> SelfCreator(*Graph);
+		UK2Node_Self* SelfNode = SelfCreator.CreateNode();
+		SelfNode->NodePosX = CleanupNode->NodePosX - 180;
+		SelfNode->NodePosY = CleanupNode->NodePosY + 160;
+		SelfCreator.Finalize();
+
+		UEdGraphPin* CleanupExecPin = TMFindPinByName(CleanupNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* CleanupThenPin = TMFindPinByName(CleanupNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* OwnerWidgetPin = TMFindPinByName(CleanupNode, TEXT("OwnerWidget"), EGPD_Input);
+		if (!OwnerWidgetPin)
+		{
+			OwnerWidgetPin = TMFindFirstDataPin(CleanupNode, EGPD_Input);
+		}
+
+		UEdGraphPin* SelfOutputPin = TMFindPinByName(SelfNode, UEdGraphSchema_K2::PN_Self, EGPD_Output);
+		if (!SelfOutputPin)
+		{
+			SelfOutputPin = TMFindFirstDataPin(SelfNode, EGPD_Output);
+		}
+
+		if (!CleanupExecPin || !CleanupThenPin || !OwnerWidgetPin || !SelfOutputPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutPreviewCleanup] Failed to create cleanup pins in graph %s Exec=%d Then=%d Owner=%d Self=%d"),
+				*Graph->GetName(),
+				CleanupExecPin ? 1 : 0,
+				CleanupThenPin ? 1 : 0,
+				OwnerWidgetPin ? 1 : 0,
+				SelfOutputPin ? 1 : 0);
+			Graph->RemoveNode(CleanupNode);
+			Graph->RemoveNode(SelfNode);
+			return false;
+		}
+
+		SpawnExecPin->Modify();
+		SpawnExecPin->BreakAllPinLinks(false);
+
+		bool bSuccess = true;
+		for (UEdGraphPin* PreviousExecSource : PreviousExecSources)
+		{
+			if (PreviousExecSource)
+			{
+				bSuccess &= Schema->TryCreateConnection(PreviousExecSource, CleanupExecPin);
+			}
+		}
+		bSuccess &= Schema->TryCreateConnection(CleanupThenPin, SpawnExecPin);
+		bSuccess &= Schema->TryCreateConnection(SelfOutputPin, OwnerWidgetPin);
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutPreviewCleanup] Inserted CleanupLoadoutPreview before %s in graph %s. OldExecSources=%d Success=%d"),
+			*SpawnNode->GetName(),
+			*Graph->GetName(),
+			PreviousExecSources.Num(),
+			bSuccess ? 1 : 0);
+		return bSuccess;
+	}
+
 	bool TMInsertLoadoutWeaponSpawnFeedbackAfterSpawn(UEdGraph* Graph, UK2Node_SpawnActorFromClass* SpawnNode)
 	{
 		if (!Graph || !SpawnNode)
@@ -5885,6 +6018,8 @@ namespace
 		bool bChanged = false;
 		int32 SelectionEventCount = 0;
 		int32 ReachableSpawnCount = 0;
+		int32 TotalSpawnCount = 0;
+		TSet<UK2Node_SpawnActorFromClass*> CandidateSpawnNodes;
 
 		for (UEdGraph* Graph : Graphs)
 		{
@@ -5896,6 +6031,18 @@ namespace
 			TArray<UEdGraphNode*> Nodes = Graph->Nodes;
 			for (UEdGraphNode* Node : Nodes)
 			{
+				if (UK2Node_SpawnActorFromClass* SpawnNode = Cast<UK2Node_SpawnActorFromClass>(Node))
+				{
+					++TotalSpawnCount;
+					CandidateSpawnNodes.Add(SpawnNode);
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMLoadoutWeaponFeedback] Found SpawnActorFromClass candidate: Graph=%s Node=%s"),
+						*Graph->GetName(),
+						*SpawnNode->GetName());
+				}
+
 				if (!TMIsLoadoutWeaponSelectionClickEvent(Node))
 				{
 					continue;
@@ -5920,25 +6067,37 @@ namespace
 					}
 
 					++ReachableSpawnCount;
-					if (TMInsertLoadoutWeaponSpawnFeedbackAfterSpawn(Graph, SpawnNode))
-					{
-						bChanged = true;
-					}
+					CandidateSpawnNodes.Add(SpawnNode);
 				}
+			}
+		}
+
+		for (UK2Node_SpawnActorFromClass* SpawnNode : CandidateSpawnNodes)
+		{
+			UEdGraph* SpawnGraph = SpawnNode ? SpawnNode->GetGraph() : nullptr;
+			if (TMInsertLoadoutPreviewCleanupBeforeSpawn(SpawnGraph, SpawnNode))
+			{
+				bChanged = true;
+			}
+			if (TMInsertLoadoutWeaponSpawnFeedbackAfterSpawn(SpawnGraph, SpawnNode))
+			{
+				bChanged = true;
 			}
 		}
 
 		UE_LOG(
 			LogTemp,
 			Display,
-			TEXT("[TMLoadoutWeaponFeedback] Summary: SelectionEvents=%d ReachableSpawnNodes=%d Changed=%d"),
+			TEXT("[TMLoadoutWeaponFeedback] Summary: SelectionEvents=%d ReachableSpawnNodes=%d TotalSpawnNodes=%d CandidateSpawnNodes=%d Changed=%d"),
 			SelectionEventCount,
 			ReachableSpawnCount,
+			TotalSpawnCount,
+			CandidateSpawnNodes.Num(),
 			bChanged ? 1 : 0);
 
-		if (SelectionEventCount == 0 || ReachableSpawnCount == 0)
+		if (CandidateSpawnNodes.IsEmpty())
 		{
-			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponFeedback] Did not find B_Selection click -> SpawnActorFromClass path."));
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponFeedback] Did not find any W_Loadout SpawnActorFromClass nodes."));
 			return false;
 		}
 
@@ -6058,19 +6217,31 @@ namespace
 				|| NodeName.Contains(TEXT("OnButtonClickedEvent"), ESearchCase::IgnoreCase));
 	}
 
-	bool TMGraphAlreadyCallsLoadoutCleanup(const UEdGraph* Graph)
+	bool TMIsLoadoutCleanupCallNode(const UEdGraphNode* Node)
 	{
-		if (!Graph)
+		const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+		return CallNode
+			&& CallNode->FunctionReference.GetMemberName()
+				== GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, CleanupLoadoutPreview);
+	}
+
+	bool TMStartNodeAlreadyCallsLoadoutCleanup(UEdGraphNode* StartNode)
+	{
+		if (!StartNode)
 		{
 			return false;
 		}
 
-		for (const UEdGraphNode* Node : Graph->Nodes)
+		TArray<UEdGraphPin*> StartExecOutputs = TMGetExecOutputPins(StartNode);
+		UEdGraphPin* StartThenPin = StartExecOutputs.Num() > 0 ? StartExecOutputs[0] : nullptr;
+		if (!StartThenPin)
 		{
-			const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
-			if (CallNode
-				&& CallNode->FunctionReference.GetMemberName()
-					== GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, CleanupLoadoutPreview))
+			return false;
+		}
+
+		for (const UEdGraphPin* LinkedPin : StartThenPin->LinkedTo)
+		{
+			if (LinkedPin && TMIsLoadoutCleanupCallNode(LinkedPin->GetOwningNode()))
 			{
 				return true;
 			}
@@ -6079,11 +6250,11 @@ namespace
 		return false;
 	}
 
-	UEdGraphNode* TMFindMainMenuLoadoutCleanupStartNode(UEdGraph* Graph)
+	void TMGetMainMenuLoadoutCleanupStartNodes(UEdGraph* Graph, TArray<UEdGraphNode*>& OutStartNodes)
 	{
 		if (!Graph)
 		{
-			return nullptr;
+			return;
 		}
 
 		if (TMIsMainMenuLoadoutCleanupFunctionGraph(Graph))
@@ -6092,7 +6263,8 @@ namespace
 			{
 				if (Cast<UK2Node_FunctionEntry>(Node))
 				{
-					return Node;
+					OutStartNodes.Add(Node);
+					return;
 				}
 			}
 		}
@@ -6101,11 +6273,9 @@ namespace
 		{
 			if (TMIsMainMenuLoadoutCleanupClickEvent(Node))
 			{
-				return Node;
+				OutStartNodes.Add(Node);
 			}
 		}
-
-		return nullptr;
 	}
 
 	bool TMInsertMainMenuLoadoutCleanupCall(UEdGraph* Graph, UEdGraphNode* StartNode)
@@ -6115,9 +6285,14 @@ namespace
 			return false;
 		}
 
-		if (TMGraphAlreadyCallsLoadoutCleanup(Graph))
+		if (TMStartNodeAlreadyCallsLoadoutCleanup(StartNode))
 		{
-			UE_LOG(LogTemp, Display, TEXT("[TMMainMenuLoadoutCleanup] Graph already patched: %s"), *Graph->GetName());
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMMainMenuLoadoutCleanup] Start node already patched: graph %s node %s"),
+				*Graph->GetName(),
+				*StartNode->GetName());
 			return false;
 		}
 
@@ -6225,29 +6400,36 @@ namespace
 
 		bool bChanged = false;
 		int32 CandidateGraphCount = 0;
+		int32 CandidateStartCount = 0;
 		for (UEdGraph* Graph : Graphs)
 		{
-			UEdGraphNode* StartNode = TMFindMainMenuLoadoutCleanupStartNode(Graph);
-			if (!StartNode)
+			TArray<UEdGraphNode*> StartNodes;
+			TMGetMainMenuLoadoutCleanupStartNodes(Graph, StartNodes);
+			if (StartNodes.IsEmpty())
 			{
 				continue;
 			}
 
 			++CandidateGraphCount;
-			if (TMInsertMainMenuLoadoutCleanupCall(Graph, StartNode))
+			CandidateStartCount += StartNodes.Num();
+			for (UEdGraphNode* StartNode : StartNodes)
 			{
-				bChanged = true;
+				if (TMInsertMainMenuLoadoutCleanupCall(Graph, StartNode))
+				{
+					bChanged = true;
+				}
 			}
 		}
 
 		UE_LOG(
 			LogTemp,
 			Display,
-			TEXT("[TMMainMenuLoadoutCleanup] Summary: CandidateGraphs=%d Changed=%d"),
+			TEXT("[TMMainMenuLoadoutCleanup] Summary: CandidateGraphs=%d CandidateStarts=%d Changed=%d"),
 			CandidateGraphCount,
+			CandidateStartCount,
 			bChanged ? 1 : 0);
 
-		if (CandidateGraphCount == 0)
+		if (CandidateStartCount == 0)
 		{
 			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuLoadoutCleanup] Did not find main menu leave-loadout handlers."));
 			return false;
