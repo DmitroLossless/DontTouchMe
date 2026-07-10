@@ -67,6 +67,9 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectIterator.h"
+#include "TMFoliageCollisionPushTester.h"
+#include "TMFoliageExplosionCollisionTester.h"
+#include "TMFoliageImpulseSubsystem.h"
 
 #if WITH_EDITOR
 #include "AnimGraphNode_CopyBone.h"
@@ -1405,6 +1408,45 @@ namespace TMGameplayStatics
 		}
 	}
 
+	bool IsGrenadeExplosionFXAsset(const UFXSystemAsset* EmitterTemplate)
+	{
+		if (!EmitterTemplate)
+		{
+			return false;
+		}
+
+		const FString AssetPath = EmitterTemplate->GetPathName();
+		return AssetPath.Contains(TEXT("GrenadeEXP"), ESearchCase::IgnoreCase)
+			|| AssetPath.Contains(TEXT("LTGrenadeEXP"), ESearchCase::IgnoreCase)
+			|| AssetPath.Contains(TEXT("Explosion_Grenade"), ESearchCase::IgnoreCase)
+			|| AssetPath.Contains(TEXT("Explosion_GrenadeLauncher"), ESearchCase::IgnoreCase)
+			|| AssetPath.Contains(TEXT("P_Explosion_Grenade"), ESearchCase::IgnoreCase)
+			|| AssetPath.Contains(TEXT("NS_Explosion_Frag"), ESearchCase::IgnoreCase)
+			|| AssetPath.Contains(TEXT("NS_Explosion_GrenadeLauncher"), ESearchCase::IgnoreCase);
+	}
+
+	void TryApplyFoliageImpulseForFX(
+		const UObject* WorldContextObject,
+		const UFXSystemAsset* EmitterTemplate,
+		const FVector& Location)
+	{
+		if (!IsGrenadeExplosionFXAsset(EmitterTemplate) || !GEngine)
+		{
+			return;
+		}
+
+		UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
+		if (!World)
+		{
+			return;
+		}
+
+		if (UTMFoliageImpulseSubsystem* FoliageImpulseSubsystem = World->GetSubsystem<UTMFoliageImpulseSubsystem>())
+		{
+			FoliageImpulseSubsystem->AddDefaultRadialImpulse(Location);
+		}
+	}
+
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1569,6 +1611,7 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAtLocation(
 			bAutoDestroy,
 			PoolingMethod,
 			bAutoActivateSystem);
+		TMGameplayStatics::TryApplyFoliageImpulseForFX(WorldContextObject, EmitterTemplate, Location);
 		return Component;
 	}
 
@@ -1583,6 +1626,7 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAtLocation(
 			bAutoDestroy,
 			bAutoActivateSystem,
 			ToNiagaraPooling(PoolingMethod));
+		TMGameplayStatics::TryApplyFoliageImpulseForFX(WorldContextObject, EmitterTemplate, Location);
 		return Component;
 	}
 
@@ -1642,6 +1686,120 @@ UFXSystemComponent* UTMGameplayStatics::SpawnFXSystemAttached(
 	}
 
 	return nullptr;
+}
+
+void UTMGameplayStatics::ApplyRadialFoliageImpulse(
+	const UObject* WorldContextObject,
+	const FVector Origin,
+	const float Radius,
+	const float ImpulseStrength,
+	const float Duration)
+{
+	if (!WorldContextObject || !GEngine)
+	{
+		return;
+	}
+
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
+	if (!World)
+	{
+		return;
+	}
+
+	if (UTMFoliageImpulseSubsystem* FoliageImpulseSubsystem = World->GetSubsystem<UTMFoliageImpulseSubsystem>())
+	{
+		FoliageImpulseSubsystem->AddRadialImpulse(Origin, Radius, ImpulseStrength, Duration);
+	}
+}
+
+ATMFoliageExplosionCollisionTester* UTMGameplayStatics::SpawnFoliageExplosionCollisionTester(
+	const UObject* WorldContextObject,
+	const FVector Origin,
+	const float Radius,
+	const float Strength,
+	const FVector PullDirection,
+	const float BendDistance,
+	const float ExpansionDuration,
+	const bool bAutoDestroyAfterExpansion)
+{
+	if (!WorldContextObject || !GEngine)
+	{
+		return nullptr;
+	}
+
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.Name = MakeUniqueObjectName(World, ATMFoliageExplosionCollisionTester::StaticClass(), TEXT("TM_FoliageExplosionCollisionTester"));
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	ATMFoliageExplosionCollisionTester* Tester = World->SpawnActor<ATMFoliageExplosionCollisionTester>(
+		ATMFoliageExplosionCollisionTester::StaticClass(),
+		Origin,
+		FRotator::ZeroRotator,
+		SpawnParameters);
+	if (!Tester)
+	{
+		return nullptr;
+	}
+
+	Tester->Radius = FMath::Max(1.f, Radius);
+	Tester->Strength = FMath::Max(0.f, Strength);
+	Tester->PullDirection = PullDirection;
+	Tester->BendDistance = FMath::Max(0.f, BendDistance);
+	Tester->ExpansionDuration = FMath::Max(0.f, ExpansionDuration);
+	Tester->bAutoDestroyAfterExpansion = bAutoDestroyAfterExpansion;
+	Tester->RefreshAffectedFoliage();
+	return Tester;
+}
+
+ATMFoliageCollisionPushTester* UTMGameplayStatics::SpawnFoliageCollisionPushTester(
+	const UObject* WorldContextObject,
+	const FVector Origin,
+	const float Radius,
+	const float ExpansionDuration,
+	const bool bAutoDestroyAfterExpansion,
+	const bool bCreatePhysicsProxyBodies)
+{
+	if (!WorldContextObject || !GEngine)
+	{
+		return nullptr;
+	}
+
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.Name = MakeUniqueObjectName(World, ATMFoliageCollisionPushTester::StaticClass(), TEXT("TM_FoliageCollisionPushTester"));
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	ATMFoliageCollisionPushTester* Tester = World->SpawnActor<ATMFoliageCollisionPushTester>(
+		ATMFoliageCollisionPushTester::StaticClass(),
+		Origin,
+		FRotator::ZeroRotator,
+		SpawnParameters);
+	if (!Tester)
+	{
+		return nullptr;
+	}
+
+	Tester->Radius = FMath::Max(1.f, Radius);
+	Tester->ExpansionDuration = FMath::Max(0.f, ExpansionDuration);
+	Tester->bAutoDestroyAfterExpansion = bAutoDestroyAfterExpansion;
+	Tester->bCreatePhysicsProxyBodies = bCreatePhysicsProxyBodies;
+	if (bCreatePhysicsProxyBodies)
+	{
+		Tester->RebuildProxyBodies();
+	}
+
+	return Tester;
 }
 
 void UTMGameplayStatics::PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor)

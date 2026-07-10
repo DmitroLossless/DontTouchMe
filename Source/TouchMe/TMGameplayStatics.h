@@ -39,6 +39,8 @@ class UProjectileMovementComponent;
 class FMemoryReader;
 class APlayerController;
 class ACharacter;
+class ATMFoliageExplosionCollisionTester;
+class ATMFoliageCollisionPushTester;
 struct FDialogueContext;
 
 
@@ -83,6 +85,34 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 		bool bAutoDestroy = true,
 		EPSCPoolMethod PoolingMethod = EPSCPoolMethod::None,
 		bool bAutoActivate = true);
+
+	UFUNCTION(BlueprintCallable, Category = "TM|Foliage", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "3", Keywords = "foliage grass bush branch grenade explosion impulse collision sphere"))
+	static TOUCHME_API void ApplyRadialFoliageImpulse(
+		const UObject* WorldContextObject,
+		FVector Origin,
+		float Radius = 220.f,
+		float ImpulseStrength = 75000.f,
+		float Duration = 0.5f);
+
+	UFUNCTION(BlueprintCallable, Category = "TM|Foliage|Debug", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "4", Keywords = "foliage grass bush branch explosion collision tester debug"))
+	static TOUCHME_API ATMFoliageExplosionCollisionTester* SpawnFoliageExplosionCollisionTester(
+		const UObject* WorldContextObject,
+		FVector Origin,
+		float Radius = 220.f,
+		float Strength = 75000.f,
+		FVector PullDirection = FVector::ForwardVector,
+		float BendDistance = 240.f,
+		float ExpansionDuration = 0.5f,
+		bool bAutoDestroyAfterExpansion = true);
+
+	UFUNCTION(BlueprintCallable, Category = "TM|Foliage|Debug", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "4", Keywords = "foliage grass bush branch collision push physics tester debug"))
+	static TOUCHME_API ATMFoliageCollisionPushTester* SpawnFoliageCollisionPushTester(
+		const UObject* WorldContextObject,
+		FVector Origin,
+		float Radius = 220.f,
+		float ExpansionDuration = 0.5f,
+		bool bAutoDestroyAfterExpansion = true,
+		bool bCreatePhysicsProxyBodies = false);
 
 	UFUNCTION(BlueprintCallable, Category = "TM|Loadout|Feedback", meta = (DisplayName = "Play Weapon Spawn Feedback For Actor"))
 	static TOUCHME_API void PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor);
