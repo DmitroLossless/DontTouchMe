@@ -41,7 +41,8 @@ namespace
 	const TCHAR* AcogGlassMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Glass_Acog.M_Scope_Glass_Acog");
 	const TCHAR* AcogMaterialParameterCollectionPath = TEXT("/Game/Fps/Weapons/Camera/MPC_FP.MPC_FP");
 	const TCHAR* OpticsTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Optics.DT_Optics");
-	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/Realistic_Starter_VFX_Pack/Particles/Hit/P_Metal.P_Metal");
+	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/NiagaraExamples/FX_Misc/NS_HitDissolve.NS_HitDissolve");
+	const TCHAR* AdditionalAttachmentSmokeFXPath = TEXT("/Game/Realistic_Starter_VFX_Pack_Vol2/Particles/Smoke/P_Smoke_F.P_Smoke_F");
 	const TCHAR* DefaultAttachmentFeedbackSoundPath = nullptr;
 	const TCHAR* DefaultWeaponSpawnFeedbackFXPath = TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Dust_Dark.P_Dust_Dark");
 	const TCHAR* DefaultWeaponSpawnFeedbackSoundPath = nullptr;
@@ -60,6 +61,8 @@ namespace
 	const FName AcogGlassSocketName(TEXT("RM_Glass"));
 	const FName AcogFOVParameterName(TEXT("FOV"));
 	constexpr float ImpactFXForcedCleanupDelay = 2.0f;
+	constexpr float AdditionalAttachmentSmokeScale = 0.12f;
+
 	void ScheduleImpactFXCleanup(UWorld* World, UActorComponent* Component)
 	{
 		if (!World || !Component)
@@ -80,6 +83,79 @@ namespace
 			}),
 			ImpactFXForcedCleanupDelay,
 			false);
+	}
+
+	void SpawnLoadoutFeedbackFX(
+		UObject* WorldContextObject,
+		UWorld* World,
+		UFXSystemAsset* FeedbackFX,
+		const FVector& Location,
+		const FRotator& Rotation,
+		const FVector& Scale)
+	{
+		if (!World || !FeedbackFX)
+		{
+			return;
+		}
+
+		if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(FeedbackFX))
+		{
+			UParticleSystemComponent* ParticleComponent = UGameplayStatics::SpawnEmitterAtLocation(
+				World,
+				CascadeSystem,
+				FTransform(Rotation, Location, Scale),
+				true,
+				EPSCPoolMethod::None,
+				true);
+			if (ParticleComponent)
+			{
+				ParticleComponent->bAutoDestroy = true;
+				ScheduleImpactFXCleanup(World, ParticleComponent);
+			}
+		}
+		else if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(FeedbackFX))
+		{
+			UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				WorldContextObject,
+				NiagaraSystem,
+				Location,
+				Rotation,
+				Scale,
+				true,
+				true,
+				ENCPoolMethod::None,
+				true);
+			if (NiagaraComponent)
+			{
+				NiagaraComponent->SetAutoDestroy(true);
+				ScheduleImpactFXCleanup(World, NiagaraComponent);
+			}
+		}
+	}
+
+	void SpawnAdditionalLoadoutFeedbackFX(
+		UObject* WorldContextObject,
+		UWorld* World,
+		const TCHAR* FXPath,
+		const FVector& Location,
+		const FRotator& Rotation,
+		const float Scale)
+	{
+		if (!FXPath || FXPath[0] == TEXT('\0'))
+		{
+			return;
+		}
+
+		if (UFXSystemAsset* AdditionalFeedbackFX = LoadObject<UFXSystemAsset>(nullptr, FXPath))
+		{
+			SpawnLoadoutFeedbackFX(
+				WorldContextObject,
+				World,
+				AdditionalFeedbackFX,
+				Location,
+				Rotation,
+				FVector(Scale));
+		}
 	}
 
 	bool IsBloodImpactPhysicalMaterial(const UPhysicalMaterial* PhysicalMaterial)
@@ -1018,42 +1094,8 @@ void AGun::SpawnAttachmentFeedbackAtLocation(const FVector Location, const FRota
 		FeedbackFX = LoadObject<UFXSystemAsset>(nullptr, DefaultAttachmentFeedbackFXPath);
 	}
 
-	if (FeedbackFX)
-	{
-		if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(FeedbackFX))
-		{
-			UParticleSystemComponent* ParticleComponent = UGameplayStatics::SpawnEmitterAtLocation(
-				World,
-				CascadeSystem,
-				FTransform(Rotation, Location, AttachmentFeedbackScale),
-				true,
-				EPSCPoolMethod::None,
-				true);
-			if (ParticleComponent)
-			{
-				ParticleComponent->bAutoDestroy = true;
-				ScheduleImpactFXCleanup(World, ParticleComponent);
-			}
-		}
-		else if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(FeedbackFX))
-		{
-			UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-				this,
-				NiagaraSystem,
-				Location,
-				Rotation,
-				AttachmentFeedbackScale,
-				true,
-				true,
-				ENCPoolMethod::None,
-				true);
-			if (NiagaraComponent)
-			{
-				NiagaraComponent->SetAutoDestroy(true);
-				ScheduleImpactFXCleanup(World, NiagaraComponent);
-			}
-		}
-	}
+	SpawnLoadoutFeedbackFX(this, World, FeedbackFX, Location, Rotation, AttachmentFeedbackScale);
+	SpawnAdditionalLoadoutFeedbackFX(this, World, AdditionalAttachmentSmokeFXPath, Location, Rotation, AdditionalAttachmentSmokeScale);
 
 	USoundBase* FeedbackSound = ResolveLoadoutFeedbackSound(AttachmentFeedbackSound, DefaultAttachmentFeedbackSoundPath);
 

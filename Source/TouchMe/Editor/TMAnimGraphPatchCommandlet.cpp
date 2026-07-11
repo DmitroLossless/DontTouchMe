@@ -69,7 +69,7 @@
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
-#include "Particles/FXSystemAsset.h"
+#include "Particles/ParticleSystem.h"
 #include "Sound/SlateSound.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundConcurrency.h"
@@ -7208,9 +7208,9 @@ namespace
 			return false;
 		}
 
-		CanvasEntries.Sort([](const FTMMainMenuLargeLabelEntry* Left, const FTMMainMenuLargeLabelEntry* Right)
+		CanvasEntries.Sort([](const FTMMainMenuLargeLabelEntry& Left, const FTMMainMenuLargeLabelEntry& Right)
 		{
-			return Left && Right && Left->OriginalCanvasPosition.Y < Right->OriginalCanvasPosition.Y;
+			return Left.OriginalCanvasPosition.Y < Right.OriginalCanvasPosition.Y;
 		});
 
 		const float FirstY = CanvasEntries[0]->OriginalCanvasPosition.Y;
@@ -9989,10 +9989,10 @@ namespace
 	{
 		UFXSystemAsset* AttachmentFX = LoadObject<UFXSystemAsset>(
 			nullptr,
-			TEXT("/Game/Realistic_Starter_VFX_Pack/Particles/Hit/P_Metal.P_Metal"));
+			TEXT("/Game/NiagaraExamples/FX_Misc/NS_HitDissolve.NS_HitDissolve"));
 		if (!AttachmentFX)
 		{
-			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentFeedbackFX] Failed to load P_Metal."));
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentFeedbackFX] Failed to load NS_HitDissolve."));
 			return false;
 		}
 
@@ -10013,7 +10013,7 @@ namespace
 			return Left.GetSoftObjectPath().ToString() < Right.GetSoftObjectPath().ToString();
 		});
 
-		const FVector AttachmentScale(0.25f);
+		const FVector AttachmentScale(0.2f);
 		int32 LoadedBlueprintCount = 0;
 		int32 GunBlueprintCount = 0;
 		int32 ChangedGunBlueprintCount = 0;

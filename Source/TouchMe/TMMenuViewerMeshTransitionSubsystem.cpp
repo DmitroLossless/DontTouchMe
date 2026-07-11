@@ -1,12 +1,14 @@
 #include "TMMenuViewerMeshTransitionSubsystem.h"
 
 #include "Blueprint/UserWidget.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Gun/Gun.h"
+#include "Kismet/GameplayStatics.h"
 #include "TMAudioEnvelopeFollower.h"
 #include "TouchMe.h"
 #include "UObject/UObjectIterator.h"
@@ -58,7 +60,38 @@ static TAutoConsoleVariable<float> CVarMenuViewerMeshTransitionBeatSyncPulseThre
 	TEXT("Normalized envelope threshold used as a fallback rhythm pulse when beat events are sparse."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarLoadoutFOV(
+	TEXT("tm.LoadoutFOV"),
+	1,
+	TEXT("Locks the player camera FOV while W_Loadout or W_Attachments is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutFOVAngle(
+	TEXT("tm.LoadoutFOV.Angle"),
+	90.0f,
+	TEXT("Player camera FOV used while the loadout UI is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMenuFOVAngle(
+	TEXT("tm.MenuFOV.Angle"),
+	82.0f,
+	TEXT("Player camera FOV used by default while the main menu UI is visible."),
+	ECVF_Default);
+
 static TWeakObjectPtr<USkeletalMesh> GLastMenuViewerVestMesh;
+
+float GetMenuFOVAngle()
+{
+	return FMath::Clamp(CVarMenuFOVAngle.GetValueOnGameThread(), 5.0f, 170.0f);
+}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::Deinitialize()
+{
+	RestoreLoadoutFOV();
+	RestoreMenuFOV();
+	MenuViewerStates.Empty();
+	Super::Deinitialize();
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
@@ -66,10 +99,23 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 
 	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_DedicatedServer || CVarMenuViewerMeshTransition.GetValueOnGameThread() == 0)
+	if (!World || World->GetNetMode() == NM_DedicatedServer)
 	{
 		return;
 	}
+
+	const bool bLoadoutFOVVisible =
+		CVarLoadoutFOV.GetValueOnGameThread() != 0 && IsLoadoutFOVVisible(World);
+	const bool bMainMenuVisible = IsMainMenuVisible(World);
+	UpdateMenuFOV(World, bMainMenuVisible, bLoadoutFOVVisible);
+	UpdateLoadoutFOV(World, bLoadoutFOVVisible);
+
+	if (CVarMenuViewerMeshTransition.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+
+	const bool bLoadoutPreviewVisible = IsLoadoutPreviewVisible(World);
 
 	for (auto It = MenuViewerStates.CreateIterator(); It; ++It)
 	{
@@ -84,7 +130,7 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 		AActor* Actor = *It;
 		if (IsMenuViewerActor(Actor))
 		{
-			TrackMenuViewer(Actor, DeltaTime);
+			TrackMenuViewer(Actor, DeltaTime, bLoadoutPreviewVisible);
 		}
 	}
 }
@@ -99,7 +145,10 @@ bool UTMMenuViewerMeshTransitionSubsystem::DoesSupportWorldType(const EWorldType
 	return WorldType == EWorldType::Game || WorldType == EWorldType::PIE || WorldType == EWorldType::GamePreview;
 }
 
-void UTMMenuViewerMeshTransitionSubsystem::TrackMenuViewer(AActor* Actor, const float DeltaTime)
+void UTMMenuViewerMeshTransitionSubsystem::TrackMenuViewer(
+	AActor* Actor,
+	const float DeltaTime,
+	const bool bLoadoutPreviewVisible)
 {
 	if (!Actor)
 	{
@@ -108,7 +157,7 @@ void UTMMenuViewerMeshTransitionSubsystem::TrackMenuViewer(AActor* Actor, const 
 
 	FMenuViewerState& State = MenuViewerStates.FindOrAdd(Actor);
 	State.Actor = Actor;
-	UpdateAttachedWeaponVisibility(Actor, State, IsLoadoutPreviewVisible(Actor->GetWorld()));
+	UpdateAttachedWeaponVisibility(Actor, State, bLoadoutPreviewVisible);
 
 	USkeletalMeshComponent* VestComponent = ReadMeshComponentProperty(Actor, TEXT("Vest"));
 	if (!VestComponent || !VestComponent->IsRegistered())
@@ -260,6 +309,101 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsAttachedWeaponActor(const AActor* A
 	return ActorPath.Contains(TEXT("/Weapons/")) || ClassPath.Contains(TEXT("/Weapons/"));
 }
 
+bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutFOVVisible(UWorld* World)
+{
+	if (!World)
+	{
+		return false;
+	}
+
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		const FString ClassName = WidgetClass ? WidgetClass->GetName() : FString();
+		if (!ClassName.Contains(TEXT("W_Loadout")) && !ClassName.Contains(TEXT("W_Attachments")))
+		{
+			continue;
+		}
+
+		if (!Widget->IsVisible())
+		{
+			continue;
+		}
+
+		const ESlateVisibility Visibility = Widget->GetVisibility();
+		if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+		{
+			continue;
+		}
+
+		if (Widget->IsInViewport())
+		{
+			return true;
+		}
+
+		const FVector2D DrawnSize = Widget->GetCachedGeometry().GetLocalSize();
+		if (DrawnSize.X > 16.0f && DrawnSize.Y > 16.0f)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsMainMenuVisible(UWorld* World)
+{
+	if (!World)
+	{
+		return false;
+	}
+
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_MainMenu")))
+		{
+			continue;
+		}
+
+		if (!Widget->IsVisible())
+		{
+			continue;
+		}
+
+		const ESlateVisibility Visibility = Widget->GetVisibility();
+		if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+		{
+			continue;
+		}
+
+		if (Widget->IsInViewport())
+		{
+			return true;
+		}
+
+		const FVector2D DrawnSize = Widget->GetCachedGeometry().GetLocalSize();
+		if (DrawnSize.X > 16.0f && DrawnSize.Y > 16.0f)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutPreviewVisible(UWorld* World)
 {
 	if (!World)
@@ -306,6 +450,11 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutPreviewVisible(UWorld* World
 	}
 
 	return false;
+}
+
+APlayerCameraManager* UTMMenuViewerMeshTransitionSubsystem::ResolvePlayerCameraManager(UWorld* World)
+{
+	return World ? UGameplayStatics::GetPlayerCameraManager(World, 0) : nullptr;
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachedWeaponVisibility(
@@ -463,6 +612,161 @@ UTMMenuViewerMeshTransitionSubsystem::FBeatSyncSnapshot UTMMenuViewerMeshTransit
 	Snapshot.LastBeatStrength = Follower->GetLastBeatStrength();
 	Snapshot.NormalizedEnvelopeValue = Follower->NormalizedEnvelopeValue;
 	return Snapshot;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutFOV(UWorld* World, const bool bLoadoutVisible)
+{
+	if (!bLoadoutVisible)
+	{
+		RestoreLoadoutFOV();
+		return;
+	}
+
+	APlayerCameraManager* PlayerCameraManager = ResolvePlayerCameraManager(World);
+	if (!PlayerCameraManager)
+	{
+		return;
+	}
+
+	if (bLoadoutFOVApplied && LoadoutFOVCameraManager.IsValid() && LoadoutFOVCameraManager.Get() != PlayerCameraManager)
+	{
+		RestoreLoadoutFOV();
+	}
+
+	const float TargetFOV = FMath::Clamp(CVarLoadoutFOVAngle.GetValueOnGameThread(), 5.0f, 170.0f);
+	if (!bLoadoutFOVApplied)
+	{
+		SavedLoadoutPreviousFOV = PlayerCameraManager->GetFOVAngle();
+		if (!FMath::IsFinite(SavedLoadoutPreviousFOV))
+		{
+			SavedLoadoutPreviousFOV = PlayerCameraManager->DefaultFOV;
+		}
+
+		LoadoutFOVCameraManager = PlayerCameraManager;
+		bLoadoutFOVApplied = true;
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMLoadoutFOV] Applied loadout FOV %.1f; saved previous FOV %.1f."),
+			TargetFOV,
+			SavedLoadoutPreviousFOV);
+	}
+
+	if (!FMath::IsNearlyEqual(PlayerCameraManager->GetFOVAngle(), TargetFOV, 0.05f))
+	{
+		PlayerCameraManager->SetFOV(TargetFOV);
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutFOV()
+{
+	if (!bLoadoutFOVApplied)
+	{
+		return;
+	}
+
+	if (APlayerCameraManager* PlayerCameraManager = LoadoutFOVCameraManager.Get())
+	{
+		const bool bRestoreMenuFOV = bMenuFOVApplied && MenuFOVCameraManager.Get() == PlayerCameraManager;
+		const float RestoreFOV = bRestoreMenuFOV
+			? GetMenuFOVAngle()
+			: FMath::Clamp(SavedLoadoutPreviousFOV, 5.0f, 170.0f);
+		if (bRestoreMenuFOV)
+		{
+			PlayerCameraManager->DefaultFOV = RestoreFOV;
+		}
+		PlayerCameraManager->SetFOV(RestoreFOV);
+		if (!bRestoreMenuFOV)
+		{
+			PlayerCameraManager->UnlockFOV();
+		}
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMLoadoutFOV] Restored %s FOV %.1f after leaving loadout."),
+			bRestoreMenuFOV ? TEXT("menu") : TEXT("previous"),
+			RestoreFOV);
+	}
+
+	LoadoutFOVCameraManager.Reset();
+	bLoadoutFOVApplied = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateMenuFOV(
+	UWorld* World,
+	const bool bMainMenuVisible,
+	const bool bLoadoutVisible)
+{
+	if (!bMainMenuVisible)
+	{
+		RestoreMenuFOV();
+		return;
+	}
+
+	APlayerCameraManager* PlayerCameraManager = ResolvePlayerCameraManager(World);
+	if (!PlayerCameraManager)
+	{
+		return;
+	}
+
+	if (bMenuFOVApplied && MenuFOVCameraManager.IsValid() && MenuFOVCameraManager.Get() != PlayerCameraManager)
+	{
+		RestoreMenuFOV();
+	}
+
+	const float TargetFOV = GetMenuFOVAngle();
+	if (!bMenuFOVApplied)
+	{
+		SavedMenuPreviousDefaultFOV = PlayerCameraManager->DefaultFOV;
+		if (!FMath::IsFinite(SavedMenuPreviousDefaultFOV))
+		{
+			SavedMenuPreviousDefaultFOV = 90.0f;
+		}
+
+		MenuFOVCameraManager = PlayerCameraManager;
+		bMenuFOVApplied = true;
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMMenuFOV] Applied menu default FOV %.1f; saved previous default FOV %.1f."),
+			TargetFOV,
+			SavedMenuPreviousDefaultFOV);
+	}
+
+	if (!FMath::IsNearlyEqual(PlayerCameraManager->DefaultFOV, TargetFOV, 0.05f))
+	{
+		PlayerCameraManager->DefaultFOV = TargetFOV;
+	}
+
+	if (!bLoadoutVisible && !FMath::IsNearlyEqual(PlayerCameraManager->GetFOVAngle(), TargetFOV, 0.05f))
+	{
+		PlayerCameraManager->SetFOV(TargetFOV);
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreMenuFOV()
+{
+	if (!bMenuFOVApplied)
+	{
+		return;
+	}
+
+	if (APlayerCameraManager* PlayerCameraManager = MenuFOVCameraManager.Get())
+	{
+		PlayerCameraManager->DefaultFOV = FMath::Clamp(SavedMenuPreviousDefaultFOV, 5.0f, 170.0f);
+		if (!bLoadoutFOVApplied)
+		{
+			PlayerCameraManager->UnlockFOV();
+		}
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMMenuFOV] Restored previous default FOV %.1f after leaving main menu."),
+			PlayerCameraManager->DefaultFOV);
+	}
+
+	MenuFOVCameraManager.Reset();
+	bMenuFOVApplied = false;
 }
 
 USkeletalMesh* UTMMenuViewerMeshTransitionSubsystem::ChooseNextMenuMesh(USkeletalMesh* CurrentMesh) const

@@ -5,6 +5,7 @@
 #include "TMMenuViewerMeshTransitionSubsystem.generated.h"
 
 class AActor;
+class APlayerCameraManager;
 class UPrimitiveComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
@@ -16,6 +17,7 @@ class TOUCHME_API UTMMenuViewerMeshTransitionSubsystem : public UTickableWorldSu
 	GENERATED_BODY()
 
 public:
+	virtual void Deinitialize() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
@@ -49,7 +51,7 @@ private:
 		float NormalizedEnvelopeValue = 0.0f;
 	};
 
-	void TrackMenuViewer(AActor* Actor, float DeltaTime);
+	void TrackMenuViewer(AActor* Actor, float DeltaTime, bool bLoadoutPreviewVisible);
 	void NoteMeshChanged(const FMenuViewerState& State, USkeletalMeshComponent* VestComponent, USkeletalMesh* PreviousMesh) const;
 	void CaptureStableState(FMenuViewerState& State, USkeletalMeshComponent* VestComponent);
 	void UpdateAutoCycle(
@@ -61,7 +63,10 @@ private:
 
 	static bool IsMenuViewerActor(const AActor* Actor);
 	static bool IsAttachedWeaponActor(const AActor* Actor);
+	static bool IsLoadoutFOVVisible(UWorld* World);
+	static bool IsMainMenuVisible(UWorld* World);
 	static bool IsLoadoutPreviewVisible(UWorld* World);
+	static APlayerCameraManager* ResolvePlayerCameraManager(UWorld* World);
 	static void UpdateAttachedWeaponVisibility(AActor* Actor, FMenuViewerState& State, bool bHide);
 	static void HideAttachedWeaponActors(AActor* Actor, FMenuViewerState& State);
 	static void RestoreAttachedWeaponActors(FMenuViewerState& State);
@@ -79,6 +84,16 @@ private:
 	FBeatSyncSnapshot FindActiveBeatSync(UWorld* World) const;
 	void UpdateRhythmPulseMemory(FMenuViewerState& State, const FBeatSyncSnapshot& BeatSync) const;
 	bool IsReadyForBeatSyncedCycle(FMenuViewerState& State, const FBeatSyncSnapshot& BeatSync, float WorldTimeSeconds) const;
+	void UpdateMenuFOV(UWorld* World, bool bMainMenuVisible, bool bLoadoutVisible);
+	void UpdateLoadoutFOV(UWorld* World, bool bLoadoutVisible);
+	void RestoreLoadoutFOV();
+	void RestoreMenuFOV();
 
 	TMap<TWeakObjectPtr<AActor>, FMenuViewerState> MenuViewerStates;
+	TWeakObjectPtr<APlayerCameraManager> MenuFOVCameraManager;
+	TWeakObjectPtr<APlayerCameraManager> LoadoutFOVCameraManager;
+	float SavedMenuPreviousDefaultFOV = 90.0f;
+	float SavedLoadoutPreviousFOV = 82.0f;
+	bool bMenuFOVApplied = false;
+	bool bLoadoutFOVApplied = false;
 };

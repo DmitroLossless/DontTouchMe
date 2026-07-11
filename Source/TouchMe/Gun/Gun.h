@@ -111,7 +111,7 @@ protected:
 	TObjectPtr<USoundBase> AttachmentFeedbackSound;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback", meta = (ClampMin = "0.0"))
-	FVector AttachmentFeedbackScale = FVector(0.25f);
+	FVector AttachmentFeedbackScale = FVector(0.2f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback", meta = (ClampMin = "0.0"))
 	float AttachmentFeedbackVolume = 0.8f;
