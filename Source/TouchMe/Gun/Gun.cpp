@@ -13,11 +13,8 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
-#include "GameFramework/GameModeBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInterface.h"
-#include "Materials/MaterialInstance.h"
-#include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "NiagaraComponent.h"
@@ -25,6 +22,7 @@
 #include "NiagaraSystem.h"
 #include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 #include "Sound/SoundBase.h"
 #include "TimerManager.h"
 #include "UObject/UnrealType.h"
@@ -43,10 +41,13 @@ namespace
 	const TCHAR* AcogGlassMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Glass_Acog.M_Scope_Glass_Acog");
 	const TCHAR* AcogMaterialParameterCollectionPath = TEXT("/Game/Fps/Weapons/Camera/MPC_FP.MPC_FP");
 	const TCHAR* OpticsTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Optics.DT_Optics");
-	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Metal_Impact.P_Metal_Impact");
-	const TCHAR* DefaultAttachmentFeedbackSoundPath = TEXT("/Game/MP_System_V3/Game/Sounds/Cue/GUI_Select_02_Cue.GUI_Select_02_Cue");
+	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/Realistic_Starter_VFX_Pack/Particles/Hit/P_Metal.P_Metal");
+	const TCHAR* DefaultAttachmentFeedbackSoundPath = nullptr;
 	const TCHAR* DefaultWeaponSpawnFeedbackFXPath = TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Dust_Dark.P_Dust_Dark");
-	const TCHAR* DefaultWeaponSpawnFeedbackSoundPath = TEXT("/Game/MP_System_V3/Game/Sounds/Cue/Select_Cue.Select_Cue");
+	const TCHAR* DefaultWeaponSpawnFeedbackSoundPath = nullptr;
+	const TCHAR* DefaultBodyHitSoundPath = TEXT("/Game/Battle_Royale_Game/Cues/Gun_Foley/Foley/Weapon_Foley_Fist_Punch_Body_Hit_Bass_Single_Cloth_1_Cue.Weapon_Foley_Fist_Punch_Body_Hit_Bass_Single_Cloth_1_Cue");
+	const TCHAR* HeadshotHitmarkerSound1AssetName = TEXT("Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_1_Cue");
+	const TCHAR* HeadshotHitmarkerSound2AssetName = TEXT("Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_2_Cue");
 	constexpr float AttachmentFeedbackMonitorInterval = 0.05f;
 	constexpr float AttachmentFeedbackStartupSuppressSeconds = 0.35f;
 	const FName UnderbarrelDataPropertyName(TEXT("UnderbarrelData"));
@@ -59,23 +60,6 @@ namespace
 	const FName AcogGlassSocketName(TEXT("RM_Glass"));
 	const FName AcogFOVParameterName(TEXT("FOV"));
 	constexpr float ImpactFXForcedCleanupDelay = 2.0f;
-	constexpr float CustomizationSkinPreviewHoldSeconds = 5.5f;
-	constexpr float CustomizationSkinPreviewBlendSeconds = 5.0f;
-	const FName CustomizationSkinPreviewAlphaParameterNames[] =
-	{
-		TEXT("SkinAlpha"),
-		TEXT("Skin Alpha"),
-		TEXT("SkinBlend"),
-		TEXT("Skin Blend"),
-		TEXT("BlendAlpha"),
-		TEXT("Blend Alpha"),
-		TEXT("MaterialSkin"),
-		TEXT("Skin"),
-		TEXT("Alpha"),
-		TEXT("ConstAlpha"),
-		TEXT("Opacity")
-	};
-
 	void ScheduleImpactFXCleanup(UWorld* World, UActorComponent* Component)
 	{
 		if (!World || !Component)
@@ -96,6 +80,35 @@ namespace
 			}),
 			ImpactFXForcedCleanupDelay,
 			false);
+	}
+
+	bool IsBloodImpactPhysicalMaterial(const UPhysicalMaterial* PhysicalMaterial)
+	{
+		return PhysicalMaterial
+			&& UPhysicalMaterial::DetermineSurfaceType(PhysicalMaterial) == SurfaceType1;
+	}
+
+	bool IsHeadshotHitmarkerSound(const USoundBase* Sound)
+	{
+		if (!Sound)
+		{
+			return false;
+		}
+
+		const FString SoundPath = Sound->GetPathName();
+		return SoundPath.Contains(HeadshotHitmarkerSound1AssetName, ESearchCase::IgnoreCase)
+			|| SoundPath.Contains(HeadshotHitmarkerSound2AssetName, ESearchCase::IgnoreCase);
+	}
+
+	USoundBase* ResolveLoadoutFeedbackSound(USoundBase* ConfiguredSound, const TCHAR* DefaultSoundPath)
+	{
+		USoundBase* FeedbackSound = ConfiguredSound;
+		if (!FeedbackSound && DefaultSoundPath && DefaultSoundPath[0] != TEXT('\0'))
+		{
+			FeedbackSound = LoadObject<USoundBase>(nullptr, DefaultSoundPath);
+		}
+
+		return IsHeadshotHitmarkerSound(FeedbackSound) ? nullptr : FeedbackSound;
 	}
 
 	FString CleanGeneratedWeaponClassName(FString ClassName)
@@ -710,7 +723,6 @@ void AGun::BeginPlay()
 	ApplyFakeMode();
 	RefreshADSSocket();
 	RequestDeferredAttachmentSanitize();
-	RequestDeferredCustomizationSkinPreviewCycle();
 
 	UWorld* World = GetWorld();
 	if (World)
@@ -729,8 +741,6 @@ void AGun::BeginPlay()
 void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	GetWorldTimerManager().ClearTimer(AttachmentFeedbackMonitorTimerHandle);
-	GetWorldTimerManager().ClearTimer(CustomizationSkinPreviewStartTimerHandle);
-	StopCustomizationSkinPreviewCycle();
 	DestroyAcogRenderComponents();
 
 	if (bFakeModeApplied)
@@ -765,8 +775,6 @@ void AGun::Tick(const float DeltaSeconds)
 
 		UpdateAcogMaterialParameterCollection();
 	}
-
-	UpdateCustomizationSkinPreviewCycle(DeltaSeconds);
 }
 
 void AGun::SetFakeMode(const bool bEnabled)
@@ -1047,11 +1055,7 @@ void AGun::SpawnAttachmentFeedbackAtLocation(const FVector Location, const FRota
 		}
 	}
 
-	USoundBase* FeedbackSound = AttachmentFeedbackSound;
-	if (!FeedbackSound)
-	{
-		FeedbackSound = LoadObject<USoundBase>(nullptr, DefaultAttachmentFeedbackSoundPath);
-	}
+	USoundBase* FeedbackSound = ResolveLoadoutFeedbackSound(AttachmentFeedbackSound, DefaultAttachmentFeedbackSoundPath);
 
 	if (FeedbackSound)
 	{
@@ -1076,7 +1080,6 @@ void AGun::PlayWeaponSpawnFeedback()
 {
 	const FTransform FeedbackTransform = ResolveWeaponSpawnFeedbackTransform();
 	SpawnWeaponSpawnFeedbackAtLocation(FeedbackTransform.GetLocation(), FeedbackTransform.Rotator());
-	StartCustomizationSkinPreviewCycle();
 }
 
 void AGun::SpawnWeaponSpawnFeedbackAtLocation(const FVector Location, const FRotator Rotation)
@@ -1130,11 +1133,7 @@ void AGun::SpawnWeaponSpawnFeedbackAtLocation(const FVector Location, const FRot
 		}
 	}
 
-	USoundBase* FeedbackSound = WeaponSpawnFeedbackSound;
-	if (!FeedbackSound)
-	{
-		FeedbackSound = LoadObject<USoundBase>(nullptr, DefaultWeaponSpawnFeedbackSoundPath);
-	}
+	USoundBase* FeedbackSound = ResolveLoadoutFeedbackSound(WeaponSpawnFeedbackSound, DefaultWeaponSpawnFeedbackSoundPath);
 
 	if (FeedbackSound)
 	{
@@ -1189,31 +1188,12 @@ void AGun::RequestDeferredAttachmentFeedback(const UFunction* Function)
 	RequestDeferredAttachmentSanitize();
 }
 
-void AGun::RequestDeferredCustomizationSkinPreviewCycle()
-{
-	if (HasAnyFlags(RF_ClassDefaultObject) || bCustomizationSkinPreviewCycleActive)
-	{
-		return;
-	}
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
-	GetWorldTimerManager().SetTimer(
-		CustomizationSkinPreviewStartTimerHandle,
-		this,
-		&AGun::RunDeferredCustomizationSkinPreviewCycle,
-		0.1f,
-		false);
-}
-
 void AGun::RunDeferredAttachmentSanitize()
 {
 	const bool bShouldPlayAttachmentFeedback = bAttachmentFeedbackRequested;
+	const bool bDetectedStateChangeBeforeSanitize = bAttachmentFeedbackStateChangeDetected;
 	bAttachmentFeedbackRequested = false;
+	bAttachmentFeedbackStateChangeDetected = false;
 	bAttachmentSanitizeRequested = false;
 	SanitizeInvalidAttachmentComponents();
 	SynchronizeUnderbarrelAttachmentComponent();
@@ -1222,30 +1202,34 @@ void AGun::RunDeferredAttachmentSanitize()
 
 	if (bShouldPlayAttachmentFeedback)
 	{
-		if (AttachmentFeedbackPreferredSocketName.IsNone())
+		bool bDetectedStateChange = bDetectedStateChangeBeforeSanitize;
+		if (!bDetectedStateChange)
 		{
 			TMap<FName, FString> CurrentStateSignatures;
 			TMap<FName, FName> CurrentStateSockets;
-			BuildAttachmentFeedbackStateHash(&CurrentStateSignatures, &CurrentStateSockets);
-
-			const FName ChangedSocketName = ResolveChangedAttachmentFeedbackSocket(CurrentStateSignatures, CurrentStateSockets);
-			if (!ChangedSocketName.IsNone())
+			const uint32 CurrentHash = BuildAttachmentFeedbackStateHash(&CurrentStateSignatures, &CurrentStateSockets);
+			if (bAttachmentFeedbackStateInitialized && CurrentHash != LastAttachmentFeedbackStateHash)
 			{
-				AttachmentFeedbackPreferredSocketName = ChangedSocketName;
+				bDetectedStateChange = true;
+				if (AttachmentFeedbackPreferredSocketName.IsNone())
+				{
+					const FName ChangedSocketName = ResolveChangedAttachmentFeedbackSocket(CurrentStateSignatures, CurrentStateSockets);
+					if (!ChangedSocketName.IsNone())
+					{
+						AttachmentFeedbackPreferredSocketName = ChangedSocketName;
+					}
+				}
 			}
 		}
 
-		PlayAttachmentFeedback();
+		if (bDetectedStateChange && !AttachmentFeedbackPreferredSocketName.IsNone())
+		{
+			PlayAttachmentFeedback();
+		}
 	}
 
 	UpdateAttachmentFeedbackStateSnapshot();
 	AttachmentFeedbackPreferredSocketName = NAME_None;
-	RequestDeferredCustomizationSkinPreviewCycle();
-}
-
-void AGun::RunDeferredCustomizationSkinPreviewCycle()
-{
-	StartCustomizationSkinPreviewCycle();
 }
 
 void AGun::PlayAttachmentFeedback()
@@ -1579,6 +1563,7 @@ void AGun::MonitorAttachmentFeedbackState()
 	{
 		AttachmentFeedbackPreferredSocketName = ChangedSocketName;
 	}
+	bAttachmentFeedbackStateChangeDetected = true;
 	RequestDeferredAttachmentFeedback(nullptr);
 }
 
@@ -1600,17 +1585,15 @@ uint32 AGun::BuildAttachmentFeedbackStateHash(
 		const FName Key,
 		const FString& Context,
 		const FString& MeshPath,
-		const FName SocketName,
-		const bool bVisible)
+		const FName SocketName)
 	{
 		const FName FeedbackSocketName = ResolveAttachmentFeedbackSocketFromContext(Context, SocketName);
 		StateSignatures.Add(
 			Key,
 			FString::Printf(
-				TEXT("Mesh=%s;Socket=%s;Visible=%d"),
+				TEXT("Mesh=%s;Socket=%s"),
 				*MeshPath,
-				*FeedbackSocketName.ToString(),
-				bVisible ? 1 : 0));
+				*FeedbackSocketName.ToString()));
 		StateSockets.Add(Key, FeedbackSocketName);
 	};
 
@@ -1636,7 +1619,7 @@ uint32 AGun::BuildAttachmentFeedbackStateHash(
 			SocketName = ResolveCompatibleWeaponAttachmentSocketName(AttachParent, SocketName);
 		}
 
-		AddState(Key, Context, MeshPath, SocketName, StaticMeshComponent->IsVisible());
+		AddState(Key, Context, MeshPath, SocketName);
 	}
 
 	for (TFieldIterator<FStructProperty> It(GetClass()); It; ++It)
@@ -1665,7 +1648,7 @@ uint32 AGun::BuildAttachmentFeedbackStateHash(
 		const FName Key(*FString::Printf(TEXT("Property:%s"), *PropertyName));
 		const FString Context = FString::Printf(TEXT("Property:%s %s"), *PropertyName, *MeshPath);
 
-		AddState(Key, Context, MeshPath, SocketName, true);
+		AddState(Key, Context, MeshPath, SocketName);
 	}
 
 	uint32 Hash = 0;
@@ -2009,287 +1992,15 @@ void AGun::UpdateAcogMaterialParameterCollection() const
 
 void AGun::RefreshActorTickEnabled()
 {
-	SetActorTickEnabled(bAcogRenderTickActive || bCustomizationSkinPreviewCycleActive);
-}
-
-bool AGun::IsCustomizationSkinPreviewAllowed() const
-{
-	UWorld* World = GetWorld();
-	if (HasAnyFlags(RF_ClassDefaultObject) || !World)
-	{
-		return false;
-	}
-
-	const FString MapName = World->GetMapName();
-	const FString WorldPath = World->GetPathName();
-	if (MapName.Contains(TEXT("Map_MainMenu"), ESearchCase::IgnoreCase)
-		|| WorldPath.Contains(TEXT("/MP_System_V3/Maps/Map_MainMenu"), ESearchCase::IgnoreCase)
-		|| WorldPath.Contains(TEXT("MainMenu"), ESearchCase::IgnoreCase))
-	{
-		return true;
-	}
-
-	const AGameModeBase* GameMode = UGameplayStatics::GetGameMode(this);
-	const UClass* GameModeClass = GameMode ? GameMode->GetClass() : nullptr;
-	if (!GameModeClass)
-	{
-		return false;
-	}
-
-	const FString GameModePath = GameModeClass->GetPathName();
-	return GameModePath.Contains(TEXT("/MainMenuPawn/GM_Menu."), ESearchCase::IgnoreCase)
-		|| GameModePath.Contains(TEXT("GM_Menu_C"), ESearchCase::IgnoreCase);
+	SetActorTickEnabled(bAcogRenderTickActive);
 }
 
 void AGun::StartCustomizationSkinPreviewCycle()
 {
-	StopCustomizationSkinPreviewCycle();
-
-	if (!IsCustomizationSkinPreviewAllowed())
-	{
-		return;
-	}
-
-	ApplyFakeMode();
-	if (!TryInitializeCustomizationSkinPreviewCycle())
-	{
-		return;
-	}
-
-	CustomizationSkinPreviewElapsedSeconds = 0.0f;
-	bCustomizationSkinPreviewCycleActive = true;
-	ApplyCustomizationSkinPreviewAlpha(0.0f);
-	RefreshActorTickEnabled();
 }
 
 void AGun::StopCustomizationSkinPreviewCycle()
 {
-	const int32 EntryCount = CustomizationSkinPreviewComponents.Num();
-	for (int32 EntryIndex = 0; EntryIndex < EntryCount; ++EntryIndex)
-	{
-		USkeletalMeshComponent* Component = CustomizationSkinPreviewComponents[EntryIndex].Get();
-		const int32 MaterialIndex = CustomizationSkinPreviewMaterialIndices.IsValidIndex(EntryIndex)
-			? CustomizationSkinPreviewMaterialIndices[EntryIndex]
-			: INDEX_NONE;
-		UMaterialInterface* BaseMaterial = CustomizationSkinPreviewBaseMaterials.IsValidIndex(EntryIndex)
-			? CustomizationSkinPreviewBaseMaterials[EntryIndex].Get()
-			: nullptr;
-
-		if (IsValid(Component) && MaterialIndex >= 0 && BaseMaterial)
-		{
-			Component->SetMaterial(MaterialIndex, BaseMaterial);
-		}
-	}
-
-	CustomizationSkinPreviewComponents.Reset();
-	CustomizationSkinPreviewMaterialIndices.Reset();
-	CustomizationSkinPreviewBaseMaterials.Reset();
-	CustomizationSkinPreviewSkinMaterials.Reset();
-	CustomizationSkinPreviewDynamicMaterials.Reset();
-	CustomizationSkinPreviewElapsedSeconds = 0.0f;
-	bCustomizationSkinPreviewCycleActive = false;
-	RefreshActorTickEnabled();
-}
-
-bool AGun::TryInitializeCustomizationSkinPreviewCycle()
-{
-	USkeletalMeshComponent* PreviewMesh = ResolveCustomizationSkinPreviewMesh();
-	if (!IsValid(PreviewMesh))
-	{
-		return false;
-	}
-
-	const int32 MaterialCount = PreviewMesh->GetNumMaterials();
-	for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
-	{
-		UMaterialInterface* BaseMaterial = PreviewMesh->GetMaterial(MaterialIndex);
-		UMaterialInterface* SkinMaterial = ResolveCustomizationSkinPreviewMaterial(BaseMaterial);
-		if (!BaseMaterial || !SkinMaterial || BaseMaterial == SkinMaterial)
-		{
-			continue;
-		}
-
-		UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(SkinMaterial, this);
-		if (!DynamicMaterial)
-		{
-			continue;
-		}
-
-		CustomizationSkinPreviewComponents.Add(PreviewMesh);
-		CustomizationSkinPreviewMaterialIndices.Add(MaterialIndex);
-		CustomizationSkinPreviewBaseMaterials.Add(BaseMaterial);
-		CustomizationSkinPreviewSkinMaterials.Add(SkinMaterial);
-		CustomizationSkinPreviewDynamicMaterials.Add(DynamicMaterial);
-	}
-
-	return CustomizationSkinPreviewDynamicMaterials.Num() > 0;
-}
-
-void AGun::UpdateCustomizationSkinPreviewCycle(const float DeltaSeconds)
-{
-	if (!bCustomizationSkinPreviewCycleActive)
-	{
-		return;
-	}
-
-	if (!IsCustomizationSkinPreviewAllowed())
-	{
-		StopCustomizationSkinPreviewCycle();
-		return;
-	}
-
-	constexpr float SafeBlendSeconds = CustomizationSkinPreviewBlendSeconds > UE_SMALL_NUMBER
-		? CustomizationSkinPreviewBlendSeconds
-		: UE_SMALL_NUMBER;
-	const float SegmentSeconds = CustomizationSkinPreviewHoldSeconds + SafeBlendSeconds;
-	const float CycleSeconds = SegmentSeconds * 2.0f;
-
-	CustomizationSkinPreviewElapsedSeconds += FMath::Max(DeltaSeconds, 0.0f);
-	const float Phase = FMath::Fmod(CustomizationSkinPreviewElapsedSeconds, CycleSeconds);
-
-	float Alpha = 0.0f;
-	if (Phase < CustomizationSkinPreviewHoldSeconds)
-	{
-		Alpha = 0.0f;
-	}
-	else if (Phase < SegmentSeconds)
-	{
-		Alpha = (Phase - CustomizationSkinPreviewHoldSeconds) / SafeBlendSeconds;
-	}
-	else if (Phase < SegmentSeconds + CustomizationSkinPreviewHoldSeconds)
-	{
-		Alpha = 1.0f;
-	}
-	else
-	{
-		Alpha = 1.0f - ((Phase - SegmentSeconds - CustomizationSkinPreviewHoldSeconds) / SafeBlendSeconds);
-	}
-
-	ApplyCustomizationSkinPreviewAlpha(FMath::Clamp(Alpha, 0.0f, 1.0f));
-}
-
-void AGun::ApplyCustomizationSkinPreviewAlpha(const float Alpha)
-{
-	const bool bUseBaseMaterial = Alpha <= UE_KINDA_SMALL_NUMBER;
-	const bool bUseSkinMaterial = Alpha >= 1.0f - UE_KINDA_SMALL_NUMBER;
-	const int32 EntryCount = CustomizationSkinPreviewComponents.Num();
-
-	for (int32 EntryIndex = 0; EntryIndex < EntryCount; ++EntryIndex)
-	{
-		USkeletalMeshComponent* Component = CustomizationSkinPreviewComponents[EntryIndex].Get();
-		const int32 MaterialIndex = CustomizationSkinPreviewMaterialIndices.IsValidIndex(EntryIndex)
-			? CustomizationSkinPreviewMaterialIndices[EntryIndex]
-			: INDEX_NONE;
-		UMaterialInterface* BaseMaterial = CustomizationSkinPreviewBaseMaterials.IsValidIndex(EntryIndex)
-			? CustomizationSkinPreviewBaseMaterials[EntryIndex].Get()
-			: nullptr;
-		UMaterialInterface* SkinMaterial = CustomizationSkinPreviewSkinMaterials.IsValidIndex(EntryIndex)
-			? CustomizationSkinPreviewSkinMaterials[EntryIndex].Get()
-			: nullptr;
-		UMaterialInstanceDynamic* DynamicMaterial = CustomizationSkinPreviewDynamicMaterials.IsValidIndex(EntryIndex)
-			? CustomizationSkinPreviewDynamicMaterials[EntryIndex].Get()
-			: nullptr;
-
-		if (!IsValid(Component) || MaterialIndex < 0 || !BaseMaterial || !SkinMaterial || !DynamicMaterial)
-		{
-			continue;
-		}
-
-		UMaterialInterface* DesiredMaterial = DynamicMaterial;
-		if (bUseBaseMaterial)
-		{
-			DesiredMaterial = BaseMaterial;
-		}
-		else if (bUseSkinMaterial)
-		{
-			DesiredMaterial = SkinMaterial;
-		}
-		else
-		{
-			if (UMaterialInstance* BaseInstance = Cast<UMaterialInstance>(BaseMaterial))
-			{
-				if (UMaterialInstance* SkinInstance = Cast<UMaterialInstance>(SkinMaterial))
-				{
-					DynamicMaterial->K2_InterpolateMaterialInstanceParams(BaseInstance, SkinInstance, Alpha);
-				}
-			}
-
-			for (const FName ParameterName : CustomizationSkinPreviewAlphaParameterNames)
-			{
-				DynamicMaterial->SetScalarParameterValue(ParameterName, Alpha);
-			}
-		}
-
-		if (Component->GetMaterial(MaterialIndex) != DesiredMaterial)
-		{
-			Component->SetMaterial(MaterialIndex, DesiredMaterial);
-		}
-	}
-}
-
-USkeletalMeshComponent* AGun::ResolveCustomizationSkinPreviewMesh() const
-{
-	if (IsValid(FakeSkeletalMeshComponent)
-		&& FakeSkeletalMeshComponent->IsVisible()
-		&& FakeSkeletalMeshComponent->GetSkeletalMeshAsset())
-	{
-		return FakeSkeletalMeshComponent;
-	}
-
-	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
-	return IsValid(MainMesh) ? MainMesh : nullptr;
-}
-
-UMaterialInterface* AGun::ResolveCustomizationSkinPreviewMaterial(const UMaterialInterface* BaseMaterial) const
-{
-	if (!BaseMaterial)
-	{
-		return nullptr;
-	}
-
-	const FString PackageName = BaseMaterial->GetOutermost() ? BaseMaterial->GetOutermost()->GetName() : FString();
-	const FString AssetName = BaseMaterial->GetName();
-	FString DirectoryName;
-	if (!PackageName.Split(TEXT("/"), &DirectoryName, nullptr, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
-	{
-		return nullptr;
-	}
-
-	TArray<FString> CandidateAssetNames;
-	auto AddCandidateBySuffix = [&CandidateAssetNames, &AssetName](const TCHAR* Suffix, const TCHAR* Replacement)
-	{
-		if (!AssetName.EndsWith(Suffix, ESearchCase::IgnoreCase))
-		{
-			return;
-		}
-
-		FString CandidateName = AssetName;
-		CandidateName.LeftChopInline(FCString::Strlen(Suffix), EAllowShrinking::No);
-		CandidateName += Replacement;
-		CandidateAssetNames.AddUnique(CandidateName);
-	};
-
-	AddCandidateBySuffix(TEXT("_Skin_Mat_Inst"), TEXT("_Mat_Inst"));
-	AddCandidateBySuffix(TEXT("_Color_Mat_Inst"), TEXT("_Skin_Mat_Inst"));
-	AddCandidateBySuffix(TEXT("_Mat_Inst"), TEXT("_Skin_Mat_Inst"));
-	AddCandidateBySuffix(TEXT("_Mat"), TEXT("_Skin_Mat_Inst"));
-
-	for (const FString& CandidateAssetName : CandidateAssetNames)
-	{
-		const FString CandidatePackageName = DirectoryName + TEXT("/") + CandidateAssetName;
-		if (CandidatePackageName.Equals(PackageName, ESearchCase::IgnoreCase))
-		{
-			continue;
-		}
-
-		const FString CandidateObjectPath = CandidatePackageName + TEXT(".") + CandidateAssetName;
-		if (UMaterialInterface* CandidateMaterial = LoadObject<UMaterialInterface>(nullptr, *CandidateObjectPath))
-		{
-			return CandidateMaterial;
-		}
-	}
-
-	return nullptr;
 }
 
 void AGun::ApplyFakeMode()
@@ -2808,6 +2519,25 @@ void AGun::Impact(
 	const FVector Normal,
 	const UPhysicalMaterial* PhysicalMaterial)
 {
+	ImpactInternal(Location, Normal, PhysicalMaterial, false, false);
+}
+
+void AGun::ImpactWithHitContext(
+	const FVector Location,
+	const FVector Normal,
+	const UPhysicalMaterial* PhysicalMaterial,
+	const bool bHeadshot)
+{
+	ImpactInternal(Location, Normal, PhysicalMaterial, true, bHeadshot);
+}
+
+void AGun::ImpactInternal(
+	const FVector Location,
+	const FVector Normal,
+	const UPhysicalMaterial* PhysicalMaterial,
+	const bool bHasHeadshotInfo,
+	const bool bHeadshot)
+{
 	if (!Caliber)
 	{
 		return;
@@ -2853,6 +2583,16 @@ void AGun::Impact(
 				NiagaraComponent->SetAutoDestroy(true);
 				ScheduleImpactFXCleanup(GetWorld(), NiagaraComponent);
 			}
+		}
+	}
+
+	USoundBase* BodyHitSound = nullptr;
+	if (bHasHeadshotInfo && !bHeadshot && IsBloodImpactPhysicalMaterial(PhysicalMaterial))
+	{
+		BodyHitSound = LoadObject<USoundBase>(nullptr, DefaultBodyHitSoundPath);
+		if (BodyHitSound && BodyHitSound != Effects.Sound)
+		{
+			UGameplayStatics::PlaySoundAtLocation(this, BodyHitSound, Location, ImpactTransform.Rotator());
 		}
 	}
 

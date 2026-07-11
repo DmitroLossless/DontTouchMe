@@ -23,7 +23,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogTMFoliageCollisionPushTester, Log, All);
 
 namespace
 {
-constexpr ECollisionChannel TMVegetationCollisionChannel = ECC_GameTraceChannel6;
+constexpr ECollisionChannel TMFoliagePushVegetationCollisionChannel = ECC_GameTraceChannel6;
 
 struct FFoliageSkeletalReplacement
 {
@@ -283,9 +283,9 @@ void ATMFoliageCollisionPushTester::ConfigurePusherSphere()
 	PushSphere->InitSphereRadius(CurrentRadius);
 	PushSphere->SetSphereRadius(CurrentRadius, true);
 	PushSphere->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-	PushSphere->SetCollisionObjectType(TMVegetationCollisionChannel);
+	PushSphere->SetCollisionObjectType(TMFoliagePushVegetationCollisionChannel);
 	PushSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
-	PushSphere->SetCollisionResponseToChannel(TMVegetationCollisionChannel, ECR_Block);
+	PushSphere->SetCollisionResponseToChannel(TMFoliagePushVegetationCollisionChannel, ECR_Block);
 	PushSphere->SetGenerateOverlapEvents(true);
 	PushSphere->SetCanEverAffectNavigation(false);
 	PushSphere->SetHiddenInGame(true);
@@ -300,9 +300,9 @@ void ATMFoliageCollisionPushTester::ConfigureVegetationPhysicsBody(UPrimitiveCom
 
 	Component->SetMobility(EComponentMobility::Movable);
 	Component->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-	Component->SetCollisionObjectType(TMVegetationCollisionChannel);
+	Component->SetCollisionObjectType(TMFoliagePushVegetationCollisionChannel);
 	Component->SetCollisionResponseToAllChannels(ECR_Ignore);
-	Component->SetCollisionResponseToChannel(TMVegetationCollisionChannel, ECR_Block);
+	Component->SetCollisionResponseToChannel(TMFoliagePushVegetationCollisionChannel, ECR_Block);
 	Component->SetGenerateOverlapEvents(true);
 	Component->SetCanEverAffectNavigation(false);
 }

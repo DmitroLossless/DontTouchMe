@@ -15,8 +15,6 @@ class UPhysicalMaterial;
 class UProjectileImpactData;
 class UFakeGunAnimInstance;
 class UFXSystemAsset;
-class UMaterialInstanceDynamic;
-class UMaterialInterface;
 class USoundBase;
 
 UCLASS(Blueprintable)
@@ -35,6 +33,8 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Gun|Impact")
 	void Impact(FVector Location, FVector Normal, const UPhysicalMaterial* PhysicalMaterial);
+
+	void ImpactWithHitContext(FVector Location, FVector Normal, const UPhysicalMaterial* PhysicalMaterial, bool bHeadshot);
 
 	UFUNCTION(BlueprintCallable, Category = "Gun|Fake Mode")
 	void SetFakeMode(bool bEnabled);
@@ -111,7 +111,7 @@ protected:
 	TObjectPtr<USoundBase> AttachmentFeedbackSound;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback", meta = (ClampMin = "0.0"))
-	FVector AttachmentFeedbackScale = FVector(1.0f);
+	FVector AttachmentFeedbackScale = FVector(0.25f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Attachments|Feedback", meta = (ClampMin = "0.0"))
 	float AttachmentFeedbackVolume = 0.8f;
@@ -222,13 +222,17 @@ private:
 	static FText MakeDefaultWeaponDisplayName(const UClass* WeaponClass);
 
 	bool HasCustomWeaponDisplayName() const;
+	void ImpactInternal(
+		FVector Location,
+		FVector Normal,
+		const UPhysicalMaterial* PhysicalMaterial,
+		bool bHasHeadshotInfo,
+		bool bHeadshot);
 	void ApplyFakeMode();
 	void RestoreFromFakeMode();
 	void RequestDeferredAttachmentSanitize();
 	void RequestDeferredAttachmentFeedback(const UFunction* Function);
-	void RequestDeferredCustomizationSkinPreviewCycle();
 	void RunDeferredAttachmentSanitize();
-	void RunDeferredCustomizationSkinPreviewCycle();
 	void PlayAttachmentFeedback();
 	FTransform ResolveAttachmentFeedbackTransform() const;
 	FTransform ResolveWeaponSpawnFeedbackTransform() const;
@@ -248,12 +252,6 @@ private:
 	void DestroyAcogRenderComponents();
 	void UpdateAcogMaterialParameterCollection() const;
 	void RefreshActorTickEnabled();
-	bool IsCustomizationSkinPreviewAllowed() const;
-	bool TryInitializeCustomizationSkinPreviewCycle();
-	void UpdateCustomizationSkinPreviewCycle(float DeltaSeconds);
-	void ApplyCustomizationSkinPreviewAlpha(float Alpha);
-	USkeletalMeshComponent* ResolveCustomizationSkinPreviewMesh() const;
-	UMaterialInterface* ResolveCustomizationSkinPreviewMaterial(const UMaterialInterface* BaseMaterial) const;
 	USkeletalMeshComponent* ResolveMainSkeletalMesh() const;
 	bool ResolveADSSocketAttachTarget(USceneComponent*& OutParent, FName& OutSocketName) const;
 	UStaticMeshComponent* ResolvePrimaryOpticComponent() const;
@@ -278,34 +276,17 @@ private:
 
 	bool bAttachmentSanitizeRequested = false;
 	bool bAttachmentFeedbackRequested = false;
+	bool bAttachmentFeedbackStateChangeDetected = false;
 	bool bAttachmentFeedbackStateInitialized = false;
 	bool bSanitizingAttachmentComponents = false;
 	bool bFakeModeApplied = false;
 	bool bMainMeshWasVisible = true;
 	bool bAcogRenderTickActive = false;
-	bool bCustomizationSkinPreviewCycleActive = false;
 	FName AttachmentFeedbackPreferredSocketName = NAME_None;
 	uint32 LastAttachmentFeedbackStateHash = 0;
 	TMap<FName, FString> LastAttachmentFeedbackStateSignatures;
 	TMap<FName, FName> LastAttachmentFeedbackStateSockets;
 	double AttachmentFeedbackSuppressUntilTime = 0.0;
 	FTimerHandle AttachmentFeedbackMonitorTimerHandle;
-	FTimerHandle CustomizationSkinPreviewStartTimerHandle;
 	uint8 MainMeshPreviousAnimTickOption = 0;
-	float CustomizationSkinPreviewElapsedSeconds = 0.0f;
-
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<USkeletalMeshComponent>> CustomizationSkinPreviewComponents;
-
-	UPROPERTY(Transient)
-	TArray<int32> CustomizationSkinPreviewMaterialIndices;
-
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialInterface>> CustomizationSkinPreviewBaseMaterials;
-
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialInterface>> CustomizationSkinPreviewSkinMaterials;
-
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialInstanceDynamic>> CustomizationSkinPreviewDynamicMaterials;
 };

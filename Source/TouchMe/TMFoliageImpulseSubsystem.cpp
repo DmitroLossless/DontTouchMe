@@ -21,14 +21,14 @@ DEFINE_LOG_CATEGORY_STATIC(LogTMFoliageImpulse, Log, All);
 
 namespace
 {
-constexpr ECollisionChannel TMVegetationCollisionChannel = ECC_GameTraceChannel6;
+constexpr ECollisionChannel TMFoliageImpulseVegetationCollisionChannel = ECC_GameTraceChannel6;
 
-static const FName MWPlayerPositionParameter(TEXT("MW_PlayerPosition"));
-static const FName MWPlayerSpeedParameter(TEXT("MW_PlayerSpeed"));
-static const FName MWBendPositionParameter(TEXT("MW_BendPos"));
-static const FName TMFoliageImpulseOriginXParameter(TEXT("TM_FoliageImpulseOriginX"));
-static const FName TMFoliageImpulseOriginYParameter(TEXT("TM_FoliageImpulseOriginY"));
-static const FName TMFoliageImpulseOriginZParameter(TEXT("TM_FoliageImpulseOriginZ"));
+static const FName TMFoliageImpulseMWPlayerPositionParameter(TEXT("MW_PlayerPosition"));
+static const FName TMFoliageImpulseMWPlayerSpeedParameter(TEXT("MW_PlayerSpeed"));
+static const FName TMFoliageImpulseMWBendPositionParameter(TEXT("MW_BendPos"));
+static const FName TMFoliageImpulseOriginXMaterialParameter(TEXT("TM_FoliageImpulseOriginX"));
+static const FName TMFoliageImpulseOriginYMaterialParameter(TEXT("TM_FoliageImpulseOriginY"));
+static const FName TMFoliageImpulseOriginZMaterialParameter(TEXT("TM_FoliageImpulseOriginZ"));
 static const FName TMFoliageImpulseMaxOffsetParameter(TEXT("TM_FoliageImpulseMaxOffset"));
 
 constexpr int32 TMFoliageImpulseCustomDataFloatCount = 3;
@@ -355,10 +355,10 @@ void ConfigureVegetationOnlySweepSphere(USphereComponent* SphereComponent)
 	}
 
 	SphereComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-	SphereComponent->SetCollisionObjectType(TMVegetationCollisionChannel);
+	SphereComponent->SetCollisionObjectType(TMFoliageImpulseVegetationCollisionChannel);
 	SphereComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
 
-	SphereComponent->SetCollisionResponseToChannel(TMVegetationCollisionChannel, ECR_Block);
+	SphereComponent->SetCollisionResponseToChannel(TMFoliageImpulseVegetationCollisionChannel, ECR_Block);
 	SphereComponent->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 	SphereComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	SphereComponent->SetCollisionResponseToChannel(ECC_GameTraceChannel3, ECR_Ignore);
@@ -865,12 +865,12 @@ void UTMFoliageImpulseSubsystem::ApplyMaterialPulse(const FActiveMaterialPulse& 
 	const float Speed = SignedAmplitude * Pulse.Strength * SpeedScale;
 	const FVector BendPosition = Pulse.Origin + Pulse.Direction * (SignedAmplitude * BendDistance);
 
-	CollectionInstance->SetVectorParameterValue(MWPlayerPositionParameter, FLinearColor(Pulse.Origin.X, Pulse.Origin.Y, Pulse.Origin.Z, 1.f));
-	CollectionInstance->SetVectorParameterValue(MWBendPositionParameter, FLinearColor(BendPosition.X, BendPosition.Y, BendPosition.Z, 1.f));
-	CollectionInstance->SetScalarParameterValue(MWPlayerSpeedParameter, Speed);
-	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginXParameter, Pulse.Origin.X);
-	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginYParameter, Pulse.Origin.Y);
-	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginZParameter, Pulse.Origin.Z);
+	CollectionInstance->SetVectorParameterValue(TMFoliageImpulseMWPlayerPositionParameter, FLinearColor(Pulse.Origin.X, Pulse.Origin.Y, Pulse.Origin.Z, 1.f));
+	CollectionInstance->SetVectorParameterValue(TMFoliageImpulseMWBendPositionParameter, FLinearColor(BendPosition.X, BendPosition.Y, BendPosition.Z, 1.f));
+	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseMWPlayerSpeedParameter, Speed);
+	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginXMaterialParameter, Pulse.Origin.X);
+	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginYMaterialParameter, Pulse.Origin.Y);
+	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginZMaterialParameter, Pulse.Origin.Z);
 }
 
 void UTMFoliageImpulseSubsystem::ClearMaterialPulse()
@@ -888,7 +888,7 @@ void UTMFoliageImpulseSubsystem::ClearMaterialPulse()
 		return;
 	}
 
-	CollectionInstance->SetScalarParameterValue(MWPlayerSpeedParameter, 0.f);
+	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseMWPlayerSpeedParameter, 0.f);
 }
 
 UMaterialParameterCollection* UTMFoliageImpulseSubsystem::GetMWControllerCollection()
@@ -1172,14 +1172,14 @@ bool UTMFoliageImpulseSubsystem::PrepareFoliageCollision(UPrimitiveComponent* Co
 	const bool bHadCollision = Component->GetCollisionEnabled() != ECollisionEnabled::NoCollision;
 	const bool bHasMeshCollision = TMImpulseEnsureSimpleCollisionOnStaticMesh(TMImpulseGetStaticMeshFromPrimitive(Component));
 	TMImpulsePrepareFoliageWPO(Component);
-	Component->SetCollisionObjectType(TMVegetationCollisionChannel);
+	Component->SetCollisionObjectType(TMFoliageImpulseVegetationCollisionChannel);
 	if (!bHadCollision)
 	{
 		Component->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		Component->SetCollisionResponseToAllChannels(ECR_Ignore);
 	}
 
-	Component->SetCollisionResponseToChannel(TMVegetationCollisionChannel, ECR_Block);
+	Component->SetCollisionResponseToChannel(TMFoliageImpulseVegetationCollisionChannel, ECR_Block);
 	Component->SetGenerateOverlapEvents(true);
 	if (bHasMeshCollision)
 	{

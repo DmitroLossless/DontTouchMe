@@ -19,12 +19,12 @@ namespace
 {
 constexpr ECollisionChannel TMExplosionVegetationCollisionChannel = ECC_GameTraceChannel6;
 
-static const FName MWPlayerPositionParameter(TEXT("MW_PlayerPosition"));
-static const FName MWPlayerSpeedParameter(TEXT("MW_PlayerSpeed"));
-static const FName MWBendPositionParameter(TEXT("MW_BendPos"));
-static const FName TMFoliageImpulseOriginXParameter(TEXT("TM_FoliageImpulseOriginX"));
-static const FName TMFoliageImpulseOriginYParameter(TEXT("TM_FoliageImpulseOriginY"));
-static const FName TMFoliageImpulseOriginZParameter(TEXT("TM_FoliageImpulseOriginZ"));
+static const FName TMExplosionMWPlayerPositionParameter(TEXT("MW_PlayerPosition"));
+static const FName TMExplosionMWPlayerSpeedParameter(TEXT("MW_PlayerSpeed"));
+static const FName TMExplosionMWBendPositionParameter(TEXT("MW_BendPos"));
+static const FName TMExplosionFoliageImpulseOriginXParameter(TEXT("TM_FoliageImpulseOriginX"));
+static const FName TMExplosionFoliageImpulseOriginYParameter(TEXT("TM_FoliageImpulseOriginY"));
+static const FName TMExplosionFoliageImpulseOriginZParameter(TEXT("TM_FoliageImpulseOriginZ"));
 
 bool TMExplosionPathContainsAny(const FString& Path, std::initializer_list<const TCHAR*> Tokens)
 {
@@ -334,12 +334,12 @@ void ATMFoliageExplosionCollisionTester::HoldMaterialBend()
 	const FVector BendPosition = Origin + Direction * FMath::Max(0.f, BendDistance);
 	const float Speed = FMath::Max(0.f, Strength * MaterialSpeedScale);
 
-	CollectionInstance->SetVectorParameterValue(MWPlayerPositionParameter, FLinearColor(Origin.X, Origin.Y, Origin.Z, 1.f));
-	CollectionInstance->SetVectorParameterValue(MWBendPositionParameter, FLinearColor(BendPosition.X, BendPosition.Y, BendPosition.Z, 1.f));
-	CollectionInstance->SetScalarParameterValue(MWPlayerSpeedParameter, Speed);
-	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginXParameter, Origin.X);
-	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginYParameter, Origin.Y);
-	CollectionInstance->SetScalarParameterValue(TMFoliageImpulseOriginZParameter, Origin.Z);
+	CollectionInstance->SetVectorParameterValue(TMExplosionMWPlayerPositionParameter, FLinearColor(Origin.X, Origin.Y, Origin.Z, 1.f));
+	CollectionInstance->SetVectorParameterValue(TMExplosionMWBendPositionParameter, FLinearColor(BendPosition.X, BendPosition.Y, BendPosition.Z, 1.f));
+	CollectionInstance->SetScalarParameterValue(TMExplosionMWPlayerSpeedParameter, Speed);
+	CollectionInstance->SetScalarParameterValue(TMExplosionFoliageImpulseOriginXParameter, Origin.X);
+	CollectionInstance->SetScalarParameterValue(TMExplosionFoliageImpulseOriginYParameter, Origin.Y);
+	CollectionInstance->SetScalarParameterValue(TMExplosionFoliageImpulseOriginZParameter, Origin.Z);
 }
 
 void ATMFoliageExplosionCollisionTester::ClearMaterialBend()
@@ -357,7 +357,7 @@ void ATMFoliageExplosionCollisionTester::ClearMaterialBend()
 		return;
 	}
 
-	CollectionInstance->SetScalarParameterValue(MWPlayerSpeedParameter, 0.f);
+	CollectionInstance->SetScalarParameterValue(TMExplosionMWPlayerSpeedParameter, 0.f);
 }
 
 UMaterialParameterCollection* ATMFoliageExplosionCollisionTester::GetMWControllerCollection()

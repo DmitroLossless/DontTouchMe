@@ -33,34 +33,46 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/Texture2D.h"
 #include "Blueprint/WidgetTree.h"
+#include "Components/AudioComponent.h"
 #include "Components/Border.h"
 #include "Components/Button.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/ContentWidget.h"
 #include "Components/Image.h"
+#include "Components/PanelWidget.h"
 #include "Components/ProgressBar.h"
 #include "Components/RichTextBlock.h"
+#include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
+#include "Components/VerticalBoxSlot.h"
 #include "Components/Widget.h"
 #include "EditorReimportHandler.h"
 #include "K2Node_BreakStruct.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_ComponentBoundEvent.h"
+#include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_GetDataTableRow.h"
+#include "K2Node_IfThenElse.h"
 #include "K2Node_MakeStruct.h"
 #include "K2Node_Select.h"
 #include "K2Node_Self.h"
 #include "K2Node_SpawnActorFromClass.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/EnumEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
+#include "Particles/FXSystemAsset.h"
 #include "Sound/SlateSound.h"
 #include "Sound/SoundBase.h"
+#include "Sound/SoundConcurrency.h"
 #include "UObject/Class.h"
 #include "UObject/ObjectRedirector.h"
 #include "UObject/SavePackage.h"
@@ -76,6 +88,10 @@ namespace
 
 	const TCHAR* TMUIButtonPushSoundPath =
 		TEXT("/Game/AGLS/Audio/Foley/Button/ButtonPush_S011FO_80.ButtonPush_S011FO_80");
+	const TCHAR* TMMainMenuSoundtrackPath =
+		TEXT("/Game/Sound/MainCulto.MainCulto");
+	const TCHAR* TMMainMenuSoundtrackPatchComment =
+		TEXT("TM: moved MainCulto start from W_Intro to W_MainMenu");
 
 	bool TMClearReadOnlyFile(const FString& Filename, const TCHAR* LogPrefix)
 	{
@@ -5951,6 +5967,175 @@ namespace
 		return Cast<UWidgetTree>(ObjectProperty->GetObjectPropertyValue_InContainer(Blueprint));
 	}
 
+	FString TMFormatMarginForMenuDump(const FMargin& Margin)
+	{
+		return FString::Printf(
+			TEXT("L=%.2f T=%.2f R=%.2f B=%.2f"),
+			Margin.Left,
+			Margin.Top,
+			Margin.Right,
+			Margin.Bottom);
+	}
+
+	FString TMFormatAnchorsForMenuDump(const FAnchors& Anchors)
+	{
+		return FString::Printf(
+			TEXT("Min=%s Max=%s"),
+			*Anchors.Minimum.ToString(),
+			*Anchors.Maximum.ToString());
+	}
+
+	FString TMDescribeSlateBrushForMenuDump(const FSlateBrush& Brush)
+	{
+		return FString::Printf(
+			TEXT("DrawAs=%d Tint=%s Size=%s Margin=%s Resource=%s"),
+			static_cast<int32>(Brush.DrawAs),
+			*Brush.TintColor.GetSpecifiedColor().ToString(),
+			*Brush.ImageSize.ToString(),
+			*TMFormatMarginForMenuDump(Brush.Margin),
+			*GetPathNameSafe(Brush.GetResourceObject()));
+	}
+
+	FString TMDescribeWidgetSlotForMenuDump(const UWidget* Widget)
+	{
+		if (!Widget || !Widget->Slot)
+		{
+			return TEXT("Slot=None");
+		}
+
+		FString Result = FString::Printf(TEXT("Slot=%s"), *Widget->Slot->GetClass()->GetName());
+		if (const UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Widget->Slot))
+		{
+			Result += FString::Printf(
+				TEXT(" Pos=%s Size=%s Anchors=%s Align=%s Auto=%d Z=%d"),
+				*CanvasSlot->GetPosition().ToString(),
+				*CanvasSlot->GetSize().ToString(),
+				*TMFormatAnchorsForMenuDump(CanvasSlot->GetAnchors()),
+				*CanvasSlot->GetAlignment().ToString(),
+				CanvasSlot->GetAutoSize() ? 1 : 0,
+				CanvasSlot->GetZOrder());
+		}
+
+		return Result;
+	}
+
+	bool TMDumpMenuButtonWidgets()
+	{
+		const TCHAR* WidgetBlueprintPaths[] =
+		{
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_InGameMenu.W_InGameMenu"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Settings.W_Settings"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Weapon_Layer.W_Weapon_Layer"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachment_Layer.W_Attachment_Layer"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_LevelSelect.W_LevelSelect"),
+		};
+
+		bool bSuccess = true;
+		for (const TCHAR* BlueprintPath : WidgetBlueprintPaths)
+		{
+			UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+			UWidgetTree* WidgetTree = TMFindWidgetTree(Blueprint);
+			if (!Blueprint || !WidgetTree)
+			{
+				UE_LOG(
+					LogTemp,
+					Error,
+					TEXT("[TMMenuButtonDump] Failed to load widget tree. BP=%s Loaded=%d Tree=%d"),
+					BlueprintPath,
+					Blueprint ? 1 : 0,
+					WidgetTree ? 1 : 0);
+				bSuccess = false;
+				continue;
+			}
+
+			int32 ButtonCount = 0;
+			int32 RelevantWidgetCount = 0;
+			UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump] BP=%s Root=%s"), *Blueprint->GetPathName(), *GetNameSafe(WidgetTree->RootWidget));
+			WidgetTree->ForEachWidget([&](UWidget* Widget)
+			{
+				if (!Widget)
+				{
+					return;
+				}
+
+				const FString WidgetName = Widget->GetName();
+				const FString WidgetClassName = Widget->GetClass()->GetName();
+				const bool bRelevantByName =
+					WidgetName.Contains(TEXT("Button"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Menu"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Loadout"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Settings"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Apply"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Back"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Return"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Quit"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Play"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Line"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Strip"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Arrow"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Greater"), ESearchCase::IgnoreCase)
+					|| WidgetName.Contains(TEXT("Focus"), ESearchCase::IgnoreCase);
+				const bool bRelevantByClass =
+					Widget->IsA<UButton>()
+					|| Widget->IsA<UTextBlock>()
+					|| Widget->IsA<UImage>()
+					|| Widget->IsA<UBorder>()
+					|| Widget->IsA<USizeBox>();
+				if (!bRelevantByName && !bRelevantByClass)
+				{
+					return;
+				}
+
+				++RelevantWidgetCount;
+				UPanelWidget* Parent = Widget->GetParent();
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMMenuButtonDump]   Widget=%s Class=%s Parent=%s Visibility=%d RenderOpacity=%.3f %s"),
+					*WidgetName,
+					*WidgetClassName,
+					*GetNameSafe(Parent),
+					static_cast<int32>(Widget->GetVisibility()),
+					Widget->GetRenderOpacity(),
+					*TMDescribeWidgetSlotForMenuDump(Widget));
+
+				if (UButton* Button = Cast<UButton>(Widget))
+				{
+					++ButtonCount;
+					const FButtonStyle& Style = Button->GetStyle();
+					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Button Normal{%s}"), *TMDescribeSlateBrushForMenuDump(Style.Normal));
+					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Button Hovered{%s}"), *TMDescribeSlateBrushForMenuDump(Style.Hovered));
+					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Button Pressed{%s}"), *TMDescribeSlateBrushForMenuDump(Style.Pressed));
+				}
+				else if (UImage* Image = Cast<UImage>(Widget))
+				{
+					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Image Brush{%s} Color=%s"), *TMDescribeSlateBrushForMenuDump(Image->GetBrush()), *Image->GetColorAndOpacity().ToString());
+				}
+				else if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
+				{
+					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Text='%s' Color=%s"), *TextBlock->GetText().ToString(), *TextBlock->GetColorAndOpacity().GetSpecifiedColor().ToString());
+				}
+				else if (UBorder* Border = Cast<UBorder>(Widget))
+				{
+					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Border Brush{%s} Color=%s"), *TMDescribeSlateBrushForMenuDump(Border->Background), *Border->GetBrushColor().ToString());
+				}
+			});
+
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMMenuButtonDump] Summary BP=%s Buttons=%d RelevantWidgets=%d"),
+				*Blueprint->GetPathName(),
+				ButtonCount,
+				RelevantWidgetCount);
+		}
+
+		return bSuccess;
+	}
+
 	FSlateSound TMMakeSlateSound(UObject* ResourceObject)
 	{
 		FSlateSound Sound;
@@ -6116,6 +6301,7 @@ namespace
 		UBlueprint* Blueprint,
 		UObject* ButtonSound,
 		int32& OutPressedGraphPins,
+		int32& OutHoveredGraphPins,
 		int32& OutClickedGraphPins)
 	{
 		if (!Blueprint || !ButtonSound)
@@ -6166,6 +6352,22 @@ namespace
 							*PinPath);
 					}
 
+					if (PinPath.Contains(TEXT("HoveredSlateSound"), ESearchCase::IgnoreCase)
+						&& TMPinLooksLikeSlateSoundResource(Pin, PinPath)
+						&& TMSetGraphSlateSoundPinDefault(Pin, ButtonSound))
+					{
+						++OutHoveredGraphPins;
+						bChanged = true;
+						UE_LOG(
+							LogTemp,
+							Display,
+							TEXT("[TMUIButtonSounds] Patched graph hovered sound: %s Graph=%s Node=%s Pin=%s"),
+							*Blueprint->GetPathName(),
+							*Graph->GetName(),
+							*Node->GetName(),
+							*PinPath);
+					}
+
 					if (PinPath.Contains(TEXT("ClickedSlateSound"), ESearchCase::IgnoreCase)
 						&& TMPinLooksLikeSlateSoundResource(Pin, PinPath)
 						&& TMSetGraphSlateSoundPinDefault(Pin, nullptr))
@@ -6192,6 +6394,7 @@ namespace
 		UButton* Button,
 		UObject* ButtonSound,
 		int32& OutPressedButtons,
+		int32& OutHoveredButtons,
 		int32& OutClearedClickedButtons,
 		int32& OutExistingClickButtons)
 	{
@@ -6202,6 +6405,7 @@ namespace
 
 		FButtonStyle Style = Button->GetStyle();
 		const FString PreviousPressedSound = TMDescribeSlateSound(Style.PressedSlateSound);
+		const FString PreviousHoveredSound = TMDescribeSlateSound(Style.HoveredSlateSound);
 		const FString PreviousClickedSound = TMDescribeSlateSound(Style.ClickedSlateSound);
 
 		bool bChanged = false;
@@ -6209,6 +6413,13 @@ namespace
 		{
 			Style.SetPressedSound(TMMakeSlateSound(ButtonSound));
 			++OutPressedButtons;
+			bChanged = true;
+		}
+
+		if (Style.HoveredSlateSound.GetResourceObject() != ButtonSound)
+		{
+			Style.SetHoveredSound(TMMakeSlateSound(ButtonSound));
+			++OutHoveredButtons;
 			bChanged = true;
 		}
 
@@ -6230,9 +6441,11 @@ namespace
 		UE_LOG(
 			LogTemp,
 			Display,
-			TEXT("[TMUIButtonSounds] Button=%s Pressed '%s' -> '%s', Clicked '%s' -> ''"),
+			TEXT("[TMUIButtonSounds] Button=%s Pressed '%s' -> '%s', Hovered '%s' -> '%s', Clicked '%s' -> ''"),
 			*Button->GetPathName(),
 			*PreviousPressedSound,
+			*GetPathNameSafe(ButtonSound),
+			*PreviousHoveredSound,
 			*GetPathNameSafe(ButtonSound),
 			*PreviousClickedSound);
 		return true;
@@ -6260,9 +6473,11 @@ namespace
 
 		int32 ButtonCount = 0;
 		int32 PressedButtons = 0;
+		int32 HoveredButtons = 0;
 		int32 ClearedClickedButtons = 0;
 		int32 ExistingClickButtons = 0;
 		int32 PressedGraphPins = 0;
+		int32 HoveredGraphPins = 0;
 		int32 ClickedGraphPins = 0;
 		bool bChanged = false;
 
@@ -6279,11 +6494,12 @@ namespace
 				Button,
 				ButtonSound,
 				PressedButtons,
+				HoveredButtons,
 				ClearedClickedButtons,
 				ExistingClickButtons);
 		});
 
-		if (TMPatchUIButtonSoundGraphPins(Blueprint, ButtonSound, PressedGraphPins, ClickedGraphPins))
+		if (TMPatchUIButtonSoundGraphPins(Blueprint, ButtonSound, PressedGraphPins, HoveredGraphPins, ClickedGraphPins))
 		{
 			bChanged = true;
 		}
@@ -6291,13 +6507,15 @@ namespace
 		UE_LOG(
 			LogTemp,
 			Display,
-			TEXT("[TMUIButtonSounds] %s: Buttons=%d PressedSet=%d ClickedCleared=%d ExistingClickSlots=%d GraphPressedSet=%d GraphClickedCleared=%d"),
+			TEXT("[TMUIButtonSounds] %s: Buttons=%d PressedSet=%d HoveredSet=%d ClickedCleared=%d ExistingClickSlots=%d GraphPressedSet=%d GraphHoveredSet=%d GraphClickedCleared=%d"),
 			*Blueprint->GetPathName(),
 			ButtonCount,
 			PressedButtons,
+			HoveredButtons,
 			ClearedClickedButtons,
 			ExistingClickButtons,
 			PressedGraphPins,
+			HoveredGraphPins,
 			ClickedGraphPins);
 
 		if (!bChanged)
@@ -6717,6 +6935,741 @@ namespace
 		}
 
 		return TMSavePackageForAsset(Blueprint, TEXT("TMYellowUI"));
+	}
+
+	FSlateBrush TMMakeNoFillMenuButtonBrush()
+	{
+		FSlateBrush Brush;
+		Brush.DrawAs = ESlateBrushDrawType::NoDrawType;
+		Brush.TintColor = FSlateColor(FLinearColor(1.0f, 1.0f, 1.0f, 0.0f));
+		return Brush;
+	}
+
+	FSlateBrush TMMakeMenuButtonIndicatorBrush(UObject* IndicatorResource, const FLinearColor& Tint)
+	{
+		FSlateBrush Brush;
+		if (IndicatorResource)
+		{
+			Brush.DrawAs = ESlateBrushDrawType::Image;
+			Brush.SetResourceObject(IndicatorResource);
+		}
+		else
+		{
+			Brush.DrawAs = ESlateBrushDrawType::NoDrawType;
+		}
+
+		Brush.TintColor = FSlateColor(Tint);
+		return Brush;
+	}
+
+	bool TMSetMinimalMenuButtonStyle(
+		UButton* Button,
+		UObject* IndicatorResource,
+		const bool bUseHoverIndicator,
+		int32& OutChangedButtons)
+	{
+		if (!Button)
+		{
+			return false;
+		}
+
+		(void)IndicatorResource;
+		(void)bUseHoverIndicator;
+
+		const FLinearColor DirtyYellow = TMGetDirtyFolderYellow();
+		const FLinearColor NormalForeground(DirtyYellow.R, DirtyYellow.G, DirtyYellow.B, 0.92f);
+		const FLinearColor HoveredForeground(1.0f, 0.0f, 0.0f, 1.0f);
+		const FLinearColor DisabledForeground(DirtyYellow.R, DirtyYellow.G, DirtyYellow.B, 0.35f);
+
+		FButtonStyle Style = Button->GetStyle();
+		Style
+			.SetNormal(TMMakeNoFillMenuButtonBrush())
+			.SetHovered(TMMakeNoFillMenuButtonBrush())
+			.SetPressed(TMMakeNoFillMenuButtonBrush())
+			.SetDisabled(TMMakeNoFillMenuButtonBrush())
+			.SetNormalForeground(FSlateColor(NormalForeground))
+			.SetHoveredForeground(FSlateColor(HoveredForeground))
+			.SetPressedForeground(FSlateColor(HoveredForeground))
+			.SetDisabledForeground(FSlateColor(DisabledForeground));
+
+		Button->Modify();
+		Button->SetStyle(Style);
+		++OutChangedButtons;
+		return true;
+	}
+
+	void TMVisitContentWidgets(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
+	{
+		if (!Widget)
+		{
+			return;
+		}
+
+		Visitor(Widget);
+
+		if (UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget))
+		{
+			const int32 ChildCount = PanelWidget->GetChildrenCount();
+			for (int32 ChildIndex = 0; ChildIndex < ChildCount; ++ChildIndex)
+			{
+				TMVisitContentWidgets(PanelWidget->GetChildAt(ChildIndex), Visitor);
+			}
+			return;
+		}
+
+		if (UContentWidget* ContentWidget = Cast<UContentWidget>(Widget))
+		{
+			TMVisitContentWidgets(ContentWidget->GetContent(), Visitor);
+		}
+	}
+
+	bool TMSetMenuButtonTextUsesForeground(UButton* Button, int32& OutChangedTextBlocks)
+	{
+		if (!Button)
+		{
+			return false;
+		}
+
+		bool bChanged = false;
+		TMVisitContentWidgets(Button, [&](UWidget* Widget)
+		{
+			if (Widget == Button)
+			{
+				return;
+			}
+
+			if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
+			{
+				TextBlock->Modify();
+				TextBlock->SetColorAndOpacity(FSlateColor::UseForeground());
+				++OutChangedTextBlocks;
+				bChanged = true;
+				return;
+			}
+
+			if (URichTextBlock* RichTextBlock = Cast<URichTextBlock>(Widget))
+			{
+				RichTextBlock->Modify();
+				RichTextBlock->SetDefaultColorAndOpacity(FSlateColor::UseForeground());
+				++OutChangedTextBlocks;
+				bChanged = true;
+			}
+		});
+
+		return bChanged;
+	}
+
+	bool TMIsMainMenuLargeLabelText(const FString& Text)
+	{
+		const FString TrimmedText = Text.TrimStartAndEnd();
+		return TrimmedText.Equals(TEXT("Go"), ESearchCase::IgnoreCase)
+			|| TrimmedText.Equals(TEXT("Instrument"), ESearchCase::IgnoreCase)
+			|| TrimmedText.Equals(TEXT("Settings"), ESearchCase::IgnoreCase)
+			|| TrimmedText.Equals(TEXT("Quit"), ESearchCase::IgnoreCase);
+	}
+
+	FLinearColor TMGetMainMenuLargeLabelColor(const FString& Text)
+	{
+		const FString TrimmedText = Text.TrimStartAndEnd();
+		if (TrimmedText.Equals(TEXT("Go"), ESearchCase::IgnoreCase))
+		{
+			return FLinearColor::FromSRGBColor(FColor(250, 222, 82, 255));
+		}
+
+		if (TrimmedText.Equals(TEXT("Instrument"), ESearchCase::IgnoreCase))
+		{
+			return FLinearColor::FromSRGBColor(FColor(255, 188, 23, 255));
+		}
+
+		if (TrimmedText.Equals(TEXT("Settings"), ESearchCase::IgnoreCase))
+		{
+			return FLinearColor::FromSRGBColor(FColor(218, 171, 38, 255));
+		}
+
+		return FLinearColor::FromSRGBColor(FColor(255, 236, 118, 255));
+	}
+
+	struct FTMMainMenuLargeLabelEntry
+	{
+		UButton* Button = nullptr;
+		TArray<UTextBlock*> TextBlocks;
+		FString Text;
+		UCanvasPanelSlot* CanvasSlot = nullptr;
+		UVerticalBoxSlot* VerticalSlot = nullptr;
+		FVector2D OriginalCanvasPosition = FVector2D::ZeroVector;
+	};
+
+	bool TMFindMainMenuLargeLabelInButton(
+		UButton* Button,
+		FString& OutText,
+		TArray<UTextBlock*>& OutTextBlocks)
+	{
+		if (!Button)
+		{
+			return false;
+		}
+
+		bool bFound = false;
+		TMVisitContentWidgets(Button, [&](UWidget* Widget)
+		{
+			UTextBlock* TextBlock = Cast<UTextBlock>(Widget);
+			if (!TextBlock)
+			{
+				return;
+			}
+
+			const FString Text = TextBlock->GetText().ToString();
+			if (!TMIsMainMenuLargeLabelText(Text))
+			{
+				return;
+			}
+
+			OutText = Text.TrimStartAndEnd();
+			OutTextBlocks.Add(TextBlock);
+			bFound = true;
+		});
+
+		return bFound;
+	}
+
+	bool TMPatchMainMenuLargeLabelTextBlock(
+		UTextBlock* TextBlock,
+		const int32 TargetFontSize,
+		int32& OutChangedTextBlocks)
+	{
+		if (!TextBlock)
+		{
+			return false;
+		}
+
+		bool bChanged = false;
+		FSlateFontInfo FontInfo = TextBlock->GetFont();
+		if (FontInfo.Size != TargetFontSize)
+		{
+			FontInfo.Size = TargetFontSize;
+			TextBlock->Modify();
+			TextBlock->SetFont(FontInfo);
+			bChanged = true;
+		}
+
+		TextBlock->Modify();
+		TextBlock->SetColorAndOpacity(FSlateColor::UseForeground());
+		bChanged = true;
+
+		if (bChanged)
+		{
+			++OutChangedTextBlocks;
+		}
+
+		return bChanged;
+	}
+
+	bool TMPatchMainMenuLargeLabelButtonColor(
+		UButton* Button,
+		const FLinearColor& NormalColor,
+		int32& OutChangedButtons)
+	{
+		if (!Button)
+		{
+			return false;
+		}
+
+		const FLinearColor HoveredForeground(1.0f, 0.0f, 0.0f, 1.0f);
+		const FLinearColor DisabledForeground(NormalColor.R, NormalColor.G, NormalColor.B, 0.35f);
+		FButtonStyle Style = Button->GetStyle();
+		Style
+			.SetNormalForeground(FSlateColor(NormalColor))
+			.SetHoveredForeground(FSlateColor(HoveredForeground))
+			.SetPressedForeground(FSlateColor(HoveredForeground))
+			.SetDisabledForeground(FSlateColor(DisabledForeground));
+
+		Button->Modify();
+		Button->SetStyle(Style);
+		++OutChangedButtons;
+		return true;
+	}
+
+	bool TMPatchMainMenuLargeLabelCanvasSpacing(
+		TArray<FTMMainMenuLargeLabelEntry>& Entries,
+		int32& OutMovedSlots,
+		int32& OutResizedSlots)
+	{
+		TArray<FTMMainMenuLargeLabelEntry*> CanvasEntries;
+		for (FTMMainMenuLargeLabelEntry& Entry : Entries)
+		{
+			if (Entry.CanvasSlot)
+			{
+				CanvasEntries.Add(&Entry);
+			}
+		}
+
+		if (CanvasEntries.Num() < 2)
+		{
+			return false;
+		}
+
+		CanvasEntries.Sort([](const FTMMainMenuLargeLabelEntry* Left, const FTMMainMenuLargeLabelEntry* Right)
+		{
+			return Left && Right && Left->OriginalCanvasPosition.Y < Right->OriginalCanvasPosition.Y;
+		});
+
+		const float FirstY = CanvasEntries[0]->OriginalCanvasPosition.Y;
+		const float LastY = CanvasEntries.Last()->OriginalCanvasPosition.Y;
+		const float AverageSpacing = (LastY - FirstY) / static_cast<float>(CanvasEntries.Num() - 1);
+		const bool bAlreadyExpanded = AverageSpacing >= 80.0f;
+		const float SpacingScale = bAlreadyExpanded ? 1.0f : 3.0f;
+
+		bool bChanged = false;
+		for (FTMMainMenuLargeLabelEntry* Entry : CanvasEntries)
+		{
+			UCanvasPanelSlot* CanvasSlot = Entry ? Entry->CanvasSlot : nullptr;
+			if (!CanvasSlot)
+			{
+				continue;
+			}
+
+			const FVector2D CurrentPosition = CanvasSlot->GetPosition();
+			const FVector2D NewPosition(
+				CurrentPosition.X,
+				FirstY + (Entry->OriginalCanvasPosition.Y - FirstY) * SpacingScale);
+			if (!CurrentPosition.Equals(NewPosition, 0.1f))
+			{
+				CanvasSlot->Modify();
+				CanvasSlot->SetPosition(NewPosition);
+				++OutMovedSlots;
+				bChanged = true;
+			}
+
+			const FVector2D CurrentSize = CanvasSlot->GetSize();
+			FVector2D NewSize = CurrentSize;
+			if (CurrentSize.X > 0.0f && CurrentSize.X < 360.0f)
+			{
+				NewSize.X = FMath::Max(CurrentSize.X * 3.0f, 360.0f);
+			}
+			if (CurrentSize.Y > 0.0f && CurrentSize.Y < 72.0f)
+			{
+				NewSize.Y = FMath::Max(CurrentSize.Y * 3.0f, 72.0f);
+			}
+
+			if (!CurrentSize.Equals(NewSize, 0.1f))
+			{
+				CanvasSlot->Modify();
+				CanvasSlot->SetSize(NewSize);
+				++OutResizedSlots;
+				bChanged = true;
+			}
+		}
+
+		return bChanged;
+	}
+
+	bool TMPatchMainMenuLargeLabelVerticalSpacing(
+		TArray<FTMMainMenuLargeLabelEntry>& Entries,
+		int32& OutChangedVerticalSlots)
+	{
+		TArray<FTMMainMenuLargeLabelEntry*> VerticalEntries;
+		for (FTMMainMenuLargeLabelEntry& Entry : Entries)
+		{
+			if (Entry.VerticalSlot)
+			{
+				VerticalEntries.Add(&Entry);
+			}
+		}
+
+		if (VerticalEntries.IsEmpty())
+		{
+			return false;
+		}
+
+		bool bChanged = false;
+		for (int32 EntryIndex = 0; EntryIndex < VerticalEntries.Num(); ++EntryIndex)
+		{
+			UVerticalBoxSlot* VerticalSlot = VerticalEntries[EntryIndex]->VerticalSlot;
+			if (!VerticalSlot)
+			{
+				continue;
+			}
+
+			const FMargin CurrentPadding = VerticalSlot->GetPadding();
+			FMargin NewPadding = CurrentPadding;
+			if (EntryIndex < VerticalEntries.Num() - 1)
+			{
+				NewPadding.Bottom = FMath::Max(CurrentPadding.Bottom * 3.0f, 48.0f);
+			}
+			NewPadding.Top = CurrentPadding.Top >= 16.0f ? CurrentPadding.Top : CurrentPadding.Top * 3.0f;
+
+			if (!FMath::IsNearlyEqual(CurrentPadding.Top, NewPadding.Top, 0.1f)
+				|| !FMath::IsNearlyEqual(CurrentPadding.Bottom, NewPadding.Bottom, 0.1f))
+			{
+				VerticalSlot->Modify();
+				VerticalSlot->SetPadding(NewPadding);
+				++OutChangedVerticalSlots;
+				bChanged = true;
+			}
+		}
+
+		return bChanged;
+	}
+
+	bool TMPatchMainMenuBigLabels()
+	{
+		const TCHAR* BlueprintPath = TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu");
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		UWidgetTree* WidgetTree = TMFindWidgetTree(Blueprint);
+		if (!Blueprint || !WidgetTree)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMainMenuBigLabels] Failed to load widget tree. BP=%s Loaded=%d Tree=%d"),
+				BlueprintPath,
+				Blueprint ? 1 : 0,
+				WidgetTree ? 1 : 0);
+			return false;
+		}
+
+		TArray<FTMMainMenuLargeLabelEntry> Entries;
+		WidgetTree->ForEachWidget([&](UWidget* Widget)
+		{
+			UButton* Button = Cast<UButton>(Widget);
+			if (!Button)
+			{
+				return;
+			}
+
+			FTMMainMenuLargeLabelEntry Entry;
+			Entry.Button = Button;
+			if (!TMFindMainMenuLargeLabelInButton(Button, Entry.Text, Entry.TextBlocks))
+			{
+				return;
+			}
+
+			Entry.CanvasSlot = Cast<UCanvasPanelSlot>(Button->Slot);
+			Entry.VerticalSlot = Cast<UVerticalBoxSlot>(Button->Slot);
+			if (Entry.CanvasSlot)
+			{
+				Entry.OriginalCanvasPosition = Entry.CanvasSlot->GetPosition();
+			}
+
+			Entries.Add(Entry);
+		});
+
+		if (Entries.Num() == 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBigLabels] No main menu label buttons were found."));
+			return false;
+		}
+
+		int32 ChangedButtons = 0;
+		int32 ChangedTextBlocks = 0;
+		int32 MovedCanvasSlots = 0;
+		int32 ResizedCanvasSlots = 0;
+		int32 ChangedVerticalSlots = 0;
+		bool bChanged = false;
+
+		const int32 TargetFontSize = 54;
+		for (FTMMainMenuLargeLabelEntry& Entry : Entries)
+		{
+			bChanged |= TMPatchMainMenuLargeLabelButtonColor(
+				Entry.Button,
+				TMGetMainMenuLargeLabelColor(Entry.Text),
+				ChangedButtons);
+
+			for (UTextBlock* TextBlock : Entry.TextBlocks)
+			{
+				bChanged |= TMPatchMainMenuLargeLabelTextBlock(TextBlock, TargetFontSize, ChangedTextBlocks);
+			}
+
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMMainMenuBigLabels] Label='%s' Button=%s TextBlocks=%d Canvas=%d Vertical=%d"),
+				*Entry.Text,
+				*GetPathNameSafe(Entry.Button),
+				Entry.TextBlocks.Num(),
+				Entry.CanvasSlot ? 1 : 0,
+				Entry.VerticalSlot ? 1 : 0);
+		}
+
+		bChanged |= TMPatchMainMenuLargeLabelCanvasSpacing(Entries, MovedCanvasSlots, ResizedCanvasSlots);
+		bChanged |= TMPatchMainMenuLargeLabelVerticalSpacing(Entries, ChangedVerticalSlots);
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMainMenuBigLabels] Summary: Labels=%d Buttons=%d TextBlocks=%d MovedCanvasSlots=%d ResizedCanvasSlots=%d ChangedVerticalSlots=%d"),
+			Entries.Num(),
+			ChangedButtons,
+			ChangedTextBlocks,
+			MovedCanvasSlots,
+			ResizedCanvasSlots,
+			ChangedVerticalSlots);
+
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBigLabels] Blueprint compile failed: %s"), *Blueprint->GetPathName());
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMMainMenuBigLabels"));
+	}
+
+	bool TMShouldUseMinimalMenuButtonHoverIndicator(const TCHAR* BlueprintPath)
+	{
+		return false;
+	}
+
+	bool TMShouldPatchMinimalMenuButton(const UButton* Button, const TCHAR* BlueprintPath)
+	{
+		if (!Button)
+		{
+			return false;
+		}
+
+		const FString Path(BlueprintPath);
+		if (!Path.Contains(TEXT("W_Loadout"), ESearchCase::IgnoreCase)
+			&& !Path.Contains(TEXT("W_Attachments"), ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+
+		const FString Name = Button->GetName();
+		return Name.Equals(TEXT("B_Selection"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Modify"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Return"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Return_1"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Primary"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Secondary"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Special"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Melee"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Explosive"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Optics"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_SideRail"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Underbarrel"), ESearchCase::IgnoreCase)
+			|| Name.Equals(TEXT("B_Muzzle"), ESearchCase::IgnoreCase)
+			|| Name.EndsWith(TEXT("_R"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMIsMenuButtonFillResource(const UObject* ResourceObject)
+	{
+		const FString Path = GetPathNameSafe(ResourceObject);
+		if (Path.IsEmpty())
+		{
+			return false;
+		}
+
+		return Path.Contains(TEXT("I_Gradient_Button"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("I_InGame_Button_Gradient"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("I_InGame_Button_solid"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("I_Rounded_Rectangle"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("button_512x128"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("button_normal"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("button_hover"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("button_pressed"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("I_Apply_Empty"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMShouldClearMenuButtonImageFill(const UImage* Image)
+	{
+		if (!Image)
+		{
+			return false;
+		}
+
+		const UObject* ResourceObject = Image->GetBrush().GetResourceObject();
+		if (!TMIsMenuButtonFillResource(ResourceObject))
+		{
+			return false;
+		}
+
+		const FString Name = Image->GetName();
+		const FString Path = GetPathNameSafe(ResourceObject);
+		const bool bLooksLikeFill =
+			Name.Contains(TEXT("Button"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Background"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("BG"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Focus"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Selection"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("Button"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("Rectangle"), ESearchCase::IgnoreCase);
+		const bool bLooksLikeIcon =
+			Name.Contains(TEXT("Icon"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Arrow"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Greater"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("Icon"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("Arrow"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("Greater"), ESearchCase::IgnoreCase);
+
+		return bLooksLikeFill && !bLooksLikeIcon;
+	}
+
+	bool TMClearMenuButtonImageFill(UImage* Image, int32& OutClearedImages)
+	{
+		if (!TMShouldClearMenuButtonImageFill(Image))
+		{
+			return false;
+		}
+
+		FLinearColor Color = Image->GetColorAndOpacity();
+		if (Color.A == 0.0f)
+		{
+			return false;
+		}
+
+		Color.A = 0.0f;
+		Image->Modify();
+		Image->SetColorAndOpacity(Color);
+		++OutClearedImages;
+		return true;
+	}
+
+	bool TMShouldClearMenuButtonBorderFill(const UBorder* Border)
+	{
+		if (!Border)
+		{
+			return false;
+		}
+
+		const UObject* ResourceObject = Border->Background.GetResourceObject();
+		const FString Name = Border->GetName();
+		return TMIsMenuButtonFillResource(ResourceObject)
+			&& (Name.Contains(TEXT("Button"), ESearchCase::IgnoreCase)
+				|| Name.Contains(TEXT("Background"), ESearchCase::IgnoreCase)
+				|| Name.Contains(TEXT("BG"), ESearchCase::IgnoreCase)
+				|| Name.Contains(TEXT("Focus"), ESearchCase::IgnoreCase)
+				|| Name.Contains(TEXT("Selection"), ESearchCase::IgnoreCase));
+	}
+
+	bool TMClearMenuButtonBorderFill(UBorder* Border, int32& OutClearedBorders)
+	{
+		if (!TMShouldClearMenuButtonBorderFill(Border))
+		{
+			return false;
+		}
+
+		FLinearColor Color = Border->GetBrushColor();
+		if (Color.A == 0.0f)
+		{
+			return false;
+		}
+
+		Color.A = 0.0f;
+		Border->Modify();
+		Border->SetBrushColor(Color);
+		++OutClearedBorders;
+		return true;
+	}
+
+	bool TMPatchMinimalMenuButtonsForWidgetBlueprint(const TCHAR* BlueprintPath, UObject* IndicatorResource)
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		UWidgetTree* WidgetTree = TMFindWidgetTree(Blueprint);
+		if (!Blueprint || !WidgetTree)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMinimalMenuButtons] Failed to load widget tree. BP=%s Loaded=%d Tree=%d"),
+				BlueprintPath,
+				Blueprint ? 1 : 0,
+				WidgetTree ? 1 : 0);
+			return false;
+		}
+
+		int32 ChangedButtons = 0;
+		int32 ChangedTextBlocks = 0;
+		int32 ClearedImages = 0;
+		int32 ClearedBorders = 0;
+		const bool bUseHoverIndicator = TMShouldUseMinimalMenuButtonHoverIndicator(BlueprintPath);
+		bool bChanged = false;
+		WidgetTree->ForEachWidget([&](UWidget* Widget)
+		{
+			if (UButton* Button = Cast<UButton>(Widget))
+			{
+				if (TMShouldPatchMinimalMenuButton(Button, BlueprintPath))
+				{
+					bChanged |= TMSetMinimalMenuButtonStyle(Button, IndicatorResource, bUseHoverIndicator, ChangedButtons);
+					bChanged |= TMSetMenuButtonTextUsesForeground(Button, ChangedTextBlocks);
+				}
+				return;
+			}
+
+			if (UImage* Image = Cast<UImage>(Widget))
+			{
+				bChanged |= TMClearMenuButtonImageFill(Image, ClearedImages);
+				return;
+			}
+
+			if (UBorder* Border = Cast<UBorder>(Widget))
+			{
+				bChanged |= TMClearMenuButtonBorderFill(Border, ClearedBorders);
+			}
+		});
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMinimalMenuButtons] %s: Buttons=%d TextBlocks=%d ClearedImages=%d ClearedBorders=%d"),
+			*Blueprint->GetPathName(),
+			ChangedButtons,
+			ChangedTextBlocks,
+			ClearedImages,
+			ClearedBorders);
+
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMinimalMenuButtons] Blueprint compile failed: %s"), *Blueprint->GetPathName());
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMMinimalMenuButtons"));
+	}
+
+	bool TMPatchMinimalMenuButtons()
+	{
+		UObject* IndicatorResource = LoadObject<UObject>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/Images/I_Strip.I_Strip"));
+		if (!IndicatorResource)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMMinimalMenuButtons] I_Strip not found; hovered/pressed buttons will stay fill-less."));
+		}
+
+		const TCHAR* WidgetBlueprintPaths[] =
+		{
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_InGameMenu.W_InGameMenu"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Settings.W_Settings"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Weapon_Layer.W_Weapon_Layer"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachment_Layer.W_Attachment_Layer"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_KeyBindings.W_KeyBindings"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Sessions.W_Sessions"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_LevelSelect.W_LevelSelect"),
+		};
+
+		bool bSuccess = true;
+		for (const TCHAR* BlueprintPath : WidgetBlueprintPaths)
+		{
+			bSuccess &= TMPatchMinimalMenuButtonsForWidgetBlueprint(BlueprintPath, IndicatorResource);
+		}
+
+		return bSuccess;
 	}
 
 	void TMReimportYellowSplashTextures()
@@ -7648,6 +8601,1561 @@ namespace
 		return TMSavePackageForAsset(Blueprint, TEXT("TMMainMenuLoadoutCleanup"));
 	}
 
+	bool TMSetObjectPropertyIfDifferent(UObject* Object, const FName PropertyName, UObject* Value, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		FObjectPropertyBase* Property = Object
+			? FindFProperty<FObjectPropertyBase>(Object->GetClass(), PropertyName)
+			: nullptr;
+		if (!Property)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[%s] Missing object property %s on %s."),
+				LogPrefix,
+				*PropertyName.ToString(),
+				Object ? *Object->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		UObject* PreviousValue = Property->GetObjectPropertyValue_InContainer(Object);
+		if (PreviousValue == Value)
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s] %s already %s on %s."),
+				LogPrefix,
+				*PropertyName.ToString(),
+				Value ? *Value->GetPathName() : TEXT("None"),
+				*Object->GetPathName());
+			return true;
+		}
+
+		Object->Modify();
+		Property->SetObjectPropertyValue_InContainer(Object, Value);
+		FPropertyChangedEvent PropertyChangedEvent(Property);
+		Object->PostEditChangeProperty(PropertyChangedEvent);
+		Object->MarkPackageDirty();
+		bChanged = true;
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[%s] Set %s: %s -> %s on %s."),
+			LogPrefix,
+			*PropertyName.ToString(),
+			PreviousValue ? *PreviousValue->GetPathName() : TEXT("None"),
+			Value ? *Value->GetPathName() : TEXT("None"),
+			*Object->GetPathName());
+		return true;
+	}
+
+	bool TMSetVectorPropertyIfDifferent(UObject* Object, const FName PropertyName, const FVector& Value, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		FStructProperty* Property = Object
+			? FindFProperty<FStructProperty>(Object->GetClass(), PropertyName)
+			: nullptr;
+		if (!Property || Property->Struct != TBaseStructure<FVector>::Get())
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[%s] Missing vector property %s on %s."),
+				LogPrefix,
+				*PropertyName.ToString(),
+				Object ? *Object->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		FVector* PreviousValue = Property->ContainerPtrToValuePtr<FVector>(Object);
+		if (PreviousValue && PreviousValue->Equals(Value, KINDA_SMALL_NUMBER))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s] %s already %s on %s."),
+				LogPrefix,
+				*PropertyName.ToString(),
+				*Value.ToString(),
+				*Object->GetPathName());
+			return true;
+		}
+
+		const FVector OldValue = PreviousValue ? *PreviousValue : FVector::ZeroVector;
+		Object->Modify();
+		Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(Object), &Value);
+		FPropertyChangedEvent PropertyChangedEvent(Property);
+		Object->PostEditChangeProperty(PropertyChangedEvent);
+		Object->MarkPackageDirty();
+		bChanged = true;
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[%s] Set %s: %s -> %s on %s."),
+			LogPrefix,
+			*PropertyName.ToString(),
+			*OldValue.ToString(),
+			*Value.ToString(),
+			*Object->GetPathName());
+		return true;
+	}
+
+	bool TMSetAudioComponentSoundIfDifferent(
+		UAudioComponent* AudioComponent,
+		USoundBase* Sound,
+		const TCHAR* LogPrefix,
+		bool& bChanged)
+	{
+		if (!AudioComponent)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Missing soundtrack audio component."), LogPrefix);
+			return false;
+		}
+
+		USoundBase* PreviousSound = AudioComponent->GetSound();
+		if (PreviousSound == Sound)
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s] AudioComponent.Sound already %s on %s."),
+				LogPrefix,
+				Sound ? *Sound->GetPathName() : TEXT("None"),
+				*AudioComponent->GetPathName());
+			return true;
+		}
+
+		AudioComponent->Modify();
+		AudioComponent->SetSound(Sound);
+		if (FProperty* SoundProperty = FindFProperty<FProperty>(AudioComponent->GetClass(), TEXT("Sound")))
+		{
+			FPropertyChangedEvent PropertyChangedEvent(SoundProperty);
+			AudioComponent->PostEditChangeProperty(PropertyChangedEvent);
+		}
+		AudioComponent->MarkPackageDirty();
+		bChanged = true;
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[%s] Set AudioComponent.Sound: %s -> %s on %s."),
+			LogPrefix,
+			PreviousSound ? *PreviousSound->GetPathName() : TEXT("None"),
+			Sound ? *Sound->GetPathName() : TEXT("None"),
+			*AudioComponent->GetPathName());
+		return true;
+	}
+
+	FString TMGetCallFunctionName(const UEdGraphNode* Node)
+	{
+		const UK2Node_CallFunction* CallFunctionNode = Cast<UK2Node_CallFunction>(Node);
+		return CallFunctionNode ? CallFunctionNode->FunctionReference.GetMemberName().ToString() : FString();
+	}
+
+	FString TMGetVariableReferenceName(const UEdGraphNode* Node)
+	{
+		if (const UK2Node_VariableGet* VariableGetNode = Cast<UK2Node_VariableGet>(Node))
+		{
+			return VariableGetNode->VariableReference.GetMemberName().ToString();
+		}
+		if (const UK2Node_VariableSet* VariableSetNode = Cast<UK2Node_VariableSet>(Node))
+		{
+			return VariableSetNode->VariableReference.GetMemberName().ToString();
+		}
+		return FString();
+	}
+
+	bool TMIsMenuSoundDumpNode(const UEdGraphNode* Node)
+	{
+		if (!Node)
+		{
+			return false;
+		}
+
+		const FString NodeText = Node->GetName()
+			+ TEXT(" ") + Node->GetClass()->GetName()
+			+ TEXT(" ") + Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString()
+			+ TEXT(" ") + Node->NodeComment
+			+ TEXT(" ") + TMGetCallFunctionName(Node)
+			+ TEXT(" ") + TMGetVariableReferenceName(Node);
+
+		static const TCHAR* Needles[] =
+		{
+			TEXT("Sound"),
+			TEXT("Audio"),
+			TEXT("Soundtrack"),
+			TEXT("SpawnSound2D"),
+			TEXT("CreateSound2D"),
+			TEXT("PlaySound2D"),
+			TEXT("AnalyzeAudioComponent"),
+			TEXT("MoveToMainMenu"),
+			TEXT("Construct"),
+			TEXT("LowPass"),
+			TEXT("VolumeMultiplier"),
+			TEXT("OutsideVolume"),
+			TEXT("IfThenElse"),
+			TEXT("Is Valid")
+		};
+
+		for (const TCHAR* Needle : Needles)
+		{
+			if (NodeText.Contains(Needle, ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			const UObject* DefaultObject = Pin ? Pin->DefaultObject : nullptr;
+			const FString PinText = Pin
+				? Pin->PinName.ToString()
+					+ TEXT(" ") + Pin->DefaultValue
+					+ TEXT(" ") + Pin->AutogeneratedDefaultValue
+					+ TEXT(" ") + GetNameSafe(DefaultObject)
+				: FString();
+			for (const TCHAR* Needle : Needles)
+			{
+				if (PinText.Contains(Needle, ESearchCase::IgnoreCase))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	void TMDumpMenuSoundNode(const UBlueprint* Blueprint, const UEdGraph* Graph, const UEdGraphNode* Node)
+	{
+		if (!Blueprint || !Graph || !Node)
+		{
+			return;
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMenuSoundGraphDump] BP=%s Graph=%s Node=%s Class=%s Title={%s} Function=%s Variable=%s Pins=%d"),
+			*Blueprint->GetPathName(),
+			*Graph->GetName(),
+			*Node->GetName(),
+			*Node->GetClass()->GetName(),
+			*Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString(),
+			*TMGetCallFunctionName(Node),
+			*TMGetVariableReferenceName(Node),
+			Node->Pins.Num());
+
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin)
+			{
+				continue;
+			}
+
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMMenuSoundGraphDump]   Pin=%s Dir=%s Cat=%s Obj=%s Default={%s} Auto={%s} Links=%s"),
+				*Pin->PinName.ToString(),
+				Pin->Direction == EGPD_Input ? TEXT("In") : TEXT("Out"),
+				*Pin->PinType.PinCategory.ToString(),
+				*GetNameSafe(Pin->DefaultObject),
+				*Pin->DefaultValue,
+				*Pin->AutogeneratedDefaultValue,
+				*TMDescribePinLinks(Pin));
+		}
+	}
+
+	bool TMDumpMenuSoundGraph()
+	{
+		const TCHAR* WidgetBlueprintPaths[] =
+		{
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Intro.W_Intro"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu")
+		};
+
+		bool bSuccess = true;
+		for (const TCHAR* BlueprintPath : WidgetBlueprintPaths)
+		{
+			UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+			if (!Blueprint)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundGraphDump] Failed to load widget blueprint: %s"), BlueprintPath);
+				bSuccess = false;
+				continue;
+			}
+
+			TArray<UEdGraph*> Graphs;
+			Blueprint->GetAllGraphs(Graphs);
+			UE_LOG(LogTemp, Display, TEXT("[TMMenuSoundGraphDump] BP=%s Graphs=%d"), *Blueprint->GetPathName(), Graphs.Num());
+			for (const UEdGraph* Graph : Graphs)
+			{
+				if (!Graph)
+				{
+					continue;
+				}
+
+				for (const UEdGraphNode* Node : Graph->Nodes)
+				{
+					if (TMIsMenuSoundDumpNode(Node))
+					{
+						TMDumpMenuSoundNode(Blueprint, Graph, Node);
+					}
+				}
+			}
+		}
+
+		return bSuccess;
+	}
+
+	bool TMDumpIntroMainFlow()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Intro.W_Intro"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMIntroMainFlowDump] Failed to load W_Intro."));
+			return false;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+		for (const UEdGraph* Graph : Graphs)
+		{
+			if (!Graph
+				|| (!Graph->GetName().Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase)
+					&& !Graph->GetName().Equals(TEXT("MoveToMainMenu"), ESearchCase::IgnoreCase)))
+			{
+				continue;
+			}
+
+			UE_LOG(LogTemp, Display, TEXT("[TMIntroMainFlowDump] Graph=%s Nodes=%d"), *Graph->GetName(), Graph->Nodes.Num());
+			for (const UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (!Node)
+				{
+					continue;
+				}
+
+				bool bHasExecPin = false;
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					bHasExecPin |= TMIsExecPin(Pin);
+				}
+
+				const FString NodeText = Node->GetName()
+					+ TEXT(" ") + Node->GetClass()->GetName()
+					+ TEXT(" ") + Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString()
+					+ TEXT(" ") + TMGetCallFunctionName(Node)
+					+ TEXT(" ") + TMGetVariableReferenceName(Node);
+				const bool bRelevantDataNode =
+					NodeText.Contains(TEXT("MainMenu"), ESearchCase::IgnoreCase)
+					|| NodeText.Contains(TEXT("Soundtrack"), ESearchCase::IgnoreCase)
+					|| NodeText.Contains(TEXT("SpawnSound"), ESearchCase::IgnoreCase)
+					|| NodeText.Contains(TEXT("Create"), ESearchCase::IgnoreCase);
+				if (!bHasExecPin && !bRelevantDataNode)
+				{
+					continue;
+				}
+
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMIntroMainFlowDump] Node=%s Class=%s Title={%s} Function=%s Variable=%s"),
+					*Node->GetName(),
+					*Node->GetClass()->GetName(),
+					*Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString(),
+					*TMGetCallFunctionName(Node),
+					*TMGetVariableReferenceName(Node));
+
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					if (!Pin)
+					{
+						continue;
+					}
+
+					const bool bShouldDumpPin = TMIsExecPin(Pin)
+						|| Pin->LinkedTo.Num() > 0
+						|| Pin->DefaultObject
+						|| Pin->PinName.ToString().Contains(TEXT("Sound"), ESearchCase::IgnoreCase)
+						|| Pin->PinName.ToString().Contains(TEXT("Class"), ESearchCase::IgnoreCase);
+					if (!bShouldDumpPin)
+					{
+						continue;
+					}
+
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMIntroMainFlowDump]   Pin=%s Dir=%s Cat=%s Obj=%s Default={%s} Auto={%s} Links=%s"),
+						*Pin->PinName.ToString(),
+						Pin->Direction == EGPD_Input ? TEXT("In") : TEXT("Out"),
+						*Pin->PinType.PinCategory.ToString(),
+						*GetNameSafe(Pin->DefaultObject),
+						*Pin->DefaultValue,
+						*Pin->AutogeneratedDefaultValue,
+						*TMDescribePinLinks(Pin));
+				}
+			}
+		}
+
+		return true;
+	}
+
+	struct FTMSpawnSound2DSettings
+	{
+		USoundBase* Sound = nullptr;
+		UObject* ConcurrencySettings = nullptr;
+		FString VolumeMultiplier = TEXT("1.000000");
+		FString PitchMultiplier = TEXT("1.000000");
+		FString StartTime = TEXT("0.000000");
+		FString bPersistAcrossLevelTransition = TEXT("false");
+		FString bAutoDestroy = TEXT("true");
+	};
+
+	bool TMIsSpawnSound2DNode(const UEdGraphNode* Node)
+	{
+		const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+		return CallNode
+			&& CallNode->FunctionReference.GetMemberName()
+				== GET_FUNCTION_NAME_CHECKED(UGameplayStatics, SpawnSound2D);
+	}
+
+	bool TMSpawnSound2DUsesSound(const UK2Node_CallFunction* SpawnNode, const UObject* Sound)
+	{
+		const UEdGraphPin* SoundPin = TMFindPinByName(
+			const_cast<UK2Node_CallFunction*>(SpawnNode),
+			TEXT("Sound"),
+			EGPD_Input);
+		return SoundPin && SoundPin->DefaultObject == Sound;
+	}
+
+	FString TMGetPinDefaultOrAuto(const UEdGraphPin* Pin, const TCHAR* Fallback)
+	{
+		if (!Pin)
+		{
+			return Fallback;
+		}
+
+		if (!Pin->DefaultValue.IsEmpty())
+		{
+			return Pin->DefaultValue;
+		}
+
+		if (!Pin->AutogeneratedDefaultValue.IsEmpty())
+		{
+			return Pin->AutogeneratedDefaultValue;
+		}
+
+		return Fallback;
+	}
+
+	UObject* TMResolveObjectInputPinDefault(const UBlueprint* Blueprint, const UEdGraphPin* Pin)
+	{
+		if (!Pin)
+		{
+			return nullptr;
+		}
+
+		if (Pin->DefaultObject)
+		{
+			return Pin->DefaultObject;
+		}
+
+		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+			const UK2Node_VariableGet* VariableGetNode = Cast<UK2Node_VariableGet>(LinkedNode);
+			const FName VariableName = VariableGetNode
+				? VariableGetNode->VariableReference.GetMemberName()
+				: NAME_None;
+			if (VariableName.IsNone())
+			{
+				continue;
+			}
+
+			UObject* DefaultObject = Blueprint && Blueprint->GeneratedClass
+				? Blueprint->GeneratedClass->GetDefaultObject()
+				: nullptr;
+			const FObjectPropertyBase* ObjectProperty = DefaultObject
+				? FindFProperty<FObjectPropertyBase>(DefaultObject->GetClass(), VariableName)
+				: nullptr;
+			if (ObjectProperty)
+			{
+				return ObjectProperty->GetObjectPropertyValue_InContainer(DefaultObject);
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool TMExtractSpawnSound2DSettings(
+		const UBlueprint* Blueprint,
+		UK2Node_CallFunction* SpawnNode,
+		FTMSpawnSound2DSettings& OutSettings)
+	{
+		if (!SpawnNode || !TMIsSpawnSound2DNode(SpawnNode))
+		{
+			return false;
+		}
+
+		UEdGraphPin* SoundPin = TMFindPinByName(SpawnNode, TEXT("Sound"), EGPD_Input);
+		OutSettings.Sound = Cast<USoundBase>(SoundPin ? SoundPin->DefaultObject : nullptr);
+		OutSettings.VolumeMultiplier = TMGetPinDefaultOrAuto(
+			TMFindPinByName(SpawnNode, TEXT("VolumeMultiplier"), EGPD_Input),
+			TEXT("1.000000"));
+		OutSettings.PitchMultiplier = TMGetPinDefaultOrAuto(
+			TMFindPinByName(SpawnNode, TEXT("PitchMultiplier"), EGPD_Input),
+			TEXT("1.000000"));
+		OutSettings.StartTime = TMGetPinDefaultOrAuto(
+			TMFindPinByName(SpawnNode, TEXT("StartTime"), EGPD_Input),
+			TEXT("0.000000"));
+		OutSettings.ConcurrencySettings = TMResolveObjectInputPinDefault(
+			Blueprint,
+			TMFindPinByName(SpawnNode, TEXT("ConcurrencySettings"), EGPD_Input));
+		OutSettings.bPersistAcrossLevelTransition = TMGetPinDefaultOrAuto(
+			TMFindPinByName(SpawnNode, TEXT("bPersistAcrossLevelTransition"), EGPD_Input),
+			TEXT("false"));
+		OutSettings.bAutoDestroy = TMGetPinDefaultOrAuto(
+			TMFindPinByName(SpawnNode, TEXT("bAutoDestroy"), EGPD_Input),
+			TEXT("true"));
+
+		return OutSettings.Sound != nullptr;
+	}
+
+	UK2Node_CallFunction* TMFindSpawnSound2DForSound(UEdGraph* Graph, const UObject* Sound)
+	{
+		if (!Graph || !Sound)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			UK2Node_CallFunction* SpawnNode = Cast<UK2Node_CallFunction>(Node);
+			if (SpawnNode && TMIsSpawnSound2DNode(SpawnNode) && TMSpawnSound2DUsesSound(SpawnNode, Sound))
+			{
+				return SpawnNode;
+			}
+		}
+
+		return nullptr;
+	}
+
+	UK2Node_VariableSet* TMFindSetSoundtrackAfterSpawn(UK2Node_CallFunction* SpawnNode)
+	{
+		UEdGraphPin* SpawnThenPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		if (!SpawnThenPin)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphPin* LinkedPin : SpawnThenPin->LinkedTo)
+		{
+			UK2Node_VariableSet* CandidateNode = Cast<UK2Node_VariableSet>(
+				LinkedPin ? LinkedPin->GetOwningNode() : nullptr);
+			if (CandidateNode
+				&& CandidateNode->VariableReference.GetMemberName() == TEXT("Soundtrack"))
+			{
+				return CandidateNode;
+			}
+		}
+
+		return nullptr;
+	}
+
+	UK2Node_CallFunction* TMFindMainMenuSoundtrackStartSpawn(UEdGraph* Graph, const UObject* Sound)
+	{
+		if (!Graph || !Sound)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			UK2Node_CallFunction* SpawnNode = Cast<UK2Node_CallFunction>(Node);
+			if (!SpawnNode || !TMIsSpawnSound2DNode(SpawnNode))
+			{
+				continue;
+			}
+
+			const bool bMatchesSoundtrack =
+				SpawnNode->NodeComment == TMMainMenuSoundtrackPatchComment
+				|| TMSpawnSound2DUsesSound(SpawnNode, Sound);
+			if (bMatchesSoundtrack && TMFindSetSoundtrackAfterSpawn(SpawnNode))
+			{
+				return SpawnNode;
+			}
+		}
+
+		return nullptr;
+	}
+
+	UEdGraphNode* TMFindWidgetEventConstructNode(UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+			if (!EventNode)
+			{
+				continue;
+			}
+
+			const FString Title = Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+			const FString EventName = EventNode->EventReference.GetMemberName().ToString();
+			if (Title.Equals(TEXT("Event Construct"), ESearchCase::IgnoreCase)
+				|| EventName.Equals(TEXT("Construct"), ESearchCase::IgnoreCase))
+			{
+				return Node;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool TMExecPinHasLinkToNode(const UEdGraphPin* SourcePin, const UEdGraphNode* TargetNode)
+	{
+		if (!SourcePin || !TargetNode)
+		{
+			return false;
+		}
+
+		for (const UEdGraphPin* LinkedPin : SourcePin->LinkedTo)
+		{
+			if (LinkedPin && LinkedPin->GetOwningNode() == TargetNode)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMMainMenuAlreadyStartsSoundtrack(UEdGraph* EventGraph, const UObject* Sound)
+	{
+		return TMFindMainMenuSoundtrackStartSpawn(EventGraph, Sound) != nullptr;
+	}
+
+	bool TMSetSpawnSound2DPinDefaults(UK2Node_CallFunction* SpawnNode, const FTMSpawnSound2DSettings& Settings)
+	{
+		if (!SpawnNode)
+		{
+			return false;
+		}
+
+		bool bSuccess = true;
+		if (UEdGraphPin* SoundPin = TMFindPinByName(SpawnNode, TEXT("Sound"), EGPD_Input))
+		{
+			TMSetGraphObjectPinDefault(SoundPin, Settings.Sound);
+		}
+		else
+		{
+			bSuccess = false;
+		}
+
+		TMSetLinkedPinDefault(
+			TMFindPinByName(SpawnNode, TEXT("VolumeMultiplier"), EGPD_Input),
+			Settings.VolumeMultiplier);
+		TMSetLinkedPinDefault(
+			TMFindPinByName(SpawnNode, TEXT("PitchMultiplier"), EGPD_Input),
+			Settings.PitchMultiplier);
+		TMSetLinkedPinDefault(
+			TMFindPinByName(SpawnNode, TEXT("StartTime"), EGPD_Input),
+			Settings.StartTime);
+		if (Settings.ConcurrencySettings)
+		{
+			TMSetGraphObjectPinDefault(
+				TMFindPinByName(SpawnNode, TEXT("ConcurrencySettings"), EGPD_Input),
+				Settings.ConcurrencySettings);
+		}
+		TMSetLinkedPinDefault(
+			TMFindPinByName(SpawnNode, TEXT("bPersistAcrossLevelTransition"), EGPD_Input),
+			Settings.bPersistAcrossLevelTransition);
+		TMSetLinkedPinDefault(
+			TMFindPinByName(SpawnNode, TEXT("bAutoDestroy"), EGPD_Input),
+			Settings.bAutoDestroy);
+
+		return bSuccess;
+	}
+
+	bool TMPatchIntroSoundtrackExecBypass(
+		UBlueprint* Blueprint,
+		const UObject* Sound,
+		FTMSpawnSound2DSettings& OutSettings,
+		bool& bChanged)
+	{
+		UEdGraph* EventGraph = TMFindGraphByName(Blueprint, TEXT("EventGraph"));
+		UK2Node_CallFunction* SpawnNode = TMFindSpawnSound2DForSound(EventGraph, Sound);
+		if (!Blueprint || !EventGraph || !SpawnNode)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackMove] Failed to find W_Intro MainCulto SpawnSound2D."));
+			return false;
+		}
+
+		if (!TMExtractSpawnSound2DSettings(Blueprint, SpawnNode, OutSettings))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackMove] Failed to extract W_Intro SpawnSound2D settings."));
+			return false;
+		}
+
+		UEdGraphPin* SpawnExecPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* SpawnThenPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UK2Node_VariableSet* SetSoundtrackNode = nullptr;
+		for (UEdGraphPin* LinkedPin : SpawnThenPin ? SpawnThenPin->LinkedTo : TArray<UEdGraphPin*>())
+		{
+			UK2Node_VariableSet* CandidateNode = Cast<UK2Node_VariableSet>(
+				LinkedPin ? LinkedPin->GetOwningNode() : nullptr);
+			if (CandidateNode
+				&& CandidateNode->VariableReference.GetMemberName() == TEXT("Soundtrack"))
+			{
+				SetSoundtrackNode = CandidateNode;
+				break;
+			}
+		}
+
+		UEdGraphPin* SetThenPin = TMFindPinByName(SetSoundtrackNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		if (!SpawnExecPin || !SetSoundtrackNode || !SetThenPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMenuSoundtrackMove] Incomplete W_Intro soundtrack chain. SpawnExec=%d SetNode=%d SetThen=%d"),
+				SpawnExecPin ? 1 : 0,
+				SetSoundtrackNode ? 1 : 0,
+				SetThenPin ? 1 : 0);
+			return false;
+		}
+
+		TArray<UEdGraphPin*> PreviousExecPins = SpawnExecPin->LinkedTo;
+		TArray<UEdGraphPin*> NextExecPins = SetThenPin->LinkedTo;
+		if (PreviousExecPins.IsEmpty())
+		{
+			UE_LOG(LogTemp, Display, TEXT("[TMMenuSoundtrackMove] W_Intro SpawnSound2D already has no exec input."));
+			return true;
+		}
+
+		const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(EventGraph->GetSchema());
+		if (!Schema || NextExecPins.IsEmpty())
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMenuSoundtrackMove] Cannot bypass W_Intro soundtrack chain. Schema=%d NextExecPins=%d"),
+				Schema ? 1 : 0,
+				NextExecPins.Num());
+			return false;
+		}
+
+		EventGraph->Modify();
+		for (UEdGraphPin* PreviousExecPin : PreviousExecPins)
+		{
+			if (!PreviousExecPin)
+			{
+				continue;
+			}
+
+			PreviousExecPin->Modify();
+			PreviousExecPin->BreakLinkTo(SpawnExecPin);
+			for (UEdGraphPin* NextExecPin : NextExecPins)
+			{
+				if (NextExecPin && !PreviousExecPin->LinkedTo.Contains(NextExecPin))
+				{
+					Schema->TryCreateConnection(PreviousExecPin, NextExecPin);
+				}
+			}
+		}
+
+		bChanged = true;
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMenuSoundtrackMove] Bypassed W_Intro SpawnSound2D. PreviousExecPins=%d NextExecPins=%d Sound=%s Volume=%s Pitch=%s StartTime=%s Concurrency=%s Persist=%s AutoDestroy=%s"),
+			PreviousExecPins.Num(),
+			NextExecPins.Num(),
+			*GetPathNameSafe(OutSettings.Sound),
+			*OutSettings.VolumeMultiplier,
+			*OutSettings.PitchMultiplier,
+			*OutSettings.StartTime,
+			*GetPathNameSafe(OutSettings.ConcurrencySettings),
+			*OutSettings.bPersistAcrossLevelTransition,
+			*OutSettings.bAutoDestroy);
+		return true;
+	}
+
+	bool TMPatchMainMenuSoundtrackStart(
+		UBlueprint* Blueprint,
+		const FTMSpawnSound2DSettings& Settings,
+		bool& bChanged)
+	{
+		UEdGraph* EventGraph = TMFindGraphByName(Blueprint, TEXT("EventGraph"));
+		UEdGraphNode* EventConstructNode = TMFindWidgetEventConstructNode(EventGraph);
+		UEdGraphPin* EventThenPin = TMFindPinByName(EventConstructNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		const UEdGraphSchema_K2* Schema = EventGraph ? Cast<UEdGraphSchema_K2>(EventGraph->GetSchema()) : nullptr;
+		if (!Blueprint || !EventGraph || !EventConstructNode || !EventThenPin || !Schema || !Settings.Sound)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMenuSoundtrackMove] Cannot patch W_MainMenu soundtrack start. EventGraph=%d EventConstruct=%d EventThen=%d Schema=%d Sound=%d"),
+				EventGraph ? 1 : 0,
+				EventConstructNode ? 1 : 0,
+				EventThenPin ? 1 : 0,
+				Schema ? 1 : 0,
+				Settings.Sound ? 1 : 0);
+			return false;
+		}
+
+		if (TMMainMenuAlreadyStartsSoundtrack(EventGraph, Settings.Sound))
+		{
+			UE_LOG(LogTemp, Display, TEXT("[TMMenuSoundtrackMove] W_MainMenu Event Construct already starts MainCulto."));
+			return true;
+		}
+
+		TArray<UEdGraphPin*> PreviousThenTargets = EventThenPin->LinkedTo;
+		EventGraph->Modify();
+
+		UFunction* SpawnSound2DFunction = UGameplayStatics::StaticClass()->FindFunctionByName(
+			GET_FUNCTION_NAME_CHECKED(UGameplayStatics, SpawnSound2D));
+		if (!SpawnSound2DFunction)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackMove] SpawnSound2D function was not found."));
+			return false;
+		}
+
+		FGraphNodeCreator<UK2Node_CallFunction> SpawnCreator(*EventGraph);
+		UK2Node_CallFunction* SpawnNode = SpawnCreator.CreateNode();
+		SpawnNode->SetFromFunction(SpawnSound2DFunction);
+		SpawnNode->NodePosX = EventConstructNode->NodePosX + 320;
+		SpawnNode->NodePosY = EventConstructNode->NodePosY - 80;
+		SpawnNode->NodeComment = TMMainMenuSoundtrackPatchComment;
+		SpawnCreator.Finalize();
+		SpawnNode->ReconstructNode();
+
+		FGraphNodeCreator<UK2Node_VariableSet> SetCreator(*EventGraph);
+		UK2Node_VariableSet* SetSoundtrackNode = SetCreator.CreateNode();
+		SetSoundtrackNode->VariableReference.SetSelfMember(TEXT("Soundtrack"));
+		SetSoundtrackNode->NodePosX = SpawnNode->NodePosX + 360;
+		SetSoundtrackNode->NodePosY = SpawnNode->NodePosY;
+		SetSoundtrackNode->NodeComment = TMMainMenuSoundtrackPatchComment;
+		SetCreator.Finalize();
+		SetSoundtrackNode->ReconstructNode();
+
+		if (!TMSetSpawnSound2DPinDefaults(SpawnNode, Settings))
+		{
+			EventGraph->RemoveNode(SpawnNode);
+			EventGraph->RemoveNode(SetSoundtrackNode);
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackMove] Failed to set W_MainMenu SpawnSound2D pin defaults."));
+			return false;
+		}
+
+		UEdGraphPin* SpawnExecPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* SpawnThenPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* SpawnReturnPin = TMFindPinByName(SpawnNode, TEXT("ReturnValue"), EGPD_Output);
+		UEdGraphPin* SetExecPin = TMFindPinByName(SetSoundtrackNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* SetThenPin = TMFindPinByName(SetSoundtrackNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* SetValuePin = TMFindPinByName(SetSoundtrackNode, TEXT("Soundtrack"), EGPD_Input);
+		if (!SpawnExecPin || !SpawnThenPin || !SpawnReturnPin || !SetExecPin || !SetThenPin || !SetValuePin)
+		{
+			EventGraph->RemoveNode(SpawnNode);
+			EventGraph->RemoveNode(SetSoundtrackNode);
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMenuSoundtrackMove] Failed to find W_MainMenu soundtrack pins. SpawnExec=%d SpawnThen=%d Return=%d SetExec=%d SetThen=%d SetValue=%d"),
+				SpawnExecPin ? 1 : 0,
+				SpawnThenPin ? 1 : 0,
+				SpawnReturnPin ? 1 : 0,
+				SetExecPin ? 1 : 0,
+				SetThenPin ? 1 : 0,
+				SetValuePin ? 1 : 0);
+			return false;
+		}
+
+		EventThenPin->Modify();
+		EventThenPin->BreakAllPinLinks(false);
+
+		bool bConnected = true;
+		bConnected &= Schema->TryCreateConnection(EventThenPin, SpawnExecPin);
+		bConnected &= Schema->TryCreateConnection(SpawnThenPin, SetExecPin);
+		bConnected &= Schema->TryCreateConnection(SpawnReturnPin, SetValuePin);
+		for (UEdGraphPin* PreviousThenTarget : PreviousThenTargets)
+		{
+			if (PreviousThenTarget)
+			{
+				bConnected &= Schema->TryCreateConnection(SetThenPin, PreviousThenTarget);
+			}
+		}
+
+		if (!bConnected)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackMove] Failed to connect the W_MainMenu soundtrack chain."));
+			return false;
+		}
+
+		bChanged = true;
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMenuSoundtrackMove] Inserted W_MainMenu SpawnSound2D before existing Event Construct chain. OldThenTargets=%d Sound=%s Volume=%s Pitch=%s StartTime=%s Concurrency=%s Persist=%s AutoDestroy=%s"),
+			PreviousThenTargets.Num(),
+			*GetPathNameSafe(Settings.Sound),
+			*Settings.VolumeMultiplier,
+			*Settings.PitchMultiplier,
+			*Settings.StartTime,
+			*GetPathNameSafe(Settings.ConcurrencySettings),
+			*Settings.bPersistAcrossLevelTransition,
+			*Settings.bAutoDestroy);
+		return true;
+	}
+
+	bool TMMainMenuSoundtrackStartAlreadyGuarded(
+		UEdGraph* EventGraph,
+		UK2Node_CallFunction* SpawnNode)
+	{
+		UEdGraphNode* EventConstructNode = TMFindWidgetEventConstructNode(EventGraph);
+		UEdGraphPin* EventThenPin = TMFindPinByName(EventConstructNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* SpawnExecPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		if (!EventThenPin || !SpawnExecPin)
+		{
+			return false;
+		}
+
+		for (const UEdGraphPin* LinkedPin : SpawnExecPin->LinkedTo)
+		{
+			const UK2Node_IfThenElse* BranchNode = Cast<UK2Node_IfThenElse>(
+				LinkedPin ? LinkedPin->GetOwningNode() : nullptr);
+			if (!BranchNode)
+			{
+				continue;
+			}
+
+			const UEdGraphPin* BranchExecPin = TMFindPinByName(
+				const_cast<UK2Node_IfThenElse*>(BranchNode),
+				UEdGraphSchema_K2::PN_Execute,
+				EGPD_Input);
+			if (BranchNode->NodeComment.Contains(TEXT("TM: guard MainCulto"), ESearchCase::IgnoreCase)
+				&& BranchExecPin
+				&& BranchExecPin->LinkedTo.Contains(EventThenPin))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMPatchMainMenuSoundtrackConstructGuard(
+		UBlueprint* Blueprint,
+		const UObject* Sound,
+		bool& bChanged)
+	{
+		UEdGraph* EventGraph = TMFindGraphByName(Blueprint, TEXT("EventGraph"));
+		UEdGraphNode* EventConstructNode = TMFindWidgetEventConstructNode(EventGraph);
+		UEdGraphPin* EventThenPin = TMFindPinByName(EventConstructNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		const UEdGraphSchema_K2* Schema = EventGraph ? Cast<UEdGraphSchema_K2>(EventGraph->GetSchema()) : nullptr;
+		UK2Node_CallFunction* SpawnNode = TMFindMainMenuSoundtrackStartSpawn(EventGraph, Sound);
+		UK2Node_VariableSet* SetSoundtrackNode = TMFindSetSoundtrackAfterSpawn(SpawnNode);
+		if (!Blueprint || !EventGraph || !EventConstructNode || !EventThenPin || !Schema || !SpawnNode || !SetSoundtrackNode)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMenuSoundtrackMove] Cannot guard W_MainMenu soundtrack start. EventGraph=%d EventConstruct=%d EventThen=%d Schema=%d Spawn=%d SetSoundtrack=%d"),
+				EventGraph ? 1 : 0,
+				EventConstructNode ? 1 : 0,
+				EventThenPin ? 1 : 0,
+				Schema ? 1 : 0,
+				SpawnNode ? 1 : 0,
+				SetSoundtrackNode ? 1 : 0);
+			return false;
+		}
+
+		if (TMMainMenuSoundtrackStartAlreadyGuarded(EventGraph, SpawnNode))
+		{
+			UE_LOG(LogTemp, Display, TEXT("[TMMenuSoundtrackMove] W_MainMenu soundtrack start already has Construct guard."));
+			return true;
+		}
+
+		UEdGraphPin* SpawnExecPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* SetThenPin = TMFindPinByName(SetSoundtrackNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		if (!SpawnExecPin || !SetThenPin || SetThenPin->LinkedTo.IsEmpty())
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMenuSoundtrackMove] Incomplete W_MainMenu soundtrack start for guard. SpawnExec=%d SetThen=%d SetThenTargets=%d"),
+				SpawnExecPin ? 1 : 0,
+				SetThenPin ? 1 : 0,
+				SetThenPin ? SetThenPin->LinkedTo.Num() : 0);
+			return false;
+		}
+
+		UFunction* IsValidFunction = UKismetSystemLibrary::StaticClass()->FindFunctionByName(
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, IsValid));
+		if (!IsValidFunction)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackMove] UKismetSystemLibrary::IsValid was not found."));
+			return false;
+		}
+
+		const TArray<UEdGraphPin*> PreviousSetThenTargets = SetThenPin->LinkedTo;
+		EventGraph->Modify();
+
+		FGraphNodeCreator<UK2Node_IfThenElse> BranchCreator(*EventGraph);
+		UK2Node_IfThenElse* BranchNode = BranchCreator.CreateNode();
+		BranchNode->NodePosX = EventConstructNode->NodePosX + 280;
+		BranchNode->NodePosY = EventConstructNode->NodePosY - 120;
+		BranchNode->NodeComment = TEXT("TM: guard MainCulto against repeated Construct");
+		BranchCreator.Finalize();
+		BranchNode->ReconstructNode();
+
+		FGraphNodeCreator<UK2Node_VariableGet> GetCreator(*EventGraph);
+		UK2Node_VariableGet* GetSoundtrackNode = GetCreator.CreateNode();
+		GetSoundtrackNode->VariableReference.SetSelfMember(TEXT("Soundtrack"));
+		GetSoundtrackNode->NodePosX = BranchNode->NodePosX - 260;
+		GetSoundtrackNode->NodePosY = BranchNode->NodePosY + 160;
+		GetSoundtrackNode->NodeComment = TEXT("TM: guard MainCulto against repeated Construct");
+		GetCreator.Finalize();
+		GetSoundtrackNode->ReconstructNode();
+
+		FGraphNodeCreator<UK2Node_CallFunction> IsValidCreator(*EventGraph);
+		UK2Node_CallFunction* IsValidNode = IsValidCreator.CreateNode();
+		IsValidNode->SetFromFunction(IsValidFunction);
+		IsValidNode->NodePosX = BranchNode->NodePosX;
+		IsValidNode->NodePosY = BranchNode->NodePosY + 170;
+		IsValidNode->NodeComment = TEXT("TM: guard MainCulto against repeated Construct");
+		IsValidCreator.Finalize();
+		IsValidNode->ReconstructNode();
+
+		UEdGraphPin* BranchExecPin = TMFindPinByName(BranchNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* BranchThenPin = TMFindPinByName(BranchNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* BranchElsePin = TMFindPinByName(BranchNode, UEdGraphSchema_K2::PN_Else, EGPD_Output);
+		UEdGraphPin* BranchConditionPin = TMFindPinByName(BranchNode, TEXT("Condition"), EGPD_Input);
+		UEdGraphPin* GetSoundtrackOutputPin = TMFindPinByName(GetSoundtrackNode, TEXT("Soundtrack"), EGPD_Output);
+		UEdGraphPin* IsValidObjectPin = TMFindPinByName(IsValidNode, TEXT("Object"), EGPD_Input);
+		UEdGraphPin* IsValidReturnPin = TMFindPinByName(IsValidNode, UEdGraphSchema_K2::PN_ReturnValue, EGPD_Output);
+		if (!BranchExecPin || !BranchThenPin || !BranchElsePin || !BranchConditionPin
+			|| !GetSoundtrackOutputPin || !IsValidObjectPin || !IsValidReturnPin)
+		{
+			EventGraph->RemoveNode(BranchNode);
+			EventGraph->RemoveNode(GetSoundtrackNode);
+			EventGraph->RemoveNode(IsValidNode);
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMenuSoundtrackMove] Failed to find guard pins. BranchExec=%d Then=%d Else=%d Condition=%d Get=%d IsValidObject=%d IsValidReturn=%d"),
+				BranchExecPin ? 1 : 0,
+				BranchThenPin ? 1 : 0,
+				BranchElsePin ? 1 : 0,
+				BranchConditionPin ? 1 : 0,
+				GetSoundtrackOutputPin ? 1 : 0,
+				IsValidObjectPin ? 1 : 0,
+				IsValidReturnPin ? 1 : 0);
+			return false;
+		}
+
+		SpawnExecPin->Modify();
+		SpawnExecPin->BreakAllPinLinks(false);
+
+		bool bConnected = true;
+		bConnected &= Schema->TryCreateConnection(EventThenPin, BranchExecPin);
+		bConnected &= Schema->TryCreateConnection(BranchElsePin, SpawnExecPin);
+		bConnected &= Schema->TryCreateConnection(GetSoundtrackOutputPin, IsValidObjectPin);
+		bConnected &= Schema->TryCreateConnection(IsValidReturnPin, BranchConditionPin);
+		for (UEdGraphPin* PreviousSetThenTarget : PreviousSetThenTargets)
+		{
+			if (PreviousSetThenTarget)
+			{
+				bConnected &= Schema->TryCreateConnection(BranchThenPin, PreviousSetThenTarget);
+			}
+		}
+
+		if (!bConnected)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackMove] Failed to connect W_MainMenu soundtrack Construct guard."));
+			return false;
+		}
+
+		bChanged = true;
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMenuSoundtrackMove] Guarded W_MainMenu MainCulto start against repeated Construct. ValidPathTargets=%d"),
+			PreviousSetThenTargets.Num());
+		return true;
+	}
+
+	bool TMCompileAndSaveBlueprintIfChanged(UBlueprint* Blueprint, const bool bChanged, const TCHAR* LogPrefix)
+	{
+		if (!Blueprint || !bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Blueprint compile failed: %s"), LogPrefix, *GetPathNameSafe(Blueprint));
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, LogPrefix);
+	}
+
+	bool TMPatchMenuSoundtrackStartToMain()
+	{
+		USoundBase* MainMenuSoundtrack = LoadObject<USoundBase>(nullptr, TMMainMenuSoundtrackPath);
+		if (!MainMenuSoundtrack)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackMove] Missing main menu soundtrack: %s"), TMMainMenuSoundtrackPath);
+			return false;
+		}
+
+		UBlueprint* IntroBlueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Intro.W_Intro"));
+		UBlueprint* MainMenuBlueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu"));
+		if (!IntroBlueprint || !MainMenuBlueprint)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMMenuSoundtrackMove] Failed to load widgets. W_Intro=%d W_MainMenu=%d"),
+				IntroBlueprint ? 1 : 0,
+				MainMenuBlueprint ? 1 : 0);
+			return false;
+		}
+
+		FTMSpawnSound2DSettings Settings;
+		bool bIntroChanged = false;
+		bool bMainMenuChanged = false;
+		bool bSuccess = TMPatchIntroSoundtrackExecBypass(
+			IntroBlueprint,
+			MainMenuSoundtrack,
+			Settings,
+			bIntroChanged);
+		bSuccess &= TMPatchMainMenuSoundtrackStart(
+			MainMenuBlueprint,
+			Settings,
+			bMainMenuChanged);
+		bSuccess &= TMPatchMainMenuSoundtrackConstructGuard(
+			MainMenuBlueprint,
+			MainMenuSoundtrack,
+			bMainMenuChanged);
+
+		if (!bSuccess)
+		{
+			return false;
+		}
+
+		bSuccess &= TMCompileAndSaveBlueprintIfChanged(IntroBlueprint, bIntroChanged, TEXT("TMMenuSoundtrackMove"));
+		bSuccess &= TMCompileAndSaveBlueprintIfChanged(MainMenuBlueprint, bMainMenuChanged, TEXT("TMMenuSoundtrackMove"));
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMenuSoundtrackMove] Summary: IntroChanged=%d MainMenuChanged=%d"),
+			bIntroChanged ? 1 : 0,
+			bMainMenuChanged ? 1 : 0);
+		return bSuccess;
+	}
+
+	bool TMPatchWidgetSoundtrackDefault(
+		const TCHAR* BlueprintPath,
+		USoundBase* Soundtrack,
+		const TCHAR* LogPrefix)
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		if (!Blueprint || !Blueprint->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load widget blueprint: %s"), LogPrefix, BlueprintPath);
+			return false;
+		}
+
+		UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+		FObjectPropertyBase* SoundtrackProperty = DefaultObject
+			? FindFProperty<FObjectPropertyBase>(DefaultObject->GetClass(), TEXT("Soundtrack"))
+			: nullptr;
+		if (!SoundtrackProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Missing object property Soundtrack on %s."), LogPrefix, *GetNameSafe(DefaultObject));
+			return false;
+		}
+
+		UObject* CurrentValue = SoundtrackProperty->GetObjectPropertyValue_InContainer(DefaultObject);
+		bool bChanged = false;
+		if (UAudioComponent* SoundtrackComponent = Cast<UAudioComponent>(CurrentValue))
+		{
+			if (!TMSetAudioComponentSoundIfDifferent(SoundtrackComponent, Soundtrack, LogPrefix, bChanged))
+			{
+				return false;
+			}
+		}
+		else if (!TMSetObjectPropertyIfDifferent(DefaultObject, TEXT("Soundtrack"), Soundtrack, LogPrefix, bChanged))
+		{
+			return false;
+		}
+
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Blueprint compile failed: %s"), LogPrefix, *Blueprint->GetPathName());
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, LogPrefix);
+	}
+
+	bool TMPatchGunFeedbackSoundDefault(
+		UBlueprint* Blueprint,
+		USoundBase* WeaponSpawnSound,
+		USoundBase* AttachmentSound,
+		int32& OutChangedBlueprintCount)
+	{
+		if (!Blueprint || !Blueprint->GeneratedClass || !Blueprint->GeneratedClass->IsChildOf(AGun::StaticClass()))
+		{
+			return true;
+		}
+
+		AGun* DefaultGun = Cast<AGun>(Blueprint->GeneratedClass->GetDefaultObject());
+		if (!DefaultGun)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackFeedback] Missing AGun CDO for %s."), *Blueprint->GetPathName());
+			return false;
+		}
+
+		bool bChanged = false;
+		bool bSuccess = true;
+		bSuccess &= TMSetObjectPropertyIfDifferent(
+			DefaultGun,
+			TEXT("WeaponSpawnFeedbackSound"),
+			WeaponSpawnSound,
+			TEXT("TMMenuSoundtrackFeedback"),
+			bChanged);
+		bSuccess &= TMSetObjectPropertyIfDifferent(
+			DefaultGun,
+			TEXT("AttachmentFeedbackSound"),
+			AttachmentSound,
+			TEXT("TMMenuSoundtrackFeedback"),
+			bChanged);
+
+		if (!bSuccess || !bChanged)
+		{
+			return bSuccess;
+		}
+
+		++OutChangedBlueprintCount;
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackFeedback] Blueprint compile failed: %s"), *Blueprint->GetPathName());
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMMenuSoundtrackFeedback"));
+	}
+
+	bool TMPatchGunAttachmentFeedbackFXDefault(
+		UBlueprint* Blueprint,
+		UFXSystemAsset* AttachmentFX,
+		const FVector& AttachmentScale,
+		int32& OutChangedBlueprintCount)
+	{
+		if (!Blueprint || !Blueprint->GeneratedClass || !Blueprint->GeneratedClass->IsChildOf(AGun::StaticClass()))
+		{
+			return true;
+		}
+
+		AGun* DefaultGun = Cast<AGun>(Blueprint->GeneratedClass->GetDefaultObject());
+		if (!DefaultGun)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentFeedbackFX] Missing AGun CDO for %s."), *Blueprint->GetPathName());
+			return false;
+		}
+
+		bool bChanged = false;
+		bool bSuccess = true;
+		bSuccess &= TMSetObjectPropertyIfDifferent(
+			DefaultGun,
+			TEXT("AttachmentFeedbackFX"),
+			AttachmentFX,
+			TEXT("TMAttachmentFeedbackFX"),
+			bChanged);
+		bSuccess &= TMSetVectorPropertyIfDifferent(
+			DefaultGun,
+			TEXT("AttachmentFeedbackScale"),
+			AttachmentScale,
+			TEXT("TMAttachmentFeedbackFX"),
+			bChanged);
+
+		if (!bSuccess || !bChanged)
+		{
+			return bSuccess;
+		}
+
+		++OutChangedBlueprintCount;
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentFeedbackFX] Blueprint compile failed: %s"), *Blueprint->GetPathName());
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMAttachmentFeedbackFX"));
+	}
+
+	bool TMPatchGunFeedbackSoundDefaultByPath(
+		const TCHAR* BlueprintPath,
+		USoundBase* WeaponSpawnSound,
+		USoundBase* AttachmentSound,
+		int32& OutLoadedBlueprintCount,
+		int32& OutGunBlueprintCount,
+		int32& OutChangedBlueprintCount)
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMenuSoundtrackFeedback] Failed to load blueprint: %s"), BlueprintPath);
+			return false;
+		}
+
+		++OutLoadedBlueprintCount;
+		if (Blueprint->GeneratedClass && Blueprint->GeneratedClass->IsChildOf(AGun::StaticClass()))
+		{
+			++OutGunBlueprintCount;
+		}
+
+		return TMPatchGunFeedbackSoundDefault(
+			Blueprint,
+			WeaponSpawnSound,
+			AttachmentSound,
+			OutChangedBlueprintCount);
+	}
+
+	bool TMPatchGunAttachmentFeedbackFXDefaultByPath(
+		const TCHAR* BlueprintPath,
+		UFXSystemAsset* AttachmentFX,
+		const FVector& AttachmentScale,
+		int32& OutLoadedBlueprintCount,
+		int32& OutGunBlueprintCount,
+		int32& OutChangedBlueprintCount)
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentFeedbackFX] Failed to load blueprint: %s"), BlueprintPath);
+			return false;
+		}
+
+		++OutLoadedBlueprintCount;
+		if (Blueprint->GeneratedClass && Blueprint->GeneratedClass->IsChildOf(AGun::StaticClass()))
+		{
+			++OutGunBlueprintCount;
+		}
+
+		return TMPatchGunAttachmentFeedbackFXDefault(
+			Blueprint,
+			AttachmentFX,
+			AttachmentScale,
+			OutChangedBlueprintCount);
+	}
+
+	bool TMPatchMenuSoundtrackOnly()
+	{
+		return TMPatchMenuSoundtrackStartToMain();
+	}
+
+	bool TMPatchAttachmentFeedbackFX()
+	{
+		UFXSystemAsset* AttachmentFX = LoadObject<UFXSystemAsset>(
+			nullptr,
+			TEXT("/Game/Realistic_Starter_VFX_Pack/Particles/Hit/P_Metal.P_Metal"));
+		if (!AttachmentFX)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentFeedbackFX] Failed to load P_Metal."));
+			return false;
+		}
+
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+		AssetRegistry.SearchAllAssets(true);
+
+		FARFilter Filter;
+		Filter.PackagePaths.Add(FName(TEXT("/Game/MP_System_V3/Game/Weapons")));
+		Filter.ClassPaths.Add(FTopLevelAssetPath(FName(TEXT("/Script/Engine")), FName(TEXT("Blueprint"))));
+		Filter.bRecursivePaths = true;
+		Filter.bRecursiveClasses = true;
+
+		TArray<FAssetData> BlueprintAssets;
+		AssetRegistry.GetAssets(Filter, BlueprintAssets);
+		BlueprintAssets.Sort([](const FAssetData& Left, const FAssetData& Right)
+		{
+			return Left.GetSoftObjectPath().ToString() < Right.GetSoftObjectPath().ToString();
+		});
+
+		const FVector AttachmentScale(0.25f);
+		int32 LoadedBlueprintCount = 0;
+		int32 GunBlueprintCount = 0;
+		int32 ChangedGunBlueprintCount = 0;
+		bool bSuccess = true;
+
+		bSuccess &= TMPatchGunAttachmentFeedbackFXDefaultByPath(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Weapon_Master.BP_Weapon_Master"),
+			AttachmentFX,
+			AttachmentScale,
+			LoadedBlueprintCount,
+			GunBlueprintCount,
+			ChangedGunBlueprintCount);
+		bSuccess &= TMPatchGunAttachmentFeedbackFXDefaultByPath(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_InteractionMaster.BP_InteractionMaster"),
+			AttachmentFX,
+			AttachmentScale,
+			LoadedBlueprintCount,
+			GunBlueprintCount,
+			ChangedGunBlueprintCount);
+		bSuccess &= TMPatchGunAttachmentFeedbackFXDefaultByPath(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Magazine_Master.BP_Magazine_Master"),
+			AttachmentFX,
+			AttachmentScale,
+			LoadedBlueprintCount,
+			GunBlueprintCount,
+			ChangedGunBlueprintCount);
+
+		for (const FAssetData& BlueprintAsset : BlueprintAssets)
+		{
+			UBlueprint* Blueprint = Cast<UBlueprint>(BlueprintAsset.GetAsset());
+			if (!Blueprint)
+			{
+				continue;
+			}
+
+			++LoadedBlueprintCount;
+			if (Blueprint->GeneratedClass && Blueprint->GeneratedClass->IsChildOf(AGun::StaticClass()))
+			{
+				++GunBlueprintCount;
+			}
+
+			bSuccess &= TMPatchGunAttachmentFeedbackFXDefault(
+				Blueprint,
+				AttachmentFX,
+				AttachmentScale,
+				ChangedGunBlueprintCount);
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMAttachmentFeedbackFX] Summary: LoadedBlueprints=%d GunBlueprints=%d ChangedGunBlueprints=%d FX=%s Scale=%s Success=%d"),
+			LoadedBlueprintCount,
+			GunBlueprintCount,
+			ChangedGunBlueprintCount,
+			*AttachmentFX->GetPathName(),
+			*AttachmentScale.ToString(),
+			bSuccess ? 1 : 0);
+		return bSuccess;
+	}
+
+	bool TMPatchMenuSoundtrackAndFeedbackSounds()
+	{
+		USoundBase* WeaponSpawnSound = nullptr;
+		USoundBase* AttachmentSound = nullptr;
+
+		bool bSuccess = TMPatchMenuSoundtrackOnly();
+
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+		AssetRegistry.SearchAllAssets(true);
+
+		FARFilter Filter;
+		Filter.PackagePaths.Add(FName(TEXT("/Game/MP_System_V3/Game/Weapons")));
+		Filter.ClassPaths.Add(FTopLevelAssetPath(FName(TEXT("/Script/Engine")), FName(TEXT("Blueprint"))));
+		Filter.bRecursivePaths = true;
+		Filter.bRecursiveClasses = true;
+
+		TArray<FAssetData> BlueprintAssets;
+		AssetRegistry.GetAssets(Filter, BlueprintAssets);
+		BlueprintAssets.Sort([](const FAssetData& Left, const FAssetData& Right)
+		{
+			return Left.GetSoftObjectPath().ToString() < Right.GetSoftObjectPath().ToString();
+		});
+
+		int32 LoadedBlueprintCount = 0;
+		int32 GunBlueprintCount = 0;
+		int32 ChangedGunBlueprintCount = 0;
+		bSuccess &= TMPatchGunFeedbackSoundDefaultByPath(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Weapon_Master.BP_Weapon_Master"),
+			WeaponSpawnSound,
+			AttachmentSound,
+			LoadedBlueprintCount,
+			GunBlueprintCount,
+			ChangedGunBlueprintCount);
+		bSuccess &= TMPatchGunFeedbackSoundDefaultByPath(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_InteractionMaster.BP_InteractionMaster"),
+			nullptr,
+			nullptr,
+			LoadedBlueprintCount,
+			GunBlueprintCount,
+			ChangedGunBlueprintCount);
+		bSuccess &= TMPatchGunFeedbackSoundDefaultByPath(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Magazine_Master.BP_Magazine_Master"),
+			nullptr,
+			nullptr,
+			LoadedBlueprintCount,
+			GunBlueprintCount,
+			ChangedGunBlueprintCount);
+
+		for (const FAssetData& BlueprintAsset : BlueprintAssets)
+		{
+			UBlueprint* Blueprint = Cast<UBlueprint>(BlueprintAsset.GetAsset());
+			if (!Blueprint)
+			{
+				continue;
+			}
+
+			++LoadedBlueprintCount;
+			if (Blueprint->GeneratedClass && Blueprint->GeneratedClass->IsChildOf(AGun::StaticClass()))
+			{
+				++GunBlueprintCount;
+			}
+
+			bSuccess &= TMPatchGunFeedbackSoundDefault(
+				Blueprint,
+				WeaponSpawnSound,
+				AttachmentSound,
+				ChangedGunBlueprintCount);
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMMenuSoundtrackFeedback] Summary: LoadedBlueprints=%d GunBlueprints=%d ChangedGunBlueprints=%d Success=%d"),
+			LoadedBlueprintCount,
+			GunBlueprintCount,
+			ChangedGunBlueprintCount,
+			bSuccess ? 1 : 0);
+		return bSuccess;
+	}
+
 	bool TMDumpYellowUIGraphColors()
 	{
 		const TCHAR* WidgetBlueprintPaths[] =
@@ -7713,6 +10221,31 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 		return TMDumpYellowUIGraphColors() ? 0 : 1;
 	}
 
+	if (Params.Contains(TEXT("DumpMenuButtonWidgets"), ESearchCase::IgnoreCase))
+	{
+		return TMDumpMenuButtonWidgets() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchMinimalMenuButtons"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchMinimalMenuButtons() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchMainMenuBigLabels"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchMainMenuBigLabels() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("DumpMenuSoundGraph"), ESearchCase::IgnoreCase))
+	{
+		return TMDumpMenuSoundGraph() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("DumpIntroMainFlow"), ESearchCase::IgnoreCase))
+	{
+		return TMDumpIntroMainFlow() ? 0 : 1;
+	}
+
 	if (Params.Contains(TEXT("PatchUIButtonSounds"), ESearchCase::IgnoreCase))
 	{
 		return TMPatchUIButtonSounds() ? 0 : 1;
@@ -7726,6 +10259,21 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("PatchMainMenuLoadoutPreviewCleanup"), ESearchCase::IgnoreCase))
 	{
 		return TMPatchMainMenuLoadoutPreviewCleanup() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchMenuSoundtrackOnly"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchMenuSoundtrackOnly() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchAttachmentFeedbackFX"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchAttachmentFeedbackFX() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchMenuSoundtrackAndFeedbackSounds"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchMenuSoundtrackAndFeedbackSounds() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("PinLeftHandFabrikAlpha"), ESearchCase::IgnoreCase))

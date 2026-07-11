@@ -34,6 +34,7 @@
 #include "Sound/AudioSettings.h"
 #include "Sound/SoundClass.h"
 #include "Sound/SoundMix.h"
+#include "Sound/SoundBase.h"
 #include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
 #include "../Gun/Gun.h"
@@ -82,6 +83,11 @@ namespace
 	bool GTMDebugKrissNoAimOffsetPulseWasActive = false;
 	const TCHAR* TMProjectMasterSoundClassPath = TEXT("/Game/MP_System_V3/Game/Sounds/SC_Master_MPS.SC_Master_MPS");
 	const TCHAR* TMEngineMasterSoundClassPath = TEXT("/Engine/EngineSounds/Master.Master");
+	const TCHAR* TMHeadshotHitmarkerSoundPaths[] =
+	{
+		TEXT("/Game/Battle_Royale_Game/Cues/Collects/Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_1_Cue.Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_1_Cue"),
+		TEXT("/Game/Battle_Royale_Game/Cues/Collects/Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_2_Cue.Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_2_Cue")
+	};
 	const FName TMMPCameraFPSocketName(TEXT("Camera_FP"));
 
 	static TAutoConsoleVariable<float> CVarTMViewmodelLowerCm(
@@ -217,6 +223,22 @@ namespace
 	TSet<FString> GTMViewmodelConsoleProfileConfigWriteKeys;
 	TWeakObjectPtr<const ATMCharacter> GTMViewmodelConsoleProfileCharacter;
 	FTMViewmodelConsoleProfileRuntimeState GTMViewmodelConsoleProfileState;
+
+	struct FTMPendingImpactHeadshot
+	{
+		FVector Location = FVector::ZeroVector;
+		FVector Normal = FVector::ZeroVector;
+		FVector HeadshotSoundLocation = FVector::ZeroVector;
+		const UPhysicalMaterial* PhysicalMaterial = nullptr;
+		double TimeSeconds = 0.0;
+		bool bHeadshot = false;
+		bool bHasHeadshotSoundLocation = false;
+	};
+
+	TMap<TWeakObjectPtr<ATMCharacter>, TArray<FTMPendingImpactHeadshot>> GTMPendingImpactHeadshots;
+	constexpr double TMPendingImpactHeadshotMaxAgeSeconds = 2.0;
+	constexpr double TMPendingImpactLocationToleranceSq = 2500.0;
+	constexpr int32 TMPendingImpactHeadshotMaxPerCharacter = 8;
 
 	bool TMNearlyEqualViewmodelValue(const float Left, const float Right)
 	{
@@ -2401,6 +2423,22 @@ namespace
 		return true;
 	}
 
+	bool TMGetBoolFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		bool& OutValue)
+	{
+		FBoolProperty* BoolProperty = CastField<FBoolProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!BoolProperty)
+		{
+			return false;
+		}
+
+		OutValue = BoolProperty->GetPropertyValue(BoolProperty->ContainerPtrToValuePtr<void>(Parameters));
+		return true;
+	}
+
 	bool TMSetNameFunctionParameter(
 		UFunction* Function,
 		void* Parameters,
@@ -2414,6 +2452,22 @@ namespace
 		}
 
 		NameProperty->SetPropertyValue(NameProperty->ContainerPtrToValuePtr<void>(Parameters), Value);
+		return true;
+	}
+
+	bool TMGetNameFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		FName& OutValue)
+	{
+		FNameProperty* NameProperty = CastField<FNameProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!NameProperty)
+		{
+			return false;
+		}
+
+		OutValue = NameProperty->GetPropertyValue(NameProperty->ContainerPtrToValuePtr<void>(Parameters));
 		return true;
 	}
 
@@ -2464,6 +2518,22 @@ namespace
 		return true;
 	}
 
+	bool TMGetHitResultFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		FHitResult& OutValue)
+	{
+		FStructProperty* StructProperty = CastField<FStructProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!StructProperty || StructProperty->Struct != FHitResult::StaticStruct())
+		{
+			return false;
+		}
+
+		OutValue = *StructProperty->ContainerPtrToValuePtr<FHitResult>(Parameters);
+		return true;
+	}
+
 	bool TMSetActorArrayFunctionParameter(
 		UFunction* Function,
 		void* Parameters,
@@ -2489,6 +2559,294 @@ namespace
 		}
 
 		return Actors.Num() > 0 && TMSetObjectFunctionParameter(Function, Parameters, ParameterNames, Actors[0]);
+	}
+
+	double TMGetTimeSeconds(const AActor* Actor)
+	{
+		const UWorld* World = Actor ? Actor->GetWorld() : nullptr;
+		return World ? World->GetTimeSeconds() : 0.0;
+	}
+
+	USoundBase* TMLoadSoundBaseFromPath(const TCHAR* SoundPath)
+	{
+		return SoundPath && SoundPath[0] != TEXT('\0')
+			? LoadObject<USoundBase>(nullptr, SoundPath)
+			: nullptr;
+	}
+
+	FVector TMResolveHeadshotSoundLocationFromMesh(
+		const USkeletalMeshComponent* Mesh,
+		const FName HitBone,
+		const FVector& FallbackLocation)
+	{
+		if (!Mesh)
+		{
+			return FallbackLocation;
+		}
+
+		const FName CandidateNames[] =
+		{
+			HitBone,
+			TEXT("head"),
+			TEXT("Head"),
+			TEXT("HEAD")
+		};
+
+		for (const FName CandidateName : CandidateNames)
+		{
+			if (!CandidateName.IsNone()
+				&& (Mesh->DoesSocketExist(CandidateName) || Mesh->GetBoneIndex(CandidateName) != INDEX_NONE))
+			{
+				return Mesh->GetSocketLocation(CandidateName);
+			}
+		}
+
+		return FallbackLocation;
+	}
+
+	FVector TMResolveHeadshotSoundLocation(
+		AActor* HitActor,
+		const FHitResult& HitInfo,
+		const FName HitBone,
+		const FVector& FallbackLocation)
+	{
+		if (!UTMGameplayStatics::IsHeadHitBone(HitBone))
+		{
+			return FallbackLocation;
+		}
+
+		if (const USkeletalMeshComponent* HitMesh = Cast<USkeletalMeshComponent>(HitInfo.Component.Get()))
+		{
+			return TMResolveHeadshotSoundLocationFromMesh(HitMesh, HitBone, FallbackLocation);
+		}
+
+		if (!HitActor)
+		{
+			return FallbackLocation;
+		}
+
+		TInlineComponentArray<USkeletalMeshComponent*> SkeletalMeshes(HitActor);
+		for (const USkeletalMeshComponent* SkeletalMesh : SkeletalMeshes)
+		{
+			const FVector HeadLocation = TMResolveHeadshotSoundLocationFromMesh(SkeletalMesh, HitBone, FallbackLocation);
+			if (!HeadLocation.Equals(FallbackLocation))
+			{
+				return HeadLocation;
+			}
+		}
+
+		return FallbackLocation;
+	}
+
+	void TMPlayHeadshotHitmarkerSounds(
+		ATMCharacter* Shooter,
+		const FVector& HeadLocation,
+		const FVector& Normal)
+	{
+		UWorld* World = Shooter ? Shooter->GetWorld() : nullptr;
+		if (!World || World->GetNetMode() == NM_DedicatedServer)
+		{
+			return;
+		}
+
+		const FRotator Rotation = Normal.IsNearlyZero()
+			? FRotator::ZeroRotator
+			: Normal.GetSafeNormal().Rotation();
+		const bool bPlayShooterLocalCopy = Shooter->IsLocallyControlled();
+
+		for (const TCHAR* SoundPath : TMHeadshotHitmarkerSoundPaths)
+		{
+			USoundBase* Sound = TMLoadSoundBaseFromPath(SoundPath);
+			if (!Sound)
+			{
+				continue;
+			}
+
+			UGameplayStatics::PlaySoundAtLocation(Shooter, Sound, HeadLocation, Rotation);
+			if (bPlayShooterLocalCopy)
+			{
+				UGameplayStatics::PlaySound2D(Shooter, Sound);
+			}
+		}
+	}
+
+	bool TMImpactPhysicalMaterialsMatch(
+		const UPhysicalMaterial* Left,
+		const UPhysicalMaterial* Right)
+	{
+		return Left == Right
+			|| (Left
+				&& Right
+				&& UPhysicalMaterial::DetermineSurfaceType(Left) == UPhysicalMaterial::DetermineSurfaceType(Right));
+	}
+
+	bool TMImpactNormalsMatch(const FVector& Left, const FVector& Right)
+	{
+		if (Left.IsNearlyZero() || Right.IsNearlyZero())
+		{
+			return true;
+		}
+
+		return FVector::DotProduct(Left.GetSafeNormal(), Right.GetSafeNormal()) > 0.35f;
+	}
+
+	void TMPrunePendingImpactHeadshots(ATMCharacter* Character, TArray<FTMPendingImpactHeadshot>& PendingImpacts)
+	{
+		const double Now = TMGetTimeSeconds(Character);
+		PendingImpacts.RemoveAll(
+			[Now](const FTMPendingImpactHeadshot& PendingImpact)
+			{
+				return Now > 0.0
+					&& PendingImpact.TimeSeconds > 0.0
+					&& Now - PendingImpact.TimeSeconds > TMPendingImpactHeadshotMaxAgeSeconds;
+			});
+	}
+
+	void TMStorePendingImpactHeadshot(
+		ATMCharacter* Character,
+		const FVector& Location,
+		const FVector& Normal,
+		const UPhysicalMaterial* PhysicalMaterial,
+		const bool bHeadshot,
+		const FVector& HeadshotSoundLocation)
+	{
+		if (!Character)
+		{
+			return;
+		}
+
+		TArray<FTMPendingImpactHeadshot>& PendingImpacts =
+			GTMPendingImpactHeadshots.FindOrAdd(TWeakObjectPtr<ATMCharacter>(Character));
+		TMPrunePendingImpactHeadshots(Character, PendingImpacts);
+
+		FTMPendingImpactHeadshot PendingImpact;
+		PendingImpact.Location = Location;
+		PendingImpact.Normal = Normal;
+		PendingImpact.PhysicalMaterial = PhysicalMaterial;
+		PendingImpact.TimeSeconds = TMGetTimeSeconds(Character);
+		PendingImpact.bHeadshot = bHeadshot;
+		PendingImpact.bHasHeadshotSoundLocation = bHeadshot;
+		PendingImpact.HeadshotSoundLocation = HeadshotSoundLocation;
+		PendingImpacts.Add(PendingImpact);
+
+		while (PendingImpacts.Num() > TMPendingImpactHeadshotMaxPerCharacter)
+		{
+			PendingImpacts.RemoveAt(0);
+		}
+	}
+
+	bool TMConsumePendingImpactHeadshot(
+		ATMCharacter* Character,
+		const FVector& Location,
+		const FVector& Normal,
+		const UPhysicalMaterial* PhysicalMaterial,
+		bool& bOutHeadshot,
+		FVector& OutHeadshotSoundLocation)
+	{
+		const TWeakObjectPtr<ATMCharacter> CharacterKey(Character);
+		TArray<FTMPendingImpactHeadshot>* PendingImpacts = GTMPendingImpactHeadshots.Find(CharacterKey);
+		if (!Character || !PendingImpacts)
+		{
+			return false;
+		}
+
+		TMPrunePendingImpactHeadshots(Character, *PendingImpacts);
+
+		int32 BestIndex = INDEX_NONE;
+		double BestDistanceSq = TMPendingImpactLocationToleranceSq;
+		for (int32 Index = 0; Index < PendingImpacts->Num(); ++Index)
+		{
+			const FTMPendingImpactHeadshot& PendingImpact = (*PendingImpacts)[Index];
+			if (!TMImpactPhysicalMaterialsMatch(PendingImpact.PhysicalMaterial, PhysicalMaterial)
+				|| !TMImpactNormalsMatch(PendingImpact.Normal, Normal))
+			{
+				continue;
+			}
+
+			const double DistanceSq = FVector::DistSquared(PendingImpact.Location, Location);
+			if (DistanceSq <= BestDistanceSq)
+			{
+				BestDistanceSq = DistanceSq;
+				BestIndex = Index;
+			}
+		}
+
+		if (BestIndex == INDEX_NONE)
+		{
+			if (PendingImpacts->IsEmpty())
+			{
+				GTMPendingImpactHeadshots.Remove(CharacterKey);
+			}
+			return false;
+		}
+
+		bOutHeadshot = (*PendingImpacts)[BestIndex].bHeadshot;
+		OutHeadshotSoundLocation = (*PendingImpacts)[BestIndex].bHasHeadshotSoundLocation
+			? (*PendingImpacts)[BestIndex].HeadshotSoundLocation
+			: Location;
+		PendingImpacts->RemoveAt(BestIndex);
+		if (PendingImpacts->IsEmpty())
+		{
+			GTMPendingImpactHeadshots.Remove(CharacterKey);
+		}
+		return true;
+	}
+
+	bool TMExtractImpactHeadshotFromParameters(
+		UFunction* Function,
+		void* Parameters,
+		bool& bOutHeadshot,
+		FVector& OutHeadshotSoundLocation)
+	{
+		FHitResult HitInfo;
+		if (TMGetHitResultFunctionParameter(
+			Function,
+			Parameters,
+			{ TEXT("HitInfo"), TEXT("OutHit"), TEXT("Hit"), TEXT("HitResult"), TEXT("Hit Result") },
+			HitInfo))
+		{
+			bOutHeadshot = UTMGameplayStatics::IsHeadHitBone(HitInfo.BoneName);
+			const FVector FallbackLocation = !HitInfo.ImpactPoint.IsNearlyZero()
+				? HitInfo.ImpactPoint
+				: HitInfo.Location;
+			OutHeadshotSoundLocation = bOutHeadshot
+				? TMResolveHeadshotSoundLocation(HitInfo.GetActor(), HitInfo, HitInfo.BoneName, FallbackLocation)
+				: FVector::ZeroVector;
+			return true;
+		}
+
+		FName HitBone = NAME_None;
+		if (TMGetNameFunctionParameter(
+			Function,
+			Parameters,
+			{ TEXT("HitBone"), TEXT("HitBoneName"), TEXT("BoneName"), TEXT("Hit Bone"), TEXT("Hit Bone Name") },
+			HitBone))
+		{
+			bOutHeadshot = UTMGameplayStatics::IsHeadHitBone(HitBone);
+			OutHeadshotSoundLocation = FVector::ZeroVector;
+			return true;
+		}
+
+		if (TMGetBoolFunctionParameter(
+			Function,
+			Parameters,
+			{
+				TEXT("bHeadshot"),
+				TEXT("Headshot"),
+				TEXT("bHeadShot"),
+				TEXT("HeadShot"),
+				TEXT("bIsHeadshot"),
+				TEXT("IsHeadshot"),
+				TEXT("bIsHeadShot"),
+				TEXT("IsHeadShot")
+			},
+			bOutHeadshot))
+		{
+			OutHeadshotSoundLocation = FVector::ZeroVector;
+			return true;
+		}
+
+		return false;
 	}
 
 	template <typename TFillParametersType>
@@ -2622,14 +2980,19 @@ namespace
 		const FName HitBone,
 		const FHitResult& HitInfo)
 	{
+		const bool bHeadshot = UTMGameplayStatics::IsHeadHitBone(HitBone);
+		const FVector HeadshotSoundLocation = bHeadshot
+			? TMResolveHeadshotSoundLocation(HitActor, HitInfo, HitBone, Location)
+			: FVector::ZeroVector;
+		TMStorePendingImpactHeadshot(Character, Location, Normal, PhysicalMaterial, bHeadshot, HeadshotSoundLocation);
+
 		return TMInvokeBlueprintFunction(
 			Character,
 			TEXT("Svr_LineTrace"),
-			[Character, Distance, &Location, &Normal, &TraceStart, &HitDirection, PhysicalMaterial, HitActor, HitBone, &HitInfo](
+			[Character, Distance, &Location, &Normal, &TraceStart, &HitDirection, PhysicalMaterial, HitActor, HitBone, &HitInfo, bHeadshot](
 				UFunction* Function,
 				void* Parameters)
 			{
-				const bool bHeadshot = UTMGameplayStatics::IsHeadHitBone(HitBone);
 				const float DamageMultiplier = UTMGameplayStatics::GetBoneDamageMultiplier(
 					HitBone,
 					Character ? Character->HeadshotDamageMultiplier : 4.f,
@@ -2764,7 +3127,10 @@ namespace
 		ATMCharacter* Character,
 		const FVector& Location,
 		const FVector& Normal,
-		const UPhysicalMaterial* PhysicalMaterial)
+		const UPhysicalMaterial* PhysicalMaterial,
+		const bool bHasHeadshotInfo,
+		const bool bHeadshot,
+		const FVector& HeadshotSoundLocation)
 	{
 		if (!Character)
 		{
@@ -2773,7 +3139,22 @@ namespace
 
 		if (AGun* ActiveGun = TMResolveActiveGun(Character))
 		{
-			ActiveGun->Impact(Location, Normal, PhysicalMaterial);
+			if (bHasHeadshotInfo)
+			{
+				ActiveGun->ImpactWithHitContext(Location, Normal, PhysicalMaterial, bHeadshot);
+			}
+			else
+			{
+				ActiveGun->Impact(Location, Normal, PhysicalMaterial);
+			}
+		}
+
+		if (bHasHeadshotInfo && bHeadshot)
+		{
+			const FVector ResolvedHeadshotSoundLocation = HeadshotSoundLocation.IsNearlyZero()
+				? Location
+				: HeadshotSoundLocation;
+			TMPlayHeadshotHitmarkerSounds(Character, ResolvedHeadshotSoundLocation, Normal);
 		}
 
 		TMDestroyBlueprintTraceActor(Character);
@@ -2803,7 +3184,24 @@ namespace
 			Function,
 			Parameters,
 			{ TEXT("PhysMat"), TEXT("PhysicalMaterial"), TEXT("Physical Material"), TEXT("Physical_Material") });
-		TMExecuteNativeBlueprintImpact(Character, Location, Normal, PhysicalMaterial);
+		bool bHeadshot = false;
+		FVector HeadshotSoundLocation = FVector::ZeroVector;
+		const bool bHasHeadshotInfo = TMConsumePendingImpactHeadshot(
+				Character,
+				Location,
+				Normal,
+				PhysicalMaterial,
+				bHeadshot,
+				HeadshotSoundLocation)
+			|| TMExtractImpactHeadshotFromParameters(Function, Parameters, bHeadshot, HeadshotSoundLocation);
+		TMExecuteNativeBlueprintImpact(
+			Character,
+			Location,
+			Normal,
+			PhysicalMaterial,
+			bHasHeadshotInfo,
+			bHeadshot,
+			HeadshotSoundLocation);
 		return true;
 	}
 
