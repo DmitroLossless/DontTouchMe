@@ -7,6 +7,7 @@
 class UPrimitiveComponent;
 class USceneComponent;
 class USkeletalMesh;
+class UNiagaraSystem;
 class USphereComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
@@ -57,6 +58,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TM|Foliage Collision")
 	FName SkeletalSimulationRootBone = TEXT("foliage_01");
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TM|Foliage Collision|FX")
+	bool bSpawnSkeletalReplacementImpactFX = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TM|Foliage Collision|FX")
+	TArray<TSoftObjectPtr<UNiagaraSystem>> SkeletalReplacementImpactFX;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TM|Foliage Collision|FX")
+	FVector SkeletalReplacementImpactFXScale = FVector(1.f);
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TM|Foliage Collision")
 	int32 MaxProxyBodies = 64;
 
@@ -86,6 +96,7 @@ private:
 	void ConfigureVegetationPhysicsBody(UPrimitiveComponent* Component) const;
 	void CreateSkeletalReplacements();
 	bool CreateSkeletalReplacement(const FTransform& WorldTransform, const UStaticMesh* SourceStaticMesh);
+	void SpawnRandomSkeletalReplacementImpactFX(const FTransform& WorldTransform);
 	void CreateProxyBody(const FVector& Location);
 	void DestroyProxyBodies();
 	void CollectProxyBodiesForComponent(UPrimitiveComponent* Component, const FVector& Origin);

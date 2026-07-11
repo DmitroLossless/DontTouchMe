@@ -210,6 +210,49 @@ namespace TMGameplayStatics
 		return Aliases.Contains(NormalizedAlias);
 	}
 
+	bool IsHeadHitBoneName(const FName BoneName)
+	{
+		if (BoneName.IsNone())
+		{
+			return false;
+		}
+
+		FString NormalizedName = BoneName.ToString().ToLower();
+		NormalizedName.ReplaceInline(TEXT("-"), TEXT("_"));
+		NormalizedName.ReplaceInline(TEXT(" "), TEXT("_"));
+
+		static const TSet<FString> ExactHeadBoneNames = {
+			TEXT("head"),
+			TEXT("head_jnt"),
+			TEXT("head_end"),
+			TEXT("facialroot"),
+			TEXT("facial_root"),
+			TEXT("jaw"),
+			TEXT("jawbone"),
+			TEXT("mandible"),
+			TEXT("eye_l"),
+			TEXT("eye_r"),
+			TEXT("eyeball_l"),
+			TEXT("eyeball_r"),
+			TEXT("teeth"),
+			TEXT("tongue")
+		};
+
+		if (ExactHeadBoneNames.Contains(NormalizedName))
+		{
+			return true;
+		}
+
+		return NormalizedName.StartsWith(TEXT("head_"))
+			|| NormalizedName.EndsWith(TEXT("_head"))
+			|| NormalizedName.Contains(TEXT("_head_"))
+			|| NormalizedName.StartsWith(TEXT("facial_"))
+			|| NormalizedName.StartsWith(TEXT("face_"))
+			|| NormalizedName.StartsWith(TEXT("jaw_"))
+			|| NormalizedName.StartsWith(TEXT("eye_"))
+			|| NormalizedName.StartsWith(TEXT("eyeball_"));
+	}
+
 #if WITH_EDITOR
 	bool IsWeaponPoseRelevantBone(const FName BoneName)
 	{
@@ -2127,6 +2170,24 @@ bool UTMGameplayStatics::ApplyALSTurnInPlaceState(ACharacter* Character, const f
 	}
 
 	return bChanged;
+}
+
+bool UTMGameplayStatics::IsHeadHitBone(const FName HitBone)
+{
+	return TMGameplayStatics::IsHeadHitBoneName(HitBone);
+}
+
+bool UTMGameplayStatics::IsHeadHit(const FHitResult& HitResult)
+{
+	return IsHeadHitBone(HitResult.BoneName);
+}
+
+float UTMGameplayStatics::GetBoneDamageMultiplier(
+	const FName HitBone,
+	const float HeadMultiplier,
+	const float DefaultMultiplier)
+{
+	return IsHeadHitBone(HitBone) ? HeadMultiplier : DefaultMultiplier;
 }
 
 bool UTMGameplayStatics::DumpAnimBlueprintGraphLinks()

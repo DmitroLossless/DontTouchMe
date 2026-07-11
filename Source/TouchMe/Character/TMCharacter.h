@@ -49,6 +49,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Combat", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "cm/s"))
 	float ShootFallbackProjectileSpeed = 30000.f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Combat", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float DefaultHitDamageMultiplier = 1.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Combat", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float HeadshotDamageMultiplier = 4.f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Audio Muffle")
 	bool bEnableAnimCurveAudioMuffle = true;
 

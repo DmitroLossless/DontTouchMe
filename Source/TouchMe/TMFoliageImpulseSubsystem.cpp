@@ -132,7 +132,7 @@ static TAutoConsoleVariable<float> CVarTMFoliageImpulseDuplicateDistance(
 	TEXT("Distance in centimeters used to suppress duplicate foliage impulses from the same detonation."),
 	ECVF_Default);
 
-bool PathContainsAny(const FString& Path, std::initializer_list<const TCHAR*> Tokens)
+bool TMImpulsePathContainsAny(const FString& Path, std::initializer_list<const TCHAR*> Tokens)
 {
 	for (const TCHAR* Token : Tokens)
 	{
@@ -150,7 +150,7 @@ bool IsDebugLoggingEnabled()
 	return CVarTMFoliageImpulseDebug.GetValueOnGameThread() != 0;
 }
 
-bool ShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
+bool TMImpulseShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
 {
 	if (!StaticMesh)
 	{
@@ -158,7 +158,7 @@ bool ShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
 	}
 
 	const FString Path = StaticMesh->GetPathName();
-	if (PathContainsAny(Path, {
+	if (TMImpulsePathContainsAny(Path, {
 		TEXT("Boulder"),
 		TEXT("Rock"),
 		TEXT("Stone"),
@@ -172,7 +172,7 @@ bool ShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
 		return false;
 	}
 
-	return PathContainsAny(Path, {
+	return TMImpulsePathContainsAny(Path, {
 		TEXT("Bush"),
 		TEXT("Plant"),
 		TEXT("Plants"),
@@ -202,7 +202,7 @@ bool ShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
 	});
 }
 
-UStaticMesh* GetStaticMeshFromPrimitive(const UPrimitiveComponent* Component)
+UStaticMesh* TMImpulseGetStaticMeshFromPrimitive(const UPrimitiveComponent* Component)
 {
 	if (const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
 	{
@@ -217,7 +217,7 @@ UStaticMesh* GetStaticMeshFromPrimitive(const UPrimitiveComponent* Component)
 	return nullptr;
 }
 
-bool EnsureSimpleCollisionOnStaticMesh(UStaticMesh* StaticMesh)
+bool TMImpulseEnsureSimpleCollisionOnStaticMesh(UStaticMesh* StaticMesh)
 {
 	if (!StaticMesh)
 	{
@@ -253,7 +253,7 @@ bool EnsureSimpleCollisionOnStaticMesh(UStaticMesh* StaticMesh)
 	return true;
 }
 
-void PrepareFoliageWPO(UPrimitiveComponent* Component)
+void TMImpulsePrepareFoliageWPO(UPrimitiveComponent* Component)
 {
 	if (!Component)
 	{
@@ -331,7 +331,7 @@ void ClearFoliageInstanceCustomData(UInstancedStaticMeshComponent* Component, co
 	Component->SetCustomDataValue(InstanceIndex, TMFoliageImpulseCustomDataDirectionYIndex, 0.f, true);
 }
 
-bool ComponentBoundsIntersectSphere(const UPrimitiveComponent* Component, const FVector& Origin, const float Radius)
+bool TMImpulseComponentBoundsIntersectSphere(const UPrimitiveComponent* Component, const FVector& Origin, const float Radius)
 {
 	if (!Component)
 	{
@@ -1075,7 +1075,7 @@ bool UTMFoliageImpulseSubsystem::IsGrenadeImpulseActor(const AActor* Actor)
 	const FString ActorPath = Actor->GetPathName();
 	const FString CombinedPath = ClassPath + TEXT(" ") + ActorPath;
 
-	if (PathContainsAny(CombinedPath, {
+	if (TMImpulsePathContainsAny(CombinedPath, {
 		TEXT("GrenadeLauncher"),
 		TEXT("Grenade_launcher"),
 		TEXT("Launcher"),
@@ -1098,7 +1098,7 @@ bool UTMFoliageImpulseSubsystem::IsGrenadeImpulseActor(const AActor* Actor)
 		return false;
 	}
 
-	return PathContainsAny(CombinedPath, {
+	return TMImpulsePathContainsAny(CombinedPath, {
 		TEXT("/GrenadePack/Blueprints/BP_Grenade"),
 		TEXT("/GrenadePack/Blueprints/BP_LTGrenade"),
 		TEXT("/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Frag"),
@@ -1128,7 +1128,7 @@ bool UTMFoliageImpulseSubsystem::ShouldAffectFoliageComponent(
 		|| !Component->IsRegistered()
 		|| !Component->IsVisible()
 		|| Component->bHiddenInGame
-		|| !ComponentBoundsIntersectSphere(Component, Origin, Radius))
+		|| !TMImpulseComponentBoundsIntersectSphere(Component, Origin, Radius))
 	{
 		return false;
 	}
@@ -1141,13 +1141,13 @@ bool UTMFoliageImpulseSubsystem::ShouldAffectFoliageComponent(
 		}
 	}
 
-	if (ShouldAffectStaticMesh(GetStaticMeshFromPrimitive(Component)))
+	if (TMImpulseShouldAffectStaticMesh(TMImpulseGetStaticMeshFromPrimitive(Component)))
 	{
 		return true;
 	}
 
 	const FString ComponentPath = Component->GetPathName();
-	return PathContainsAny(ComponentPath, {
+	return TMImpulsePathContainsAny(ComponentPath, {
 		TEXT("Bush"),
 		TEXT("Plant"),
 		TEXT("Shrub"),
@@ -1170,8 +1170,8 @@ bool UTMFoliageImpulseSubsystem::PrepareFoliageCollision(UPrimitiveComponent* Co
 	}
 
 	const bool bHadCollision = Component->GetCollisionEnabled() != ECollisionEnabled::NoCollision;
-	const bool bHasMeshCollision = EnsureSimpleCollisionOnStaticMesh(GetStaticMeshFromPrimitive(Component));
-	PrepareFoliageWPO(Component);
+	const bool bHasMeshCollision = TMImpulseEnsureSimpleCollisionOnStaticMesh(TMImpulseGetStaticMeshFromPrimitive(Component));
+	TMImpulsePrepareFoliageWPO(Component);
 	Component->SetCollisionObjectType(TMVegetationCollisionChannel);
 	if (!bHadCollision)
 	{

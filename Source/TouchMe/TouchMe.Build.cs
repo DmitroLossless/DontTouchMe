@@ -18,6 +18,7 @@ public class TouchMe : ModuleRules
 			{
 				"AnimGraph",
 				"AnimGraphRuntime",
+				"AssetRegistry",
 				"BlueprintGraph",
 				"Kismet",
 				"UnrealEd"

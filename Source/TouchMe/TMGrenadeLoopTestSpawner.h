@@ -6,6 +6,7 @@
 #include "TMGrenadeLoopTestSpawner.generated.h"
 
 class UActorComponent;
+class USceneComponent;
 
 UCLASS(BlueprintType, Blueprintable)
 class TOUCHME_API ATMGrenadeLoopTestSpawner : public AActor
@@ -83,4 +84,7 @@ private:
 	float NextSpawnTimeSeconds = 0.f;
 	float AllRemovedSinceSeconds = -1.f;
 	bool bCycleActive = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "TM|Grenade Loop")
+	TObjectPtr<USceneComponent> SceneRoot;
 };

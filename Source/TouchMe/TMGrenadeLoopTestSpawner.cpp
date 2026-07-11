@@ -68,7 +68,7 @@ ATMGrenadeLoopTestSpawner::ATMGrenadeLoopTestSpawner()
 	PrimaryActorTick.bStartWithTickEnabled = true;
 	bIsEditorOnlyActor = false;
 
-	USceneComponent* SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
+	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	RootComponent = SceneRoot;
 
 	static ConstructorHelpers::FClassFinder<AActor> GrenadeClassFinder(TEXT("/Game/BallisticsVFX/FXSpawnerBlueprints/Projectiles/Grenade_Thrown"));

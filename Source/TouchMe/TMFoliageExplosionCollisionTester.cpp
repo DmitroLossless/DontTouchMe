@@ -17,7 +17,7 @@
 
 namespace
 {
-constexpr ECollisionChannel TMVegetationCollisionChannel = ECC_GameTraceChannel6;
+constexpr ECollisionChannel TMExplosionVegetationCollisionChannel = ECC_GameTraceChannel6;
 
 static const FName MWPlayerPositionParameter(TEXT("MW_PlayerPosition"));
 static const FName MWPlayerSpeedParameter(TEXT("MW_PlayerSpeed"));
@@ -26,7 +26,7 @@ static const FName TMFoliageImpulseOriginXParameter(TEXT("TM_FoliageImpulseOrigi
 static const FName TMFoliageImpulseOriginYParameter(TEXT("TM_FoliageImpulseOriginY"));
 static const FName TMFoliageImpulseOriginZParameter(TEXT("TM_FoliageImpulseOriginZ"));
 
-bool PathContainsAny(const FString& Path, std::initializer_list<const TCHAR*> Tokens)
+bool TMExplosionPathContainsAny(const FString& Path, std::initializer_list<const TCHAR*> Tokens)
 {
 	for (const TCHAR* Token : Tokens)
 	{
@@ -39,7 +39,7 @@ bool PathContainsAny(const FString& Path, std::initializer_list<const TCHAR*> To
 	return false;
 }
 
-bool ShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
+bool TMExplosionShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
 {
 	if (!StaticMesh)
 	{
@@ -47,7 +47,7 @@ bool ShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
 	}
 
 	const FString Path = StaticMesh->GetPathName();
-	if (PathContainsAny(Path, {
+	if (TMExplosionPathContainsAny(Path, {
 		TEXT("Boulder"),
 		TEXT("Rock"),
 		TEXT("Stone"),
@@ -61,7 +61,7 @@ bool ShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
 		return false;
 	}
 
-	return PathContainsAny(Path, {
+	return TMExplosionPathContainsAny(Path, {
 		TEXT("Bush"),
 		TEXT("Plant"),
 		TEXT("Plants"),
@@ -91,7 +91,7 @@ bool ShouldAffectStaticMesh(const UStaticMesh* StaticMesh)
 	});
 }
 
-UStaticMesh* GetStaticMeshFromPrimitive(const UPrimitiveComponent* Component)
+UStaticMesh* TMExplosionGetStaticMeshFromPrimitive(const UPrimitiveComponent* Component)
 {
 	if (const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
 	{
@@ -106,7 +106,7 @@ UStaticMesh* GetStaticMeshFromPrimitive(const UPrimitiveComponent* Component)
 	return nullptr;
 }
 
-bool EnsureSimpleCollisionOnStaticMesh(UStaticMesh* StaticMesh)
+bool TMExplosionEnsureSimpleCollisionOnStaticMesh(UStaticMesh* StaticMesh)
 {
 	if (!StaticMesh)
 	{
@@ -142,7 +142,7 @@ bool EnsureSimpleCollisionOnStaticMesh(UStaticMesh* StaticMesh)
 	return true;
 }
 
-void PrepareFoliageWPO(UPrimitiveComponent* Component)
+void TMExplosionPrepareFoliageWPO(UPrimitiveComponent* Component)
 {
 	if (!Component)
 	{
@@ -281,9 +281,9 @@ void ATMFoliageExplosionCollisionTester::ConfigureSphere()
 	SphereComponent->InitSphereRadius(CurrentRadius);
 	SphereComponent->SetSphereRadius(CurrentRadius, false);
 	SphereComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-	SphereComponent->SetCollisionObjectType(TMVegetationCollisionChannel);
+	SphereComponent->SetCollisionObjectType(TMExplosionVegetationCollisionChannel);
 	SphereComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
-	SphereComponent->SetCollisionResponseToChannel(TMVegetationCollisionChannel, ECR_Block);
+	SphereComponent->SetCollisionResponseToChannel(TMExplosionVegetationCollisionChannel, ECR_Block);
 	SphereComponent->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 	SphereComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	SphereComponent->SetCollisionResponseToChannel(ECC_GameTraceChannel3, ECR_Ignore);
@@ -397,13 +397,13 @@ bool ATMFoliageExplosionCollisionTester::ShouldAffectFoliageComponent(
 		}
 	}
 
-	if (ShouldAffectStaticMesh(GetStaticMeshFromPrimitive(Component)))
+	if (TMExplosionShouldAffectStaticMesh(TMExplosionGetStaticMeshFromPrimitive(Component)))
 	{
 		return true;
 	}
 
 	const FString ComponentPath = Component->GetPathName();
-	return PathContainsAny(ComponentPath, {
+	return TMExplosionPathContainsAny(ComponentPath, {
 		TEXT("Bush"),
 		TEXT("Plant"),
 		TEXT("Shrub"),
@@ -426,16 +426,16 @@ bool ATMFoliageExplosionCollisionTester::PrepareFoliageCollision(UPrimitiveCompo
 	}
 
 	const bool bHadCollision = Component->GetCollisionEnabled() != ECollisionEnabled::NoCollision;
-	const bool bHasMeshCollision = EnsureSimpleCollisionOnStaticMesh(GetStaticMeshFromPrimitive(Component));
-	PrepareFoliageWPO(Component);
-	Component->SetCollisionObjectType(TMVegetationCollisionChannel);
+	const bool bHasMeshCollision = TMExplosionEnsureSimpleCollisionOnStaticMesh(TMExplosionGetStaticMeshFromPrimitive(Component));
+	TMExplosionPrepareFoliageWPO(Component);
+	Component->SetCollisionObjectType(TMExplosionVegetationCollisionChannel);
 	if (!bHadCollision)
 	{
 		Component->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		Component->SetCollisionResponseToAllChannels(ECR_Ignore);
 	}
 
-	Component->SetCollisionResponseToChannel(TMVegetationCollisionChannel, ECR_Block);
+	Component->SetCollisionResponseToChannel(TMExplosionVegetationCollisionChannel, ECR_Block);
 	Component->SetGenerateOverlapEvents(true);
 	if (bHasMeshCollision)
 	{

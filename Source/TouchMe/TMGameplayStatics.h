@@ -132,6 +132,18 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, Category="TM|Animation")
 	static TOUCHME_API bool ApplyALSTurnInPlaceState(ACharacter* Character, float DeltaSeconds);
 
+	UFUNCTION(BlueprintPure, Category="TM|Combat", meta=(DisplayName="Is Head Hit Bone", Keywords="headshot hit bone damage"))
+	static TOUCHME_API bool IsHeadHitBone(FName HitBone);
+
+	UFUNCTION(BlueprintPure, Category="TM|Combat", meta=(DisplayName="Is Head Hit", Keywords="headshot hit result bone damage"))
+	static TOUCHME_API bool IsHeadHit(const FHitResult& HitResult);
+
+	UFUNCTION(BlueprintPure, Category="TM|Combat", meta=(DisplayName="Get Bone Damage Multiplier", Keywords="headshot hit bone damage multiplier"))
+	static TOUCHME_API float GetBoneDamageMultiplier(
+		FName HitBone,
+		UPARAM(meta=(ClampMin="0.0", UIMin="0.0")) float HeadMultiplier = 4.f,
+		UPARAM(meta=(ClampMin="0.0", UIMin="0.0")) float DefaultMultiplier = 1.f);
+
 	UFUNCTION(BlueprintCallable, Category="TM|Debug")
 	static TOUCHME_API bool DumpAnimBlueprintGraphLinks();
 

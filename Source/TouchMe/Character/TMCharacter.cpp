@@ -2385,6 +2385,22 @@ namespace
 		return true;
 	}
 
+	bool TMSetBoolFunctionParameter(
+		UFunction* Function,
+		void* Parameters,
+		const std::initializer_list<FName> ParameterNames,
+		const bool Value)
+	{
+		FBoolProperty* BoolProperty = CastField<FBoolProperty>(TMFindFunctionParameter(Function, ParameterNames));
+		if (!BoolProperty)
+		{
+			return false;
+		}
+
+		BoolProperty->SetPropertyValue(BoolProperty->ContainerPtrToValuePtr<void>(Parameters), Value);
+		return true;
+	}
+
 	bool TMSetNameFunctionParameter(
 		UFunction* Function,
 		void* Parameters,
@@ -2609,10 +2625,16 @@ namespace
 		return TMInvokeBlueprintFunction(
 			Character,
 			TEXT("Svr_LineTrace"),
-			[Distance, &Location, &Normal, &TraceStart, &HitDirection, PhysicalMaterial, HitActor, HitBone, &HitInfo](
+			[Character, Distance, &Location, &Normal, &TraceStart, &HitDirection, PhysicalMaterial, HitActor, HitBone, &HitInfo](
 				UFunction* Function,
 				void* Parameters)
 			{
+				const bool bHeadshot = UTMGameplayStatics::IsHeadHitBone(HitBone);
+				const float DamageMultiplier = UTMGameplayStatics::GetBoneDamageMultiplier(
+					HitBone,
+					Character ? Character->HeadshotDamageMultiplier : 4.f,
+					Character ? Character->DefaultHitDamageMultiplier : 1.f);
+
 				TMSetNumericFunctionParameter(Function, Parameters, { TEXT("Distance") }, Distance);
 				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("Location") }, Location);
 				TMSetVectorFunctionParameter(Function, Parameters, { TEXT("Normal"), TEXT("Rotation") }, Normal);
@@ -2626,6 +2648,32 @@ namespace
 				TMSetObjectFunctionParameter(Function, Parameters, { TEXT("HitActor") }, HitActor);
 				TMSetNameFunctionParameter(Function, Parameters, { TEXT("HitBone"), TEXT("HitBoneName") }, HitBone);
 				TMSetHitResultFunctionParameter(Function, Parameters, { TEXT("HitInfo"), TEXT("OutHit") }, HitInfo);
+				TMSetBoolFunctionParameter(
+					Function,
+					Parameters,
+					{
+						TEXT("bHeadshot"),
+						TEXT("Headshot"),
+						TEXT("bHeadShot"),
+						TEXT("HeadShot"),
+						TEXT("bIsHeadshot"),
+						TEXT("IsHeadshot"),
+						TEXT("bIsHeadShot"),
+						TEXT("IsHeadShot")
+					},
+					bHeadshot);
+				TMSetNumericFunctionParameter(
+					Function,
+					Parameters,
+					{
+						TEXT("DamageMultiplier"),
+						TEXT("HitDamageMultiplier"),
+						TEXT("BoneDamageMultiplier"),
+						TEXT("HitBoneDamageMultiplier"),
+						TEXT("HeadshotMultiplier"),
+						TEXT("HeadShotMultiplier")
+					},
+					DamageMultiplier);
 			});
 	}
 

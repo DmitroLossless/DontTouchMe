@@ -11,11 +11,15 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/UObjectIterator.h"
 
 #include <initializer_list>
+
+DEFINE_LOG_CATEGORY_STATIC(LogTMFoliageCollisionPushTester, Log, All);
 
 namespace
 {
@@ -170,6 +174,10 @@ ATMFoliageCollisionPushTester::ATMFoliageCollisionPushTester()
 	{
 		ProxySphereMesh = SphereMeshFinder.Object;
 	}
+
+	SkeletalReplacementImpactFX.Add(TSoftObjectPtr<UNiagaraSystem>(FSoftObjectPath(TEXT("/Game/BallisticsVFX/Particles/Impacts/LegacyFX/Small-Medium-Large/Vegetation/NS_Vegetation_impact_large.NS_Vegetation_impact_large"))));
+	SkeletalReplacementImpactFX.Add(TSoftObjectPtr<UNiagaraSystem>(FSoftObjectPath(TEXT("/Game/BallisticsVFX/Particles/Impacts/LegacyFX/Small-Medium-Large/Vegetation/NS_Vegetation_impact_med.NS_Vegetation_impact_med"))));
+	SkeletalReplacementImpactFX.Add(TSoftObjectPtr<UNiagaraSystem>(FSoftObjectPath(TEXT("/Game/BallisticsVFX/Particles/Impacts/LegacyFX/Small-Medium-Large/Vegetation/NS_Vegetation_impact_small.NS_Vegetation_impact_small"))));
 
 	ConfigurePusherSphere();
 }
@@ -430,7 +438,9 @@ bool ATMFoliageCollisionPushTester::CreateSkeletalReplacement(const FTransform& 
 		return false;
 	}
 
+#if WITH_EDITOR
 	ReplacementActor->SetActorLabel(TEXT("TM_FoliageSkeletalReplacement"));
+#endif
 	USkeletalMeshComponent* SkeletalMeshComponent = ReplacementActor->GetSkeletalMeshComponent();
 	if (!SkeletalMeshComponent)
 	{
@@ -458,7 +468,66 @@ bool ATMFoliageCollisionPushTester::CreateSkeletalReplacement(const FTransform& 
 	SkeletalMeshComponent->WakeAllRigidBodies();
 
 	SkeletalReplacementActors.Add(ReplacementActor);
+	SpawnRandomSkeletalReplacementImpactFX(WorldTransform);
 	return true;
+}
+
+void ATMFoliageCollisionPushTester::SpawnRandomSkeletalReplacementImpactFX(const FTransform& WorldTransform)
+{
+	UWorld* World = GetWorld();
+	if (!bSpawnSkeletalReplacementImpactFX
+		|| !World
+		|| World->GetNetMode() == NM_DedicatedServer
+		|| SkeletalReplacementImpactFX.IsEmpty())
+	{
+		if (bSpawnSkeletalReplacementImpactFX && World && SkeletalReplacementImpactFX.IsEmpty())
+		{
+			UE_LOG(
+				LogTMFoliageCollisionPushTester,
+				Warning,
+				TEXT("Skipped foliage skeletal replacement impact FX at %s: no Niagara systems configured."),
+				*WorldTransform.GetLocation().ToCompactString());
+		}
+		return;
+	}
+
+	TArray<UNiagaraSystem*> LoadedSystems;
+	LoadedSystems.Reserve(SkeletalReplacementImpactFX.Num());
+	for (const TSoftObjectPtr<UNiagaraSystem>& ImpactFX : SkeletalReplacementImpactFX)
+	{
+		if (UNiagaraSystem* NiagaraSystem = ImpactFX.LoadSynchronous())
+		{
+			LoadedSystems.Add(NiagaraSystem);
+		}
+	}
+
+	if (LoadedSystems.IsEmpty())
+	{
+		UE_LOG(
+			LogTMFoliageCollisionPushTester,
+			Warning,
+			TEXT("Skipped foliage skeletal replacement impact FX at %s: configured Niagara systems failed to load."),
+			*WorldTransform.GetLocation().ToCompactString());
+		return;
+	}
+
+	UNiagaraSystem* NiagaraSystem = LoadedSystems[FMath::RandHelper(LoadedSystems.Num())];
+	UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+		this,
+		NiagaraSystem,
+		WorldTransform.GetLocation(),
+		WorldTransform.GetRotation().Rotator(),
+		SkeletalReplacementImpactFXScale,
+		true,
+		true,
+		ENCPoolMethod::AutoRelease);
+
+	UE_LOG(
+		LogTMFoliageCollisionPushTester,
+		Log,
+		TEXT("Spawned foliage skeletal replacement impact FX %s at %s."),
+		*NiagaraSystem->GetPathName(),
+		*WorldTransform.GetLocation().ToCompactString());
 }
 
 void ATMFoliageCollisionPushTester::CollectProxyBodiesForComponent(UPrimitiveComponent* Component, const FVector& Origin)
