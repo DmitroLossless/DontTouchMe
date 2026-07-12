@@ -1856,6 +1856,119 @@ void UTMGameplayStatics::PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor)
 	Gun->PlayWeaponSpawnFeedback();
 }
 
+void UTMGameplayStatics::LogLoadoutPreviewOffsetApplied(
+	AActor* WeaponActor,
+	USceneComponent* TargetComponent,
+	FVector AppliedViewOffset)
+{
+	const FString WeaponName = IsValid(WeaponActor)
+		? WeaponActor->GetName()
+		: FString(TEXT("None"));
+	const FString WeaponPath = IsValid(WeaponActor)
+		? WeaponActor->GetPathName()
+		: FString(TEXT("None"));
+	const FString ComponentName = IsValid(TargetComponent)
+		? TargetComponent->GetName()
+		: FString(TEXT("None"));
+	const FString ComponentPath = IsValid(TargetComponent)
+		? TargetComponent->GetPathName()
+		: FString(TEXT("None"));
+
+	const FString ComponentWorldLocation = IsValid(TargetComponent)
+		? TargetComponent->GetComponentLocation().ToString()
+		: FString(TEXT("None"));
+	const FString ComponentRelativeLocation = IsValid(TargetComponent)
+		? TargetComponent->GetRelativeLocation().ToString()
+		: FString(TEXT("None"));
+	const FString ComponentWorldTransform = IsValid(TargetComponent)
+		? TargetComponent->GetComponentTransform().ToHumanReadableString()
+		: FString(TEXT("None"));
+	const FString ActorLocation = IsValid(WeaponActor)
+		? WeaponActor->GetActorLocation().ToString()
+		: FString(TEXT("None"));
+
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMLoadoutOffsetApply] Applied loadout preview offset. Weapon=%s Path=%s Component=%s ComponentPath=%s AppliedDT_ViewOffset=%s ComponentWorldLocation=%s ComponentRelativeLocation=%s ComponentWorldTransform=%s ActorLocation=%s"),
+		*WeaponName,
+		*WeaponPath,
+		*ComponentName,
+		*ComponentPath,
+		*AppliedViewOffset.ToString(),
+		*ComponentWorldLocation,
+		*ComponentRelativeLocation,
+		*ComponentWorldTransform,
+		*ActorLocation);
+
+	if (!IsValid(WeaponActor) || !IsValid(TargetComponent) || TargetComponent->GetOwner() != WeaponActor)
+	{
+		return;
+	}
+
+	if (TargetComponent->GetFName() != TEXT("Item"))
+	{
+		return;
+	}
+
+	static const FName TransformatorName(TEXT("ActiveWeaponTransformator"));
+	AActor* Transformator = nullptr;
+	if (UWorld* World = WeaponActor->GetWorld())
+	{
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* Candidate = *It;
+			if (!IsValid(Candidate) || Candidate == WeaponActor)
+			{
+				continue;
+			}
+
+			const bool bHasTransformatorTag = Candidate->ActorHasTag(TransformatorName);
+			const bool bHasTransformatorName = Candidate->GetFName() == TransformatorName
+				|| Candidate->GetName().Contains(TransformatorName.ToString());
+#if WITH_EDITOR
+			const bool bHasTransformatorLabel = Candidate->GetActorLabel() == TransformatorName.ToString();
+#else
+			const bool bHasTransformatorLabel = false;
+#endif
+			if (bHasTransformatorTag || bHasTransformatorName || bHasTransformatorLabel)
+			{
+				Transformator = Candidate;
+				break;
+			}
+		}
+	}
+
+	if (!IsValid(Transformator))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMLoadoutTransformator] Cannot snap Item after DT_ViewOffset; transformator not found for Weapon=%s Component=%s."),
+			*WeaponActor->GetName(),
+			*TargetComponent->GetName());
+		return;
+	}
+
+	TargetComponent->SetWorldLocationAndRotation(
+		Transformator->GetActorLocation(),
+		Transformator->GetActorRotation(),
+		false,
+		nullptr,
+		ETeleportType::TeleportPhysics);
+
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMLoadoutTransformator] Snapped visible Item to transformator after DT_ViewOffset. Weapon=%s Component=%s ComponentWorldLocation=%s ComponentWorldRotation=%s TransformatorLocation=%s TransformatorRotation=%s"),
+		*WeaponActor->GetName(),
+		*TargetComponent->GetName(),
+		*TargetComponent->GetComponentLocation().ToString(),
+		*TargetComponent->GetComponentRotation().ToString(),
+		*Transformator->GetActorLocation().ToString(),
+		*Transformator->GetActorRotation().ToString());
+}
+
 namespace
 {
 	bool TMIsLoadoutPreviewWidget(UUserWidget* Widget)
@@ -1988,6 +2101,99 @@ void UTMGameplayStatics::CleanupLoadoutPreview(UUserWidget* OwnerWidget)
 	{
 		TMCleanupLoadoutPreviewWidget(LoadoutWidget);
 	}
+}
+
+bool UTMGameplayStatics::AttachActiveLoadoutWeaponToTransformator(AActor* WeaponActor)
+{
+	static const FName TransformatorName(TEXT("ActiveWeaponTransformator"));
+
+	if (!IsValid(WeaponActor))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[TMLoadoutTransformator] WeaponActor is invalid."));
+		return false;
+	}
+
+	UWorld* World = WeaponActor->GetWorld();
+	if (!World)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMLoadoutTransformator] Weapon=%s has no world."),
+			*WeaponActor->GetName());
+		return false;
+	}
+
+	AActor* Transformator = nullptr;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Candidate = *It;
+		if (!IsValid(Candidate) || Candidate == WeaponActor)
+		{
+			continue;
+		}
+
+		const bool bHasTransformatorTag = Candidate->ActorHasTag(TransformatorName);
+		const bool bHasTransformatorName = Candidate->GetFName() == TransformatorName
+			|| Candidate->GetName().Contains(TransformatorName.ToString());
+#if WITH_EDITOR
+		const bool bHasTransformatorLabel = Candidate->GetActorLabel() == TransformatorName.ToString();
+#else
+		const bool bHasTransformatorLabel = false;
+#endif
+		if (bHasTransformatorTag || bHasTransformatorName || bHasTransformatorLabel)
+		{
+			Transformator = Candidate;
+			break;
+		}
+	}
+
+	if (!IsValid(Transformator))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMLoadoutTransformator] Transformator actor not found for Weapon=%s World=%s."),
+			*WeaponActor->GetName(),
+			*GetNameSafe(World));
+		return false;
+	}
+
+	const FAttachmentTransformRules AttachRules(
+		EAttachmentRule::SnapToTarget,
+		EAttachmentRule::SnapToTarget,
+		EAttachmentRule::KeepWorld,
+		false);
+	const bool bAttached = WeaponActor->AttachToActor(Transformator, AttachRules);
+	if (bAttached)
+	{
+		WeaponActor->SetActorRelativeLocation(FVector::ZeroVector, false, nullptr, ETeleportType::TeleportPhysics);
+		WeaponActor->SetActorRelativeRotation(FRotator::ZeroRotator, false, nullptr, ETeleportType::TeleportPhysics);
+	}
+
+	const USceneComponent* WeaponRoot = WeaponActor->GetRootComponent();
+	const FString WeaponRelativeLocation = WeaponRoot
+		? WeaponRoot->GetRelativeLocation().ToString()
+		: FString(TEXT("None"));
+	const FString WeaponRelativeRotation = WeaponRoot
+		? WeaponRoot->GetRelativeRotation().ToString()
+		: FString(TEXT("None"));
+
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMLoadoutTransformator] Attach Weapon=%s To=%s Result=%d WeaponLocation=%s WeaponRotation=%s WeaponRelativeLocation=%s WeaponRelativeRotation=%s TransformatorLocation=%s TransformatorRotation=%s"),
+		*WeaponActor->GetName(),
+		*Transformator->GetName(),
+		bAttached ? 1 : 0,
+		*WeaponActor->GetActorLocation().ToString(),
+		*WeaponActor->GetActorRotation().ToString(),
+		*WeaponRelativeLocation,
+		*WeaponRelativeRotation,
+		*Transformator->GetActorLocation().ToString(),
+		*Transformator->GetActorRotation().ToString());
+
+	return bAttached;
 }
 
 void UTMGameplayStatics::MarketSoundRoom(bool enable)

@@ -67,6 +67,7 @@
 #include "Kismet2/EnumEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
+#include "Misc/Parse.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
 #include "Particles/ParticleSystem.h"
@@ -5249,6 +5250,192 @@ namespace
 		return INDEX_NONE;
 	}
 
+	bool TMPropertyMatchesAuthoredName(const FProperty* Property, const TCHAR* ExpectedName)
+	{
+		if (!Property || !ExpectedName)
+		{
+			return false;
+		}
+
+		const FString Expected(ExpectedName);
+		const FString PropertyName = Property->GetName();
+		const FString AuthoredName = Property->GetAuthoredName();
+		const FString DisplayName = Property->GetMetaData(TEXT("DisplayName"));
+
+		return PropertyName.Equals(Expected, ESearchCase::IgnoreCase)
+			|| PropertyName.StartsWith(Expected + TEXT("_"), ESearchCase::IgnoreCase)
+			|| AuthoredName.Equals(Expected, ESearchCase::IgnoreCase)
+			|| DisplayName.Equals(Expected, ESearchCase::IgnoreCase);
+	}
+
+	FProperty* TMFindStructPropertyByAuthoredName(UScriptStruct* Struct, const TCHAR* ExpectedName)
+	{
+		if (!Struct)
+		{
+			return nullptr;
+		}
+
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			FProperty* Property = *It;
+			if (TMPropertyMatchesAuthoredName(Property, ExpectedName))
+			{
+				return Property;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool TMExportStructPropertyText(FProperty* Property, const void* ContainerPtr, FString& OutText)
+	{
+		if (!Property || !ContainerPtr)
+		{
+			return false;
+		}
+
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(ContainerPtr);
+		Property->ExportTextItem_Direct(OutText, ValuePtr, nullptr, nullptr, PPF_None);
+		return true;
+	}
+
+	bool TMSetEnumPropertyByDisplayName(FProperty* Property, void* ContainerPtr, const TCHAR* DisplayName)
+	{
+		if (!Property || !ContainerPtr || !DisplayName)
+		{
+			return false;
+		}
+
+		UEnum* Enum = nullptr;
+		if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+		{
+			Enum = EnumProperty->GetEnum();
+		}
+		else if (FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+		{
+			Enum = ByteProperty->Enum;
+		}
+
+		const int32 EnumIndex = TMFindEnumIndexByDisplayName(Enum, DisplayName);
+		if (!Enum || EnumIndex == INDEX_NONE)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutOffset] Failed to find enum value '%s' on property %s enum=%s."),
+				DisplayName,
+				*GetNameSafe(Property),
+				*GetNameSafe(Enum));
+			return false;
+		}
+
+		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(ContainerPtr);
+		const int64 EnumValue = Enum->GetValueByIndex(EnumIndex);
+		if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+		{
+			EnumProperty->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, EnumValue);
+			return true;
+		}
+
+		if (FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property))
+		{
+			NumericProperty->SetIntPropertyValue(ValuePtr, EnumValue);
+			return true;
+		}
+
+		return false;
+	}
+
+	bool TMParseDoubleParam(const FString& Params, const TCHAR* Key, double& OutValue)
+	{
+		FString ValueString;
+		if (!FParse::Value(*Params, Key, ValueString))
+		{
+			return false;
+		}
+
+		OutValue = FCString::Atod(*ValueString);
+		return true;
+	}
+
+	bool TMSetACWILoadoutViewOffset(const FString& Params)
+	{
+		double X = -12.5;
+		double Y = -17.5;
+		double Z = -5.0;
+		TMParseDoubleParam(Params, TEXT("ACWILoadoutX="), X);
+		TMParseDoubleParam(Params, TEXT("ACWILoadoutY="), Y);
+		TMParseDoubleParam(Params, TEXT("ACWILoadoutZ="), Z);
+
+		UDataTable* WeaponsTable = LoadObject<UDataTable>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons"));
+		if (!WeaponsTable)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffset] Failed to load DT_Weapons."));
+			return false;
+		}
+
+		UScriptStruct* RowStruct = const_cast<UScriptStruct*>(WeaponsTable->GetRowStruct());
+		uint8* const* RowPtr = WeaponsTable->GetRowMap().Find(TEXT("ACWI"));
+		if (!RowStruct || !RowPtr || !*RowPtr)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffset] Failed to find ACWI row in DT_Weapons."));
+			return false;
+		}
+
+		FStructProperty* ParametersProperty =
+			CastField<FStructProperty>(TMFindStructPropertyByAuthoredName(RowStruct, TEXT("Parameters")));
+		if (!ParametersProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffset] Failed to find Parameters field on %s."), *GetNameSafe(RowStruct));
+			return false;
+		}
+
+		void* ParametersPtr = ParametersProperty->ContainerPtrToValuePtr<void>(*RowPtr);
+		FStructProperty* ViewOffsetProperty =
+			CastField<FStructProperty>(TMFindStructPropertyByAuthoredName(ParametersProperty->Struct, TEXT("ViewOffset")));
+		FProperty* WeaponTypeProperty =
+			TMFindStructPropertyByAuthoredName(ParametersProperty->Struct, TEXT("WeaponType"));
+		if (!ViewOffsetProperty || ViewOffsetProperty->Struct != TBaseStructure<FVector>::Get())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffset] Failed to find Parameters.ViewOffset FVector field."));
+			return false;
+		}
+		if (!WeaponTypeProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffset] Failed to find Parameters.WeaponType field."));
+			return false;
+		}
+
+		FString OldParametersText;
+		TMExportStructPropertyText(ParametersProperty, *RowPtr, OldParametersText);
+
+		WeaponsTable->Modify();
+		FVector* ViewOffset = ViewOffsetProperty->ContainerPtrToValuePtr<FVector>(ParametersPtr);
+		*ViewOffset = FVector(X, Y, Z);
+
+		if (!TMSetEnumPropertyByDisplayName(WeaponTypeProperty, ParametersPtr, TEXT("Assault Rifle")))
+		{
+			return false;
+		}
+
+		FString NewParametersText;
+		TMExportStructPropertyText(ParametersProperty, *RowPtr, NewParametersText);
+
+		WeaponsTable->HandleDataTableChanged(TEXT("ACWI"));
+		WeaponsTable->MarkPackageDirty();
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutOffset] ACWI Parameters: %s -> %s"),
+			*OldParametersText,
+			*NewParametersText);
+
+		return TMSavePackageForAsset(WeaponsTable, TEXT("TMLoadoutOffset"));
+	}
+
 	bool TMEnsureAttachmentEnumHasSilencerco(UUserDefinedEnum*& OutEnum, int64& OutSilencercoValue)
 	{
 		OutEnum = LoadObject<UUserDefinedEnum>(
@@ -7848,6 +8035,208 @@ namespace
 		}
 	}
 
+	FString TMDescribeLoadoutOffsetNode(const UEdGraphNode* Node)
+	{
+		if (!Node)
+		{
+			return FString();
+		}
+
+		FString Text = FString::Printf(
+			TEXT("%s %s %s"),
+			*Node->GetName(),
+			*Node->GetClass()->GetName(),
+			*Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+
+		if (const UK2Node_CallFunction* CallFunctionNode = Cast<UK2Node_CallFunction>(Node))
+		{
+			Text += FString::Printf(
+				TEXT(" Function=%s"),
+				*CallFunctionNode->FunctionReference.GetMemberName().ToString());
+			if (const UFunction* TargetFunction = CallFunctionNode->GetTargetFunction())
+			{
+				Text += FString::Printf(TEXT(" Owner=%s"), *GetNameSafe(TargetFunction->GetOwnerClass()));
+			}
+		}
+		else if (const UK2Node_VariableGet* VariableGetNode = Cast<UK2Node_VariableGet>(Node))
+		{
+			Text += FString::Printf(
+				TEXT(" VariableGet=%s"),
+				*VariableGetNode->GetVarNameString());
+		}
+		else if (const UK2Node_VariableSet* VariableSetNode = Cast<UK2Node_VariableSet>(Node))
+		{
+			Text += FString::Printf(
+				TEXT(" VariableSet=%s"),
+				*VariableSetNode->GetVarNameString());
+		}
+		else if (const UK2Node_BreakStruct* BreakStructNode = Cast<UK2Node_BreakStruct>(Node))
+		{
+			Text += FString::Printf(
+				TEXT(" BreakStruct=%s"),
+				*GetNameSafe(BreakStructNode->StructType));
+		}
+		else if (const UK2Node_MakeStruct* MakeStructNode = Cast<UK2Node_MakeStruct>(Node))
+		{
+			Text += FString::Printf(
+				TEXT(" MakeStruct=%s"),
+				*GetNameSafe(MakeStructNode->StructType));
+		}
+		else if (const UK2Node_SpawnActorFromClass* SpawnNode = Cast<UK2Node_SpawnActorFromClass>(Node))
+		{
+			Text += FString::Printf(
+				TEXT(" SpawnClassPin=%s"),
+				*TMDescribePin(TMFindPinByNameConst(SpawnNode, TEXT("Class"), EGPD_Input)));
+		}
+
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin)
+			{
+				continue;
+			}
+
+			Text += FString::Printf(
+				TEXT(" Pin[%s Friendly=%s Cat=%s SubCat=%s Obj=%s Default=%s Auto=%s Links=%s]"),
+				*Pin->PinName.ToString(),
+				*Pin->PinFriendlyName.ToString(),
+				*Pin->PinType.PinCategory.ToString(),
+				*Pin->PinType.PinSubCategory.ToString(),
+				*GetNameSafe(Pin->PinType.PinSubCategoryObject.Get()),
+				*Pin->DefaultValue,
+				*Pin->AutogeneratedDefaultValue,
+				*TMDescribePinLinks(Pin));
+		}
+
+		return Text;
+	}
+
+	bool TMIsLoadoutOffsetRelevantText(const FString& Text)
+	{
+		return Text.Contains(TEXT("ViewOffset"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("View Offset"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("LocalOffset"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("Local Offset"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("LocalOffsets"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("Local Offsets"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("SetRelative"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("Relative Location"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("Relative Transform"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("SpawnActor"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("GetDataTableRow"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("ST_Weapon"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("Parameters"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("DT_Weapons"), ESearchCase::IgnoreCase)
+			|| Text.Contains(TEXT("ActiveWeapon"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMDumpLoadoutOffsetGraph()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffsetGraph] Failed to load W_Loadout."));
+			return false;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutOffsetGraph] BP=%s Graphs=%d GeneratedClass=%s"),
+			*Blueprint->GetPathName(),
+			Graphs.Num(),
+			*GetNameSafe(Blueprint->GeneratedClass));
+
+		int32 MatchedNodeCount = 0;
+		for (const UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMLoadoutOffsetGraph] Graph=%s Nodes=%d"),
+				*Graph->GetName(),
+				Graph->Nodes.Num());
+
+			TSet<const UEdGraphNode*> NodesToDump;
+			for (const UEdGraphNode* Node : Graph->Nodes)
+			{
+				const FString NodeText = TMDescribeLoadoutOffsetNode(Node);
+				if (!TMIsLoadoutOffsetRelevantText(NodeText))
+				{
+					continue;
+				}
+
+				NodesToDump.Add(Node);
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					if (!Pin)
+					{
+						continue;
+					}
+
+					for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+					{
+						if (const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr)
+						{
+							NodesToDump.Add(LinkedNode);
+						}
+					}
+				}
+			}
+
+			MatchedNodeCount += NodesToDump.Num();
+			for (const UEdGraphNode* Node : NodesToDump)
+			{
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMLoadoutOffsetGraph]   Node=%s"),
+					*TMDescribeLoadoutOffsetNode(Node));
+			}
+		}
+
+		if (Blueprint->GeneratedClass)
+		{
+			for (TFieldIterator<FProperty> It(Blueprint->GeneratedClass); It; ++It)
+			{
+				const FProperty* Property = *It;
+				if (!Property)
+				{
+					continue;
+				}
+
+				const FString Name = Property->GetName();
+				if (!TMIsLoadoutOffsetRelevantText(Name))
+				{
+					continue;
+				}
+
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMLoadoutOffsetGraph]   GeneratedProperty=%s Class=%s"),
+					*Name,
+					*Property->GetClass()->GetName());
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutOffsetGraph] Summary: MatchedNodes=%d"),
+			MatchedNodeCount);
+		return MatchedNodeCount > 0;
+	}
+
 	bool TMIsExecPin(const UEdGraphPin* Pin)
 	{
 		return Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
@@ -7910,25 +8299,431 @@ namespace
 		}
 	}
 
-	bool TMSpawnNodeAlreadyCallsWeaponSpawnFeedback(const UK2Node_SpawnActorFromClass* SpawnNode)
+	bool TMExecReachableContainsFunction(
+		const UEdGraphNode* Node,
+		const FName FunctionName,
+		TSet<const UEdGraphNode*>& VisitedNodes)
 	{
-		const UEdGraphPin* ThenPin = TMFindPinByNameConst(SpawnNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
-		if (!ThenPin)
+		if (!Node || VisitedNodes.Contains(Node))
 		{
 			return false;
 		}
 
-		for (const UEdGraphPin* LinkedPin : ThenPin->LinkedTo)
+		VisitedNodes.Add(Node);
+		if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
 		{
-			const UK2Node_CallFunction* CallNode = LinkedPin ? Cast<UK2Node_CallFunction>(LinkedPin->GetOwningNode()) : nullptr;
-			if (CallNode
-				&& CallNode->FunctionReference.GetMemberName() == GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, PlayWeaponSpawnFeedbackForActor))
+			if (CallNode->FunctionReference.GetMemberName() == FunctionName)
+			{
+				return true;
+			}
+		}
+
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output || !TMIsExecPin(Pin))
+			{
+				continue;
+			}
+
+			for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				if (TMExecReachableContainsFunction(LinkedNode, FunctionName, VisitedNodes))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	bool TMExecOutputPinReachableContainsFunction(const UEdGraphPin* OutputPin, const FName FunctionName)
+	{
+		if (!OutputPin)
+		{
+			return false;
+		}
+
+		TSet<const UEdGraphNode*> VisitedNodes;
+		for (const UEdGraphPin* LinkedPin : OutputPin->LinkedTo)
+		{
+			const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+			if (TMExecReachableContainsFunction(LinkedNode, FunctionName, VisitedNodes))
 			{
 				return true;
 			}
 		}
 
 		return false;
+	}
+
+	UEdGraphPin* TMFindLinkedOutputDataPin(UEdGraphPin* InputPin)
+	{
+		if (!InputPin || InputPin->Direction != EGPD_Input)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphPin* LinkedPin : InputPin->LinkedTo)
+		{
+			if (LinkedPin && LinkedPin->Direction == EGPD_Output && !TMIsExecPin(LinkedPin))
+			{
+				return LinkedPin;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool TMIsVariableGetOutputPin(const UEdGraphPin* OutputPin, const TCHAR* VariableName)
+	{
+		const UK2Node_VariableGet* VariableGetNode = OutputPin
+			? Cast<UK2Node_VariableGet>(OutputPin->GetOwningNode())
+			: nullptr;
+		return VariableGetNode
+			&& VariableGetNode->GetVarNameString().Equals(VariableName, ESearchCase::IgnoreCase);
+	}
+
+	bool TMIsInputPinLinkedFromVariableGet(const UEdGraphPin* InputPin, const TCHAR* VariableName)
+	{
+		if (!InputPin || InputPin->Direction != EGPD_Input)
+		{
+			return false;
+		}
+
+		for (const UEdGraphPin* LinkedPin : InputPin->LinkedTo)
+		{
+			if (TMIsVariableGetOutputPin(LinkedPin, VariableName))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	UEdGraphPin* TMFindInputPinLinkedFromVariableGet(UEdGraphNode* Node, const TCHAR* VariableName, UEdGraphPin** OutSourcePin = nullptr)
+	{
+		if (OutSourcePin)
+		{
+			*OutSourcePin = nullptr;
+		}
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Input || TMIsExecPin(Pin))
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (TMIsVariableGetOutputPin(LinkedPin, VariableName))
+				{
+					if (OutSourcePin)
+					{
+						*OutSourcePin = LinkedPin;
+					}
+					return Pin;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	UEdGraphPin* TMFindInputPinLinkedFromVariableGetOrName(UEdGraphNode* Node, const TCHAR* VariableName, const FName FallbackPinName, UEdGraphPin** OutSourcePin = nullptr)
+	{
+		UEdGraphPin* Pin = TMFindInputPinLinkedFromVariableGet(Node, VariableName, OutSourcePin);
+		if (Pin)
+		{
+			return Pin;
+		}
+
+		Pin = TMFindPinByName(Node, FallbackPinName, EGPD_Input);
+		if (OutSourcePin)
+		{
+			*OutSourcePin = TMFindLinkedOutputDataPin(Pin);
+		}
+		return Pin;
+	}
+
+	FString TMDescribeCallNodeInputLinks(const UK2Node_CallFunction* CallNode)
+	{
+		if (!CallNode)
+		{
+			return TEXT("None");
+		}
+
+		TArray<FString> Parts;
+		for (const UEdGraphPin* Pin : CallNode->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Input || TMIsExecPin(Pin) || Pin->LinkedTo.Num() == 0)
+			{
+				continue;
+			}
+
+			Parts.Add(FString::Printf(TEXT("%s<=%s"), *Pin->PinName.ToString(), *TMDescribePinLinks(Pin)));
+		}
+
+		return Parts.Num() > 0 ? FString::Join(Parts, TEXT("; ")) : FString(TEXT("None"));
+	}
+
+	UEdGraphPin* TMFindVariableGetOutputPinByName(UEdGraphNode* Node, const FName VariableName)
+	{
+		UK2Node_VariableGet* VariableGetNode = Cast<UK2Node_VariableGet>(Node);
+		if (!VariableGetNode || !VariableGetNode->GetVarNameString().Equals(VariableName.ToString(), ESearchCase::IgnoreCase))
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphPin* Pin : VariableGetNode->Pins)
+		{
+			if (Pin
+				&& Pin->Direction == EGPD_Output
+				&& !TMIsExecPin(Pin)
+				&& Pin->PinName == VariableName)
+			{
+				return Pin;
+			}
+		}
+
+		return TMFindFirstDataPin(VariableGetNode, EGPD_Output);
+	}
+
+	bool TMIsLoadoutOffsetSetWorldTransformNode(UK2Node_CallFunction* CallNode)
+	{
+		if (!CallNode
+			|| CallNode->FunctionReference.GetMemberName() != TEXT("K2_SetWorldTransform"))
+		{
+			return false;
+		}
+
+		return TMFindInputPinLinkedFromVariableGet(CallNode, TEXT("DT_ViewOffset")) != nullptr;
+	}
+
+	bool TMInsertLoadoutOffsetLogAfterSetWorldTransform(UEdGraph* Graph, UK2Node_CallFunction* SetWorldTransformNode)
+	{
+		if (!Graph || !SetWorldTransformNode)
+		{
+			return false;
+		}
+
+		UEdGraphPin* SetThenPin = TMFindPinByName(SetWorldTransformNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		if (TMExecOutputPinReachableContainsFunction(
+			SetThenPin,
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, LogLoadoutPreviewOffsetApplied)))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMLoadoutOffsetLog] SetWorldTransform already logs offset: Graph=%s Node=%s"),
+				*Graph->GetName(),
+				*SetWorldTransformNode->GetName());
+			return false;
+		}
+
+		const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
+		UEdGraphPin* TargetSourcePin = nullptr;
+		UEdGraphPin* TargetPin = TMFindInputPinLinkedFromVariableGetOrName(
+			SetWorldTransformNode,
+			TEXT("Item"),
+			TEXT("self"),
+			&TargetSourcePin);
+		UEdGraphPin* ViewOffsetSourcePin = nullptr;
+		UEdGraphPin* LocationPin = TMFindInputPinLinkedFromVariableGetOrName(
+			SetWorldTransformNode,
+			TEXT("DT_ViewOffset"),
+			TEXT("NewTransform_Location"),
+			&ViewOffsetSourcePin);
+		UEdGraphPin* WeaponActorSourcePin = nullptr;
+
+		if (TargetSourcePin)
+		{
+			UEdGraphNode* TargetSourceNode = TargetSourcePin->GetOwningNode();
+			if (UK2Node_VariableGet* ItemGetNode = Cast<UK2Node_VariableGet>(TargetSourceNode))
+			{
+				UEdGraphPin* ItemSelfPin = TMFindPinByName(ItemGetNode, TEXT("self"), EGPD_Input);
+				WeaponActorSourcePin = TMFindLinkedOutputDataPin(ItemSelfPin);
+				if (!WeaponActorSourcePin)
+				{
+					TMFindInputPinLinkedFromVariableGet(ItemGetNode, TEXT("ActiveWeapon"), &WeaponActorSourcePin);
+				}
+			}
+		}
+
+		if (!Schema || !SetThenPin || !TargetSourcePin || !ViewOffsetSourcePin || !WeaponActorSourcePin)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutOffsetLog] Missing pins for Graph=%s Node=%s Schema=%d Then=%d Target=%s ViewOffset=%s Weapon=%s"),
+				*GetNameSafe(Graph),
+				*GetNameSafe(SetWorldTransformNode),
+				Schema ? 1 : 0,
+				SetThenPin ? 1 : 0,
+				*FString::Printf(TEXT("Pin=%s Source=%s"), *TMDescribePin(TargetPin), *TMDescribePin(TargetSourcePin)),
+				*FString::Printf(TEXT("Pin=%s Source=%s"), *TMDescribePin(LocationPin), *TMDescribePin(ViewOffsetSourcePin)),
+				*TMDescribePin(WeaponActorSourcePin));
+			return false;
+		}
+
+		TArray<UEdGraphPin*> PreviousThenTargets = SetThenPin->LinkedTo;
+
+		FGraphNodeCreator<UK2Node_CallFunction> LogCreator(*Graph);
+		UK2Node_CallFunction* LogNode = LogCreator.CreateNode();
+		LogNode->FunctionReference.SetExternalMember(
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, LogLoadoutPreviewOffsetApplied),
+			UTMGameplayStatics::StaticClass());
+		LogNode->NodePosX = SetWorldTransformNode->NodePosX + 360;
+		LogNode->NodePosY = SetWorldTransformNode->NodePosY - 120;
+		LogNode->NodeComment = TEXT("TM: log loadout DT_ViewOffset when it is applied to the preview weapon component");
+		LogCreator.Finalize();
+
+		UEdGraphPin* LogExecPin = TMFindPinByName(LogNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* LogThenPin = TMFindPinByName(LogNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* WeaponActorPin = TMFindPinByName(LogNode, TEXT("WeaponActor"), EGPD_Input);
+		UEdGraphPin* TargetComponentPin = TMFindPinByName(LogNode, TEXT("TargetComponent"), EGPD_Input);
+		UEdGraphPin* AppliedViewOffsetPin = TMFindPinByName(LogNode, TEXT("AppliedViewOffset"), EGPD_Input);
+
+		if (!LogExecPin || !LogThenPin || !WeaponActorPin || !TargetComponentPin || !AppliedViewOffsetPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutOffsetLog] Failed to create log call pins Exec=%d Then=%d Weapon=%d Component=%d Offset=%d"),
+				LogExecPin ? 1 : 0,
+				LogThenPin ? 1 : 0,
+				WeaponActorPin ? 1 : 0,
+				TargetComponentPin ? 1 : 0,
+				AppliedViewOffsetPin ? 1 : 0);
+			Graph->RemoveNode(LogNode);
+			return false;
+		}
+
+		SetThenPin->Modify();
+		SetThenPin->BreakAllPinLinks(false);
+
+		bool bSuccess = true;
+		bSuccess &= Schema->TryCreateConnection(SetThenPin, LogExecPin);
+		for (UEdGraphPin* PreviousThenTarget : PreviousThenTargets)
+		{
+			if (PreviousThenTarget)
+			{
+				bSuccess &= Schema->TryCreateConnection(LogThenPin, PreviousThenTarget);
+			}
+		}
+		bSuccess &= Schema->TryCreateConnection(WeaponActorSourcePin, WeaponActorPin);
+		bSuccess &= Schema->TryCreateConnection(TargetSourcePin, TargetComponentPin);
+		bSuccess &= Schema->TryCreateConnection(ViewOffsetSourcePin, AppliedViewOffsetPin);
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutOffsetLog] Inserted offset apply log after %s in graph %s. OldThenTargets=%d Success=%d Weapon=%s Component=%s Offset=%s"),
+			*SetWorldTransformNode->GetName(),
+			*Graph->GetName(),
+			PreviousThenTargets.Num(),
+			bSuccess ? 1 : 0,
+			*TMDescribePin(WeaponActorSourcePin),
+			*TMDescribePin(TargetSourcePin),
+			*TMDescribePin(ViewOffsetSourcePin));
+		return bSuccess;
+	}
+
+	bool TMPatchLoadoutOffsetApplyLogging()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffsetLog] Failed to load W_Loadout."));
+			return false;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+
+		bool bChanged = false;
+		int32 CandidateCount = 0;
+		int32 SetWorldTransformCount = 0;
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			TArray<UEdGraphNode*> GraphNodes = Graph->Nodes;
+			for (UEdGraphNode* Node : GraphNodes)
+			{
+				UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+				if (CallNode && CallNode->FunctionReference.GetMemberName() == TEXT("K2_SetWorldTransform"))
+				{
+					++SetWorldTransformCount;
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMLoadoutOffsetLog] Saw SetWorldTransform Graph=%s Node=%s InputLinks=%s"),
+						*Graph->GetName(),
+						*CallNode->GetName(),
+						*TMDescribeCallNodeInputLinks(CallNode));
+				}
+				if (!TMIsLoadoutOffsetSetWorldTransformNode(CallNode))
+				{
+					continue;
+				}
+
+				++CandidateCount;
+				if (TMInsertLoadoutOffsetLogAfterSetWorldTransform(Graph, CallNode))
+				{
+					bChanged = true;
+				}
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutOffsetLog] Summary: SetWorldTransformNodes=%d CandidateSetWorldTransformNodes=%d Changed=%d"),
+			SetWorldTransformCount,
+			CandidateCount,
+			bChanged ? 1 : 0);
+
+		if (CandidateCount == 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffsetLog] Did not find W_Loadout DT_ViewOffset SetWorldTransform node."));
+			return false;
+		}
+
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutOffsetLog] W_Loadout failed to compile after patch."));
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMLoadoutOffsetLog"));
+	}
+
+	bool TMSpawnNodeAlreadyCallsWeaponSpawnFeedback(const UK2Node_SpawnActorFromClass* SpawnNode)
+	{
+		const UEdGraphPin* ThenPin = TMFindPinByNameConst(SpawnNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		return TMExecOutputPinReachableContainsFunction(
+			ThenPin,
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, PlayWeaponSpawnFeedbackForActor));
 	}
 
 	bool TMSpawnNodeAlreadyCleansLoadoutPreviewBeforeSpawn(const UK2Node_SpawnActorFromClass* SpawnNode)
@@ -10201,6 +10996,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 		return TMRefreshAttachmentAssets() ? 0 : 1;
 	}
 
+	if (Params.Contains(TEXT("SetACWILoadoutViewOffset"), ESearchCase::IgnoreCase))
+	{
+		return TMSetACWILoadoutViewOffset(Params) ? 0 : 1;
+	}
+
 	if (Params.Contains(TEXT("PatchSilencercoM4Tar"), ESearchCase::IgnoreCase))
 	{
 		return TMPatchSilencercoM4TarCompatibility() ? 0 : 1;
@@ -10219,6 +11019,16 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("DumpYellowUIGraphColors"), ESearchCase::IgnoreCase))
 	{
 		return TMDumpYellowUIGraphColors() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("DumpLoadoutOffsetGraph"), ESearchCase::IgnoreCase))
+	{
+		return TMDumpLoadoutOffsetGraph() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchLoadoutOffsetApplyLogging"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchLoadoutOffsetApplyLogging() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("DumpMenuButtonWidgets"), ESearchCase::IgnoreCase))

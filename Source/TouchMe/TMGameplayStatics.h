@@ -117,8 +117,17 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, Category = "TM|Loadout|Feedback", meta = (DisplayName = "Play Weapon Spawn Feedback For Actor"))
 	static TOUCHME_API void PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor);
 
+	UFUNCTION(BlueprintCallable, Category = "TM|Loadout|Debug", meta = (DisplayName = "Log Loadout Preview Offset Applied"))
+	static TOUCHME_API void LogLoadoutPreviewOffsetApplied(
+		AActor* WeaponActor,
+		USceneComponent* TargetComponent,
+		FVector AppliedViewOffset);
+
 	UFUNCTION(BlueprintCallable, Category = "TM|Loadout", meta = (DisplayName = "Cleanup Loadout Preview"))
 	static TOUCHME_API void CleanupLoadoutPreview(UUserWidget* OwnerWidget);
+
+	UFUNCTION(BlueprintCallable, Category = "TM|Loadout", meta = (DisplayName = "Attach Active Loadout Weapon To Transformator"))
+	static TOUCHME_API bool AttachActiveLoadoutWeaponToTransformator(AActor* WeaponActor);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "5", UnsafeDuringActorConstruction = "true", Keywords = "play"))
 	static TOUCHME_API void MarketSoundRoom(bool enable);

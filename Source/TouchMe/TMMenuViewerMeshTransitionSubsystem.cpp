@@ -1,7 +1,10 @@
 #include "TMMenuViewerMeshTransitionSubsystem.h"
 
 #include "Blueprint/UserWidget.h"
+#include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Components/ActorComponent.h"
+#include "Components/LightComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
@@ -9,6 +12,9 @@
 #include "EngineUtils.h"
 #include "Gun/Gun.h"
 #include "Kismet/GameplayStatics.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
+#include "Particles/ParticleSystemComponent.h"
 #include "TMAudioEnvelopeFollower.h"
 #include "TouchMe.h"
 #include "UObject/UObjectIterator.h"
@@ -68,14 +74,68 @@ static TAutoConsoleVariable<int32> CVarLoadoutFOV(
 
 static TAutoConsoleVariable<float> CVarLoadoutFOVAngle(
 	TEXT("tm.LoadoutFOV.Angle"),
-	90.0f,
+	85.0f,
 	TEXT("Player camera FOV used while the loadout UI is visible."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarMenuFOVAngle(
 	TEXT("tm.MenuFOV.Angle"),
-	82.0f,
+	90.0f,
 	TEXT("Player camera FOV used by default while the main menu UI is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarLoadoutPostProcess(
+	TEXT("tm.LoadoutPostProcess"),
+	1,
+	TEXT("Enables cinematic main menu and loadout camera post process profiles."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutPostProcessBlendWeight(
+	TEXT("tm.LoadoutPostProcess.BlendWeight"),
+	1.0f,
+	TEXT("Blend weight for the cinematic main menu post process."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutPostProcessEdgeBlur(
+	TEXT("tm.LoadoutPostProcess.EdgeBlur"),
+	82.0f,
+	TEXT("Depth-of-field vignette size for main menu edge blur. Lower values blur more of the edge."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutPostProcessPetzval(
+	TEXT("tm.LoadoutPostProcess.Petzval"),
+	0.8f,
+	TEXT("Petzval bokeh strength for the cinematic main menu edge blur."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutPostProcessVignette(
+	TEXT("tm.LoadoutPostProcess.Vignette"),
+	0.42f,
+	TEXT("Dark vignette strength for the cinematic main menu post process."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarLoadoutBackGlowDucking(
+	TEXT("tm.LoadoutBackGlowDucking"),
+	1,
+	TEXT("Fades the bright rear RectLight bank while the loadout UI is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackGlowScale(
+	TEXT("tm.LoadoutBackGlowDucking.Scale"),
+	0.02f,
+	TEXT("Target intensity scale for the rear menu glow while the loadout UI is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackGlowFadeSpeed(
+	TEXT("tm.LoadoutBackGlowDucking.FadeSpeed"),
+	4.5f,
+	TEXT("Interpolation speed for loadout rear glow fade in/out."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackGlowVisualScale(
+	TEXT("tm.LoadoutBackGlowDucking.VisualScale"),
+	0.02f,
+	TEXT("Target scale for P_Ambient_Glow while the loadout UI is visible."),
 	ECVF_Default);
 
 static TWeakObjectPtr<USkeletalMesh> GLastMenuViewerVestMesh;
@@ -84,10 +144,30 @@ float GetMenuFOVAngle()
 {
 	return FMath::Clamp(CVarMenuFOVAngle.GetValueOnGameThread(), 5.0f, 170.0f);
 }
+
+void ApplyFixedMenuExposure(FPostProcessSettings& Settings, const float ExposureBias)
+{
+	Settings.bOverride_AutoExposureMethod = true;
+	Settings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
+	Settings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+	Settings.AutoExposureApplyPhysicalCameraExposure = false;
+	Settings.bOverride_AutoExposureBias = true;
+	Settings.AutoExposureBias = ExposureBias;
+	Settings.bOverride_AutoExposureMinBrightness = true;
+	Settings.AutoExposureMinBrightness = 0.0f;
+	Settings.bOverride_AutoExposureMaxBrightness = true;
+	Settings.AutoExposureMaxBrightness = 0.0f;
+	Settings.bOverride_AutoExposureSpeedUp = true;
+	Settings.AutoExposureSpeedUp = 100.0f;
+	Settings.bOverride_AutoExposureSpeedDown = true;
+	Settings.AutoExposureSpeedDown = 100.0f;
+}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::Deinitialize()
 {
+	RestoreLoadoutPostProcess();
+	RestoreLoadoutBackGlow();
 	RestoreLoadoutFOV();
 	RestoreMenuFOV();
 	MenuViewerStates.Empty();
@@ -105,10 +185,17 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 	}
 
 	const bool bLoadoutFOVVisible =
-		CVarLoadoutFOV.GetValueOnGameThread() != 0 && IsLoadoutFOVVisible(World);
+		IsLoadoutFOVVisible(World);
+	const bool bLoadoutFOVEnabled =
+		CVarLoadoutFOV.GetValueOnGameThread() != 0 && bLoadoutFOVVisible;
 	const bool bMainMenuVisible = IsMainMenuVisible(World);
+	const bool bPostProcessVisible =
+		CVarLoadoutPostProcess.GetValueOnGameThread() != 0
+		&& bMainMenuVisible;
 	UpdateMenuFOV(World, bMainMenuVisible, bLoadoutFOVVisible);
-	UpdateLoadoutFOV(World, bLoadoutFOVVisible);
+	UpdateLoadoutFOV(World, bLoadoutFOVEnabled);
+	UpdateLoadoutPostProcess(World, bPostProcessVisible, bLoadoutFOVVisible);
+	UpdateLoadoutBackGlow(World, bLoadoutFOVVisible, DeltaTime);
 
 	if (CVarMenuViewerMeshTransition.GetValueOnGameThread() == 0)
 	{
@@ -452,9 +539,193 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutPreviewVisible(UWorld* World
 	return false;
 }
 
+bool UTMMenuViewerMeshTransitionSubsystem::IsVisibleLoadoutPreviewWeaponActor(AActor* Actor)
+{
+	if (!IsValid(Actor)
+		|| Actor->HasAnyFlags(RF_ClassDefaultObject)
+		|| Actor->IsHidden()
+		|| !IsAttachedWeaponActor(Actor)
+		|| Actor->GetAttachParentActor())
+	{
+		return false;
+	}
+
+	TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(Actor);
+	for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+	{
+		if (IsValid(PrimitiveComponent) && PrimitiveComponent->IsVisible())
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutBackGlowLight(const ULightComponent* LightComponent)
+{
+	if (!IsValid(LightComponent))
+	{
+		return false;
+	}
+
+	const AActor* Owner = LightComponent->GetOwner();
+	if (!IsValid(Owner))
+	{
+		return false;
+	}
+
+	const UClass* ComponentClass = LightComponent->GetClass();
+	const FString ComponentClassName = ComponentClass ? ComponentClass->GetName() : FString();
+	if (!ComponentClassName.Contains(TEXT("RectLight")))
+	{
+		return false;
+	}
+
+	const FString OwnerName = Owner->GetName();
+	if (!OwnerName.Contains(TEXT("RectLight")))
+	{
+		return false;
+	}
+
+	return Owner->GetActorLocation().X <= -250.0f;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutBackGlowVisual(const UPrimitiveComponent* PrimitiveComponent)
+{
+	if (!IsValid(PrimitiveComponent))
+	{
+		return false;
+	}
+
+	const AActor* Owner = PrimitiveComponent->GetOwner();
+	if (!IsValid(Owner))
+	{
+		return false;
+	}
+
+	const UParticleSystemComponent* ParticleComponent = Cast<UParticleSystemComponent>(PrimitiveComponent);
+	if (!ParticleComponent || !ParticleComponent->Template)
+	{
+		return false;
+	}
+
+	const FString OwnerName = Owner->GetName();
+	const FString TemplatePath = ParticleComponent->Template->GetPathName();
+	return OwnerName.Contains(TEXT("P_Ambient_Glow"))
+		|| TemplatePath.Contains(TEXT("P_Ambient_Glow"));
+}
+
+AActor* UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutPreviewWeaponActor(
+	UWorld* World,
+	const FVector& CameraLocation) const
+{
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Loadout")))
+		{
+			continue;
+		}
+
+		const ESlateVisibility Visibility = Widget->GetVisibility();
+		if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+		{
+			continue;
+		}
+
+		const FObjectPropertyBase* ActiveWeaponProperty =
+			FindFProperty<FObjectPropertyBase>(WidgetClass, TEXT("ActiveWeapon"));
+		if (!ActiveWeaponProperty)
+		{
+			continue;
+		}
+
+		AActor* ActiveWeapon = Cast<AActor>(ActiveWeaponProperty->GetObjectPropertyValue_InContainer(Widget));
+		if (IsVisibleLoadoutPreviewWeaponActor(ActiveWeapon))
+		{
+			return ActiveWeapon;
+		}
+	}
+
+	AActor* BestActor = nullptr;
+	float BestDistanceSq = TNumericLimits<float>::Max();
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (!IsVisibleLoadoutPreviewWeaponActor(Actor))
+		{
+			continue;
+		}
+
+		const float DistanceSq = FVector::DistSquared(CameraLocation, Actor->GetActorLocation());
+		if (FMath::IsFinite(DistanceSq) && DistanceSq < BestDistanceSq)
+		{
+			BestActor = Actor;
+			BestDistanceSq = DistanceSq;
+		}
+	}
+
+	return BestActor;
+}
+
 APlayerCameraManager* UTMMenuViewerMeshTransitionSubsystem::ResolvePlayerCameraManager(UWorld* World)
 {
 	return World ? UGameplayStatics::GetPlayerCameraManager(World, 0) : nullptr;
+}
+
+UCameraComponent* UTMMenuViewerMeshTransitionSubsystem::ResolveActiveCameraComponent(UWorld* World)
+{
+	APlayerCameraManager* PlayerCameraManager = ResolvePlayerCameraManager(World);
+	AActor* ViewTarget = PlayerCameraManager ? PlayerCameraManager->GetViewTarget() : nullptr;
+	if (ViewTarget)
+	{
+		TInlineComponentArray<UCameraComponent*> CameraComponents(ViewTarget);
+		for (UCameraComponent* CameraComponent : CameraComponents)
+		{
+			if (CameraComponent && CameraComponent->IsActive())
+			{
+				return CameraComponent;
+			}
+		}
+
+		if (CameraComponents.Num() > 0)
+		{
+			return CameraComponents[0];
+		}
+	}
+
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (!IsMenuViewerActor(Actor))
+		{
+			continue;
+		}
+
+		if (UCameraComponent* CameraComponent = Actor->FindComponentByClass<UCameraComponent>())
+		{
+			return CameraComponent;
+		}
+	}
+
+	return nullptr;
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachedWeaponVisibility(
@@ -690,6 +961,523 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutFOV()
 
 	LoadoutFOVCameraManager.Reset();
 	bLoadoutFOVApplied = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutPostProcess(
+	UWorld* World,
+	const bool bPostProcessVisible,
+	const bool bLoadoutVisible)
+{
+	if (!bPostProcessVisible)
+	{
+		RestoreLoadoutPostProcess();
+		return;
+	}
+
+	UCameraComponent* CameraComponent = ResolveActiveCameraComponent(World);
+	if (!CameraComponent)
+	{
+		RestoreLoadoutPostProcess();
+		return;
+	}
+
+	if (bLoadoutPostProcessApplied
+		&& LoadoutPostProcessCamera.IsValid()
+		&& LoadoutPostProcessCamera.Get() != CameraComponent)
+	{
+		RestoreLoadoutPostProcess();
+	}
+
+	if (!bLoadoutPostProcessApplied)
+	{
+		SavedLoadoutPostProcessSettings = CameraComponent->PostProcessSettings;
+		SavedLoadoutPostProcessBlendWeight = CameraComponent->PostProcessBlendWeight;
+		LoadoutPostProcessCamera = CameraComponent;
+		bLoadoutPostProcessApplied = true;
+		bLoadoutPostProcessLastLoadoutMode = bLoadoutVisible;
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMMenuPP] Applied cinematic %s post process on %s. SavedBlendWeight=%.2f"),
+			bLoadoutVisible ? TEXT("loadout") : TEXT("main menu"),
+			*GetNameSafe(CameraComponent),
+			SavedLoadoutPostProcessBlendWeight);
+	}
+	else if (bLoadoutPostProcessLastLoadoutMode != bLoadoutVisible)
+	{
+		bLoadoutPostProcessLastLoadoutMode = bLoadoutVisible;
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMMenuPP] Switched cinematic post process to %s profile on %s."),
+			bLoadoutVisible ? TEXT("loadout") : TEXT("main menu"),
+			*GetNameSafe(CameraComponent));
+	}
+
+	ApplyLoadoutPostProcess(World, CameraComponent, bLoadoutVisible);
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
+	UWorld* World,
+	UCameraComponent* CameraComponent,
+	const bool bLoadoutVisible)
+{
+	if (!CameraComponent)
+	{
+		return;
+	}
+
+	FPostProcessSettings Settings = SavedLoadoutPostProcessSettings;
+	const FLoadoutPostProcessFocus Focus = ResolveLoadoutPostProcessFocus(World, CameraComponent);
+
+	if (bLoadoutVisible)
+	{
+		Settings.bOverride_DepthOfFieldFstop = true;
+		Settings.DepthOfFieldFstop = 2.6f;
+		Settings.bOverride_DepthOfFieldMinFstop = true;
+		Settings.DepthOfFieldMinFstop = 1.8f;
+		Settings.bOverride_DepthOfFieldFocalDistance = true;
+		Settings.DepthOfFieldFocalDistance = Focus.FocalDistance;
+		Settings.bOverride_DepthOfFieldFocalRegion = true;
+		Settings.DepthOfFieldFocalRegion = FMath::Max(Focus.FocalRegion, 210.0f);
+		Settings.bOverride_DepthOfFieldNearTransitionRegion = true;
+		Settings.DepthOfFieldNearTransitionRegion = 130.0f;
+		Settings.bOverride_DepthOfFieldFarTransitionRegion = true;
+		Settings.DepthOfFieldFarTransitionRegion = 190.0f;
+		Settings.bOverride_DepthOfFieldScale = true;
+		Settings.DepthOfFieldScale = 0.55f;
+		Settings.bOverride_DepthOfFieldNearBlurSize = true;
+		Settings.DepthOfFieldNearBlurSize = 1.5f;
+		Settings.bOverride_DepthOfFieldFarBlurSize = true;
+		Settings.DepthOfFieldFarBlurSize = 6.0f;
+		Settings.bOverride_DepthOfFieldPetzvalBokeh = true;
+		Settings.DepthOfFieldPetzvalBokeh = 0.28f;
+		Settings.bOverride_DepthOfFieldPetzvalBokehFalloff = true;
+		Settings.DepthOfFieldPetzvalBokehFalloff = 2.8f;
+		Settings.bOverride_DepthOfFieldPetzvalExclusionBoxExtents = true;
+		Settings.DepthOfFieldPetzvalExclusionBoxExtents = FVector2f(0.72f, 0.52f);
+		Settings.bOverride_DepthOfFieldVignetteSize = true;
+		Settings.DepthOfFieldVignetteSize = 94.0f;
+
+		Settings.bOverride_BloomIntensity = true;
+		Settings.BloomIntensity = 0.82f;
+		Settings.bOverride_BloomGaussianIntensity = true;
+		Settings.BloomGaussianIntensity = 0.55f;
+		Settings.bOverride_BloomThreshold = true;
+		Settings.BloomThreshold = 1.25f;
+		Settings.bOverride_BloomSizeScale = true;
+		Settings.BloomSizeScale = 1.3f;
+		Settings.bOverride_Bloom1Tint = true;
+		Settings.Bloom1Tint = FLinearColor(0.52f, 0.52f, 0.52f, 1.0f);
+		Settings.bOverride_Bloom3Tint = true;
+		Settings.Bloom3Tint = FLinearColor(0.36f, 0.36f, 0.36f, 1.0f);
+		Settings.bOverride_Bloom5Tint = true;
+		Settings.Bloom5Tint = FLinearColor(0.24f, 0.24f, 0.24f, 1.0f);
+
+		ApplyFixedMenuExposure(Settings, -1.18f);
+		Settings.bOverride_VignetteIntensity = true;
+		Settings.VignetteIntensity = 0.74f;
+		Settings.bOverride_SceneFringeIntensity = true;
+		Settings.SceneFringeIntensity = 0.045f;
+		Settings.bOverride_ChromaticAberrationStartOffset = true;
+		Settings.ChromaticAberrationStartOffset = 0.62f;
+		Settings.bOverride_FilmGrainIntensity = true;
+		Settings.FilmGrainIntensity = 0.075f;
+
+		Settings.bOverride_SceneColorTint = true;
+		Settings.SceneColorTint = FLinearColor(0.86f, 0.86f, 0.86f, 1.0f);
+		Settings.bOverride_ColorSaturation = true;
+		Settings.ColorSaturation = FVector4(0.62f, 0.62f, 0.62f, 1.0f);
+		Settings.bOverride_ColorContrast = true;
+		Settings.ColorContrast = FVector4(1.12f, 1.12f, 1.12f, 1.0f);
+		Settings.bOverride_ColorGamma = true;
+		Settings.ColorGamma = FVector4(0.94f, 0.94f, 0.94f, 1.0f);
+		Settings.bOverride_ColorGain = true;
+		Settings.ColorGain = FVector4(0.68f, 0.68f, 0.68f, 1.0f);
+		Settings.bOverride_ColorOffset = true;
+		Settings.ColorOffset = FVector4(-0.04f, -0.04f, -0.04f, 0.0f);
+
+		Settings.bOverride_FilmSlope = true;
+		Settings.FilmSlope = 0.9f;
+		Settings.bOverride_FilmToe = true;
+		Settings.FilmToe = 0.58f;
+		Settings.bOverride_FilmShoulder = true;
+		Settings.FilmShoulder = 0.32f;
+		Settings.bOverride_FilmBlackClip = true;
+		Settings.FilmBlackClip = 0.0f;
+		Settings.bOverride_FilmWhiteClip = true;
+		Settings.FilmWhiteClip = 0.02f;
+	}
+	else
+	{
+		Settings.bOverride_DepthOfFieldFstop = true;
+		Settings.DepthOfFieldFstop = 1.05f;
+		Settings.bOverride_DepthOfFieldMinFstop = true;
+		Settings.DepthOfFieldMinFstop = 1.0f;
+		Settings.bOverride_DepthOfFieldFocalDistance = true;
+		Settings.DepthOfFieldFocalDistance = Focus.FocalDistance;
+		Settings.bOverride_DepthOfFieldFocalRegion = true;
+		Settings.DepthOfFieldFocalRegion = Focus.FocalRegion;
+		Settings.bOverride_DepthOfFieldNearTransitionRegion = true;
+		Settings.DepthOfFieldNearTransitionRegion = 45.0f;
+		Settings.bOverride_DepthOfFieldFarTransitionRegion = true;
+		Settings.DepthOfFieldFarTransitionRegion = 70.0f;
+		Settings.bOverride_DepthOfFieldScale = true;
+		Settings.DepthOfFieldScale = 1.15f;
+		Settings.bOverride_DepthOfFieldNearBlurSize = true;
+		Settings.DepthOfFieldNearBlurSize = 5.0f;
+		Settings.bOverride_DepthOfFieldFarBlurSize = true;
+		Settings.DepthOfFieldFarBlurSize = 10.0f;
+		Settings.bOverride_DepthOfFieldPetzvalBokeh = true;
+		Settings.DepthOfFieldPetzvalBokeh = FMath::Clamp(
+			CVarLoadoutPostProcessPetzval.GetValueOnGameThread(),
+			-10.0f,
+			10.0f);
+		Settings.bOverride_DepthOfFieldPetzvalBokehFalloff = true;
+		Settings.DepthOfFieldPetzvalBokehFalloff = 4.0f;
+		Settings.bOverride_DepthOfFieldPetzvalExclusionBoxExtents = true;
+		Settings.DepthOfFieldPetzvalExclusionBoxExtents = FVector2f(0.62f, 0.42f);
+		Settings.bOverride_DepthOfFieldVignetteSize = true;
+		Settings.DepthOfFieldVignetteSize = FMath::Clamp(
+			CVarLoadoutPostProcessEdgeBlur.GetValueOnGameThread(),
+			5.0f,
+			100.0f);
+
+		ApplyFixedMenuExposure(Settings, -1.0f);
+		Settings.bOverride_VignetteIntensity = true;
+		Settings.VignetteIntensity = FMath::Clamp(
+			CVarLoadoutPostProcessVignette.GetValueOnGameThread(),
+			0.0f,
+			1.0f);
+		Settings.bOverride_SceneFringeIntensity = true;
+		Settings.SceneFringeIntensity = 0.25f;
+		Settings.bOverride_FilmGrainIntensity = true;
+		Settings.FilmGrainIntensity = 0.04f;
+	}
+
+	CameraComponent->PostProcessSettings = Settings;
+	CameraComponent->SetPostProcessBlendWeight(FMath::Clamp(
+		CVarLoadoutPostProcessBlendWeight.GetValueOnGameThread(),
+		0.0f,
+		1.0f));
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutPostProcess()
+{
+	if (!bLoadoutPostProcessApplied)
+	{
+		return;
+	}
+
+	if (UCameraComponent* CameraComponent = LoadoutPostProcessCamera.Get())
+	{
+		CameraComponent->PostProcessSettings = SavedLoadoutPostProcessSettings;
+		CameraComponent->SetPostProcessBlendWeight(SavedLoadoutPostProcessBlendWeight);
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMMenuPP] Restored original post process on %s."),
+			*GetNameSafe(CameraComponent));
+	}
+
+	LoadoutPostProcessCamera.Reset();
+	SavedLoadoutPostProcessSettings = FPostProcessSettings();
+	SavedLoadoutPostProcessBlendWeight = 0.0f;
+	bLoadoutPostProcessApplied = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlow(
+	UWorld* World,
+	const bool bLoadoutVisible,
+	const float DeltaTime)
+{
+	if (!World || CVarLoadoutBackGlowDucking.GetValueOnGameThread() == 0)
+	{
+		RestoreLoadoutBackGlow();
+		return;
+	}
+
+	if (bLoadoutBackGlowTargetVisible != bLoadoutVisible)
+	{
+		bLoadoutBackGlowTargetVisible = bLoadoutVisible;
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMLoadoutBackGlow] Fading rear menu glow %s. TargetScale=%.2f"),
+			bLoadoutVisible ? TEXT("down for loadout") : TEXT("up after loadout"),
+			bLoadoutVisible
+				? FMath::Clamp(CVarLoadoutBackGlowScale.GetValueOnGameThread(), 0.0f, 1.0f)
+				: 1.0f);
+	}
+
+	const float TargetScale = bLoadoutVisible
+		? FMath::Clamp(CVarLoadoutBackGlowScale.GetValueOnGameThread(), 0.0f, 1.0f)
+		: 1.0f;
+	const float FadeSpeed = FMath::Max(0.01f, CVarLoadoutBackGlowFadeSpeed.GetValueOnGameThread());
+	LoadoutBackGlowCurrentScale = FMath::FInterpTo(
+		LoadoutBackGlowCurrentScale,
+		TargetScale,
+		FMath::Max(0.0f, DeltaTime),
+		FadeSpeed);
+	if (FMath::IsNearlyEqual(LoadoutBackGlowCurrentScale, TargetScale, 0.003f))
+	{
+		LoadoutBackGlowCurrentScale = TargetScale;
+	}
+
+	for (auto It = LoadoutBackGlowOriginalIntensities.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	for (auto It = LoadoutBackGlowVisualStates.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	int32 AppliedLights = 0;
+	int32 AppliedVisuals = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (!Actor)
+		{
+			continue;
+		}
+
+		TInlineComponentArray<ULightComponent*> LightComponents(Actor);
+		for (ULightComponent* LightComponent : LightComponents)
+		{
+			if (!IsLoadoutBackGlowLight(LightComponent))
+			{
+				continue;
+			}
+
+			if (!LoadoutBackGlowOriginalIntensities.Contains(LightComponent))
+			{
+				LoadoutBackGlowOriginalIntensities.Add(LightComponent, LightComponent->Intensity);
+			}
+
+			const float OriginalIntensity = LoadoutBackGlowOriginalIntensities.FindRef(LightComponent);
+			LightComponent->SetIntensity(OriginalIntensity * LoadoutBackGlowCurrentScale);
+			++AppliedLights;
+		}
+
+		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(Actor);
+		for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+		{
+			if (!IsLoadoutBackGlowVisual(PrimitiveComponent))
+			{
+				continue;
+			}
+
+			if (!LoadoutBackGlowVisualStates.Contains(PrimitiveComponent))
+			{
+				FBackGlowVisualState VisualState;
+				VisualState.OriginalScale = PrimitiveComponent->GetComponentScale();
+				VisualState.bVisible = PrimitiveComponent->IsVisible();
+				VisualState.bHiddenInGame = PrimitiveComponent->bHiddenInGame;
+				const int32 MaterialCount = PrimitiveComponent->GetNumMaterials();
+				VisualState.OriginalMaterials.Reserve(MaterialCount);
+				for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
+				{
+					VisualState.OriginalMaterials.Add(PrimitiveComponent->GetMaterial(MaterialIndex));
+				}
+				LoadoutBackGlowVisualStates.Add(PrimitiveComponent, VisualState);
+			}
+
+			const FBackGlowVisualState VisualState = LoadoutBackGlowVisualStates.FindRef(PrimitiveComponent);
+			const float VisualMinimumScale = FMath::Clamp(
+				CVarLoadoutBackGlowVisualScale.GetValueOnGameThread(),
+				0.0f,
+				1.0f);
+			const float VisualScale = FMath::Lerp(VisualMinimumScale, 1.0f, LoadoutBackGlowCurrentScale);
+			PrimitiveComponent->SetVisibility(VisualState.bVisible, true);
+			PrimitiveComponent->SetHiddenInGame(VisualState.bHiddenInGame, true);
+			PrimitiveComponent->SetWorldScale3D(VisualState.OriginalScale * VisualScale);
+
+			for (int32 MaterialIndex = 0; MaterialIndex < VisualState.OriginalMaterials.Num(); ++MaterialIndex)
+			{
+				UMaterialInterface* SourceMaterial = VisualState.OriginalMaterials[MaterialIndex].Get();
+				UMaterialInstanceDynamic* DynamicMaterial =
+					Cast<UMaterialInstanceDynamic>(PrimitiveComponent->GetMaterial(MaterialIndex));
+				if (!DynamicMaterial)
+				{
+					DynamicMaterial = PrimitiveComponent->CreateDynamicMaterialInstance(MaterialIndex, SourceMaterial);
+				}
+				if (DynamicMaterial)
+				{
+					DynamicMaterial->SetScalarParameterValue(TEXT("Emissive"), 5.0f * VisualScale);
+				}
+			}
+
+			if (UParticleSystemComponent* ParticleComponent = Cast<UParticleSystemComponent>(PrimitiveComponent))
+			{
+				ParticleComponent->SetFloatParameter(TEXT("Alpha"), VisualScale);
+				ParticleComponent->SetFloatParameter(TEXT("Opacity"), VisualScale);
+				ParticleComponent->SetFloatParameter(TEXT("Intensity"), VisualScale);
+				ParticleComponent->SetFloatParameter(TEXT("Brightness"), VisualScale);
+			}
+
+			++AppliedVisuals;
+		}
+	}
+
+	if (!bLoadoutVisible && FMath::IsNearlyEqual(LoadoutBackGlowCurrentScale, 1.0f, 0.003f))
+	{
+		RestoreLoadoutBackGlow();
+	}
+
+	if (AppliedLights == 0 && AppliedVisuals == 0 && bLoadoutVisible)
+	{
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Verbose,
+			TEXT("[TMLoadoutBackGlow] No rear RectLight glow components found to fade."));
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutBackGlow()
+{
+	for (const TPair<TWeakObjectPtr<ULightComponent>, float>& LightState : LoadoutBackGlowOriginalIntensities)
+	{
+		if (ULightComponent* LightComponent = LightState.Key.Get())
+		{
+			LightComponent->SetIntensity(LightState.Value);
+		}
+	}
+
+	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState>& VisualState : LoadoutBackGlowVisualStates)
+	{
+		if (UPrimitiveComponent* PrimitiveComponent = VisualState.Key.Get())
+		{
+			for (int32 MaterialIndex = 0; MaterialIndex < VisualState.Value.OriginalMaterials.Num(); ++MaterialIndex)
+			{
+				if (UMaterialInterface* OriginalMaterial = VisualState.Value.OriginalMaterials[MaterialIndex].Get())
+				{
+					PrimitiveComponent->SetMaterial(MaterialIndex, OriginalMaterial);
+				}
+			}
+			PrimitiveComponent->SetWorldScale3D(VisualState.Value.OriginalScale);
+			PrimitiveComponent->SetVisibility(VisualState.Value.bVisible, true);
+			PrimitiveComponent->SetHiddenInGame(VisualState.Value.bHiddenInGame, true);
+			if (UParticleSystemComponent* ParticleComponent = Cast<UParticleSystemComponent>(PrimitiveComponent))
+			{
+				ParticleComponent->SetFloatParameter(TEXT("Alpha"), 1.0f);
+				ParticleComponent->SetFloatParameter(TEXT("Opacity"), 1.0f);
+				ParticleComponent->SetFloatParameter(TEXT("Intensity"), 1.0f);
+				ParticleComponent->SetFloatParameter(TEXT("Brightness"), 1.0f);
+			}
+		}
+	}
+
+	LoadoutBackGlowOriginalIntensities.Empty();
+	LoadoutBackGlowVisualStates.Empty();
+	LoadoutBackGlowCurrentScale = 1.0f;
+	bLoadoutBackGlowTargetVisible = false;
+}
+
+UTMMenuViewerMeshTransitionSubsystem::FLoadoutPostProcessFocus
+UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutPostProcessFocus(
+	UWorld* World,
+	const UCameraComponent* CameraComponent) const
+{
+	FLoadoutPostProcessFocus Focus;
+	if (!World || !CameraComponent)
+	{
+		return Focus;
+	}
+
+	const FVector CameraLocation = CameraComponent->GetComponentLocation();
+	const FVector CameraForward = CameraComponent->GetForwardVector().GetSafeNormal();
+	if (AActor* PreviewWeaponActor = ResolveLoadoutPreviewWeaponActor(World, CameraLocation))
+	{
+		float MinWeaponDepth = TNumericLimits<float>::Max();
+		float MaxWeaponDepth = -TNumericLimits<float>::Max();
+
+		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(PreviewWeaponActor);
+		for (const UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+		{
+			if (!IsValid(PrimitiveComponent) || !PrimitiveComponent->IsVisible())
+			{
+				continue;
+			}
+
+			const FBoxSphereBounds& Bounds = PrimitiveComponent->Bounds;
+			const float CenterDepth = FVector::DotProduct(Bounds.Origin - CameraLocation, CameraForward);
+			const FVector BoxExtent = Bounds.BoxExtent;
+			const float DepthRadius =
+				FMath::Abs(CameraForward.X) * BoxExtent.X
+				+ FMath::Abs(CameraForward.Y) * BoxExtent.Y
+				+ FMath::Abs(CameraForward.Z) * BoxExtent.Z;
+			const float ComponentMinDepth = FMath::Max(10.0f, CenterDepth - DepthRadius);
+			const float ComponentMaxDepth = CenterDepth + DepthRadius;
+			if (!FMath::IsFinite(ComponentMinDepth)
+				|| !FMath::IsFinite(ComponentMaxDepth)
+				|| ComponentMaxDepth <= 10.0f)
+			{
+				continue;
+			}
+
+			MinWeaponDepth = FMath::Min(MinWeaponDepth, ComponentMinDepth);
+			MaxWeaponDepth = FMath::Max(MaxWeaponDepth, ComponentMaxDepth);
+		}
+
+		if (FMath::IsFinite(MinWeaponDepth)
+			&& FMath::IsFinite(MaxWeaponDepth)
+			&& MinWeaponDepth < MaxWeaponDepth)
+		{
+			const float WeaponDepthSpan = MaxWeaponDepth - MinWeaponDepth;
+			Focus.FocalDistance = FMath::Clamp((MinWeaponDepth + MaxWeaponDepth) * 0.5f, 40.0f, 2000.0f);
+			Focus.FocalRegion = FMath::Clamp(WeaponDepthSpan + 28.0f, 55.0f, 150.0f);
+			return Focus;
+		}
+
+		const float PreviewWeaponDepth = FVector::DotProduct(
+			PreviewWeaponActor->GetActorLocation() - CameraLocation,
+			CameraForward);
+		if (FMath::IsFinite(PreviewWeaponDepth) && PreviewWeaponDepth > 10.0f)
+		{
+			Focus.FocalDistance = FMath::Clamp(PreviewWeaponDepth, 40.0f, 2000.0f);
+			Focus.FocalRegion = 70.0f;
+			return Focus;
+		}
+	}
+
+	float BestDistance = TNumericLimits<float>::Max();
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (!IsMenuViewerActor(Actor))
+		{
+			continue;
+		}
+
+		FVector FocusLocation = Actor->GetActorLocation();
+		if (const USkeletalMeshComponent* CharacterComponent = ReadMeshComponentProperty(Actor, TEXT("Character")))
+		{
+			FocusLocation = CharacterComponent->Bounds.Origin;
+		}
+
+		const float Distance = FVector::Dist(CameraLocation, FocusLocation);
+		if (FMath::IsFinite(Distance) && Distance > 10.0f && Distance < BestDistance)
+		{
+			BestDistance = Distance;
+		}
+	}
+
+	if (!FMath::IsFinite(BestDistance) || BestDistance == TNumericLimits<float>::Max())
+	{
+		return Focus;
+	}
+
+	Focus.FocalDistance = FMath::Clamp(BestDistance, 80.0f, 2000.0f);
+	return Focus;
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateMenuFOV(

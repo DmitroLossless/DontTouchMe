@@ -1,11 +1,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/Scene.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "TMMenuViewerMeshTransitionSubsystem.generated.h"
 
 class AActor;
 class APlayerCameraManager;
+class UCameraComponent;
+class ULightComponent;
+class UMaterialInterface;
 class UPrimitiveComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
@@ -51,6 +55,20 @@ private:
 		float NormalizedEnvelopeValue = 0.0f;
 	};
 
+	struct FLoadoutPostProcessFocus
+	{
+		float FocalDistance = 360.0f;
+		float FocalRegion = 95.0f;
+	};
+
+	struct FBackGlowVisualState
+	{
+		FVector OriginalScale = FVector::OneVector;
+		TArray<TWeakObjectPtr<UMaterialInterface>> OriginalMaterials;
+		bool bVisible = true;
+		bool bHiddenInGame = false;
+	};
+
 	void TrackMenuViewer(AActor* Actor, float DeltaTime, bool bLoadoutPreviewVisible);
 	void NoteMeshChanged(const FMenuViewerState& State, USkeletalMeshComponent* VestComponent, USkeletalMesh* PreviousMesh) const;
 	void CaptureStableState(FMenuViewerState& State, USkeletalMeshComponent* VestComponent);
@@ -66,7 +84,11 @@ private:
 	static bool IsLoadoutFOVVisible(UWorld* World);
 	static bool IsMainMenuVisible(UWorld* World);
 	static bool IsLoadoutPreviewVisible(UWorld* World);
+	static bool IsVisibleLoadoutPreviewWeaponActor(AActor* Actor);
+	static bool IsLoadoutBackGlowLight(const ULightComponent* LightComponent);
+	static bool IsLoadoutBackGlowVisual(const UPrimitiveComponent* PrimitiveComponent);
 	static APlayerCameraManager* ResolvePlayerCameraManager(UWorld* World);
+	static UCameraComponent* ResolveActiveCameraComponent(UWorld* World);
 	static void UpdateAttachedWeaponVisibility(AActor* Actor, FMenuViewerState& State, bool bHide);
 	static void HideAttachedWeaponActors(AActor* Actor, FMenuViewerState& State);
 	static void RestoreAttachedWeaponActors(FMenuViewerState& State);
@@ -86,14 +108,30 @@ private:
 	bool IsReadyForBeatSyncedCycle(FMenuViewerState& State, const FBeatSyncSnapshot& BeatSync, float WorldTimeSeconds) const;
 	void UpdateMenuFOV(UWorld* World, bool bMainMenuVisible, bool bLoadoutVisible);
 	void UpdateLoadoutFOV(UWorld* World, bool bLoadoutVisible);
+	void UpdateLoadoutPostProcess(UWorld* World, bool bPostProcessVisible, bool bLoadoutVisible);
+	void ApplyLoadoutPostProcess(UWorld* World, UCameraComponent* CameraComponent, bool bLoadoutVisible);
+	void RestoreLoadoutPostProcess();
+	void UpdateLoadoutBackGlow(UWorld* World, bool bLoadoutVisible, float DeltaTime);
+	void RestoreLoadoutBackGlow();
+	AActor* ResolveLoadoutPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
+	FLoadoutPostProcessFocus ResolveLoadoutPostProcessFocus(UWorld* World, const UCameraComponent* CameraComponent) const;
 	void RestoreLoadoutFOV();
 	void RestoreMenuFOV();
 
 	TMap<TWeakObjectPtr<AActor>, FMenuViewerState> MenuViewerStates;
 	TWeakObjectPtr<APlayerCameraManager> MenuFOVCameraManager;
 	TWeakObjectPtr<APlayerCameraManager> LoadoutFOVCameraManager;
+	TWeakObjectPtr<UCameraComponent> LoadoutPostProcessCamera;
+	TMap<TWeakObjectPtr<ULightComponent>, float> LoadoutBackGlowOriginalIntensities;
+	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> LoadoutBackGlowVisualStates;
+	FPostProcessSettings SavedLoadoutPostProcessSettings;
 	float SavedMenuPreviousDefaultFOV = 90.0f;
-	float SavedLoadoutPreviousFOV = 82.0f;
+	float SavedLoadoutPreviousFOV = 90.0f;
+	float SavedLoadoutPostProcessBlendWeight = 0.0f;
+	float LoadoutBackGlowCurrentScale = 1.0f;
 	bool bMenuFOVApplied = false;
 	bool bLoadoutFOVApplied = false;
+	bool bLoadoutPostProcessApplied = false;
+	bool bLoadoutPostProcessLastLoadoutMode = false;
+	bool bLoadoutBackGlowTargetVisible = false;
 };
