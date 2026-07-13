@@ -5,7 +5,9 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Components/ActorComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/LocalLightComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/RectLightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
@@ -14,6 +16,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "TMAudioEnvelopeFollower.h"
 #include "TouchMe.h"
@@ -117,25 +120,85 @@ static TAutoConsoleVariable<float> CVarLoadoutPostProcessVignette(
 static TAutoConsoleVariable<int32> CVarLoadoutBackGlowDucking(
 	TEXT("tm.LoadoutBackGlowDucking"),
 	1,
-	TEXT("Fades the bright rear RectLight bank while the loadout UI is visible."),
+	TEXT("Enables the delayed bright rear glow profile while the loadout UI is visible."),
 	ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarLoadoutBackGlowScale(
-	TEXT("tm.LoadoutBackGlowDucking.Scale"),
-	0.02f,
-	TEXT("Target intensity scale for the rear menu glow while the loadout UI is visible."),
+static TAutoConsoleVariable<float> CVarLoadoutBrightBackGlowDelay(
+	TEXT("tm.LoadoutBackGlow.Delay"),
+	1.0f,
+	TEXT("Seconds to wait after entering loadout before fading in the bright rear glow."),
 	ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarLoadoutBackGlowFadeSpeed(
-	TEXT("tm.LoadoutBackGlowDucking.FadeSpeed"),
-	4.5f,
-	TEXT("Interpolation speed for loadout rear glow fade in/out."),
+static TAutoConsoleVariable<float> CVarLoadoutBrightBackGlowFadeDuration(
+	TEXT("tm.LoadoutBackGlow.FadeDuration"),
+	2.0f,
+	TEXT("Seconds used to fade the bright rear glow in while loadout is visible."),
 	ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarLoadoutBackGlowVisualScale(
-	TEXT("tm.LoadoutBackGlowDucking.VisualScale"),
-	0.02f,
-	TEXT("Target scale for P_Ambient_Glow while the loadout UI is visible."),
+static TAutoConsoleVariable<float> CVarLoadoutBrightBackGlowLightIntensity(
+	TEXT("tm.LoadoutBackGlow.LightIntensity"),
+	4.0f,
+	TEXT("Final rear RectLight intensity for the bright loadout glow."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBrightBackGlowVisualScale(
+	TEXT("tm.LoadoutBackGlow.VisualScale"),
+	2.8f,
+	TEXT("Final absolute P_Ambient_Glow scale for the bright loadout glow."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBrightBackGlowAttenuationRadius(
+	TEXT("tm.LoadoutBackGlow.AttenuationRadius"),
+	300.0f,
+	TEXT("Final rear RectLight attenuation radius for the bright loadout glow."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBrightBackGlowSourceWidth(
+	TEXT("tm.LoadoutBackGlow.SourceWidth"),
+	240.0f,
+	TEXT("Minimum rear RectLight source width for the bright loadout glow."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBrightBackGlowSourceHeight(
+	TEXT("tm.LoadoutBackGlow.SourceHeight"),
+	120.0f,
+	TEXT("Minimum rear RectLight source height for the bright loadout glow."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarMainMenuBackGlow(
+	TEXT("tm.MainMenuBackGlow"),
+	1,
+	TEXT("Fades in a subtle white rear glow behind the main menu character after a delay."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMainMenuBackGlowDelay(
+	TEXT("tm.MainMenuBackGlow.Delay"),
+	2.0f,
+	TEXT("Seconds to keep the rear main menu glow black before fading it in."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMainMenuBackGlowFadeDuration(
+	TEXT("tm.MainMenuBackGlow.FadeDuration"),
+	1.5f,
+	TEXT("Seconds used for the smooth neon fade-in behind the main menu character."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMainMenuBackGlowScale(
+	TEXT("tm.MainMenuBackGlow.Scale"),
+	1.0f,
+	TEXT("Final RectLight intensity scale for the delayed main menu rear glow."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMainMenuBackGlowVisualScale(
+	TEXT("tm.MainMenuBackGlow.VisualScale"),
+	1.0f,
+	TEXT("Final P_Ambient_Glow scale for the delayed main menu rear glow."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMainMenuBackGlowEmissive(
+	TEXT("tm.MainMenuBackGlow.Emissive"),
+	220.0f,
+	TEXT("Final emissive multiplier for delayed main menu rear glow materials."),
 	ECVF_Default);
 
 static TWeakObjectPtr<USkeletalMesh> GLastMenuViewerVestMesh;
@@ -162,11 +225,30 @@ void ApplyFixedMenuExposure(FPostProcessSettings& Settings, const float Exposure
 	Settings.bOverride_AutoExposureSpeedDown = true;
 	Settings.AutoExposureSpeedDown = 100.0f;
 }
+
+FVector4 LerpVector4(const FVector4& From, const FVector4& To, const float Alpha)
+{
+	return FVector4(
+		FMath::Lerp(From.X, To.X, Alpha),
+		FMath::Lerp(From.Y, To.Y, Alpha),
+		FMath::Lerp(From.Z, To.Z, Alpha),
+		FMath::Lerp(From.W, To.W, Alpha));
+}
+
+FLinearColor LerpLinearColor(const FLinearColor& From, const FLinearColor& To, const float Alpha)
+{
+	return FLinearColor(
+		FMath::Lerp(From.R, To.R, Alpha),
+		FMath::Lerp(From.G, To.G, Alpha),
+		FMath::Lerp(From.B, To.B, Alpha),
+		FMath::Lerp(From.A, To.A, Alpha));
+}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::Deinitialize()
 {
 	RestoreLoadoutPostProcess();
+	RestoreMainMenuBackGlow();
 	RestoreLoadoutBackGlow();
 	RestoreLoadoutFOV();
 	RestoreMenuFOV();
@@ -191,11 +273,21 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 	const bool bMainMenuVisible = IsMainMenuVisible(World);
 	const bool bPostProcessVisible =
 		CVarLoadoutPostProcess.GetValueOnGameThread() != 0
-		&& bMainMenuVisible;
+		&& (bMainMenuVisible || bLoadoutFOVVisible);
 	UpdateMenuFOV(World, bMainMenuVisible, bLoadoutFOVVisible);
 	UpdateLoadoutFOV(World, bLoadoutFOVEnabled);
+	UpdateLoadoutBackGlowTiming(bLoadoutFOVVisible, DeltaTime);
 	UpdateLoadoutPostProcess(World, bPostProcessVisible, bLoadoutFOVVisible);
-	UpdateLoadoutBackGlow(World, bLoadoutFOVVisible, DeltaTime);
+	if (bLoadoutFOVVisible)
+	{
+		UpdateMainMenuBackGlow(World, false, DeltaTime);
+		UpdateLoadoutBackGlow(World, true, DeltaTime);
+	}
+	else
+	{
+		UpdateLoadoutBackGlow(World, false, DeltaTime);
+		UpdateMainMenuBackGlow(World, bMainMenuVisible, DeltaTime);
+	}
 
 	if (CVarMenuViewerMeshTransition.GetValueOnGameThread() == 0)
 	{
@@ -594,6 +686,11 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutBackGlowLight(const ULightCo
 bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutBackGlowVisual(const UPrimitiveComponent* PrimitiveComponent)
 {
 	if (!IsValid(PrimitiveComponent))
+	{
+		return false;
+	}
+
+	if (PrimitiveComponent->ComponentHasTag(TEXT("TMSpawnedLoadoutBackGlowVisual")))
 	{
 		return false;
 	}
@@ -1032,81 +1129,100 @@ void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
 
 	if (bLoadoutVisible)
 	{
+		const float GlowAlpha = FMath::Clamp(LoadoutBackGlowCurrentAlpha, 0.0f, 1.0f);
 		Settings.bOverride_DepthOfFieldFstop = true;
-		Settings.DepthOfFieldFstop = 2.6f;
+		Settings.DepthOfFieldFstop = FMath::Lerp(2.6f, 8.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldMinFstop = true;
-		Settings.DepthOfFieldMinFstop = 1.8f;
+		Settings.DepthOfFieldMinFstop = FMath::Lerp(1.8f, 8.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldFocalDistance = true;
 		Settings.DepthOfFieldFocalDistance = Focus.FocalDistance;
 		Settings.bOverride_DepthOfFieldFocalRegion = true;
-		Settings.DepthOfFieldFocalRegion = FMath::Max(Focus.FocalRegion, 210.0f);
+		Settings.DepthOfFieldFocalRegion = FMath::Lerp(FMath::Max(Focus.FocalRegion, 210.0f), 1000.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldNearTransitionRegion = true;
-		Settings.DepthOfFieldNearTransitionRegion = 130.0f;
+		Settings.DepthOfFieldNearTransitionRegion = FMath::Lerp(130.0f, 1000.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldFarTransitionRegion = true;
-		Settings.DepthOfFieldFarTransitionRegion = 190.0f;
+		Settings.DepthOfFieldFarTransitionRegion = FMath::Lerp(190.0f, 1000.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldScale = true;
-		Settings.DepthOfFieldScale = 0.55f;
+		Settings.DepthOfFieldScale = FMath::Lerp(0.55f, 0.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldNearBlurSize = true;
-		Settings.DepthOfFieldNearBlurSize = 1.5f;
+		Settings.DepthOfFieldNearBlurSize = FMath::Lerp(1.5f, 0.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldFarBlurSize = true;
-		Settings.DepthOfFieldFarBlurSize = 6.0f;
+		Settings.DepthOfFieldFarBlurSize = FMath::Lerp(6.0f, 0.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldPetzvalBokeh = true;
-		Settings.DepthOfFieldPetzvalBokeh = 0.28f;
+		Settings.DepthOfFieldPetzvalBokeh = FMath::Lerp(0.28f, 0.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldPetzvalBokehFalloff = true;
-		Settings.DepthOfFieldPetzvalBokehFalloff = 2.8f;
+		Settings.DepthOfFieldPetzvalBokehFalloff = FMath::Lerp(2.8f, 0.0f, GlowAlpha);
 		Settings.bOverride_DepthOfFieldPetzvalExclusionBoxExtents = true;
-		Settings.DepthOfFieldPetzvalExclusionBoxExtents = FVector2f(0.72f, 0.52f);
+		Settings.DepthOfFieldPetzvalExclusionBoxExtents = FVector2f(
+			FMath::Lerp(0.72f, 1.0f, GlowAlpha),
+			FMath::Lerp(0.52f, 1.0f, GlowAlpha));
 		Settings.bOverride_DepthOfFieldVignetteSize = true;
-		Settings.DepthOfFieldVignetteSize = 94.0f;
+		Settings.DepthOfFieldVignetteSize = FMath::Lerp(94.0f, 100.0f, GlowAlpha);
 
 		Settings.bOverride_BloomIntensity = true;
-		Settings.BloomIntensity = 0.82f;
+		Settings.BloomIntensity = FMath::Lerp(0.82f, 0.35f, GlowAlpha);
 		Settings.bOverride_BloomGaussianIntensity = true;
-		Settings.BloomGaussianIntensity = 0.55f;
+		Settings.BloomGaussianIntensity = FMath::Lerp(0.55f, 0.35f, GlowAlpha);
 		Settings.bOverride_BloomThreshold = true;
-		Settings.BloomThreshold = 1.25f;
+		Settings.BloomThreshold = FMath::Lerp(1.25f, 0.4f, GlowAlpha);
 		Settings.bOverride_BloomSizeScale = true;
-		Settings.BloomSizeScale = 1.3f;
+		Settings.BloomSizeScale = FMath::Lerp(1.3f, 1.6f, GlowAlpha);
 		Settings.bOverride_Bloom1Tint = true;
-		Settings.Bloom1Tint = FLinearColor(0.52f, 0.52f, 0.52f, 1.0f);
+		Settings.Bloom1Tint = LerpLinearColor(
+			FLinearColor(0.52f, 0.52f, 0.52f, 1.0f),
+			FLinearColor::White,
+			GlowAlpha);
 		Settings.bOverride_Bloom3Tint = true;
-		Settings.Bloom3Tint = FLinearColor(0.36f, 0.36f, 0.36f, 1.0f);
+		Settings.Bloom3Tint = LerpLinearColor(
+			FLinearColor(0.36f, 0.36f, 0.36f, 1.0f),
+			FLinearColor::White,
+			GlowAlpha);
 		Settings.bOverride_Bloom5Tint = true;
-		Settings.Bloom5Tint = FLinearColor(0.24f, 0.24f, 0.24f, 1.0f);
+		Settings.Bloom5Tint = LerpLinearColor(
+			FLinearColor(0.24f, 0.24f, 0.24f, 1.0f),
+			FLinearColor::White,
+			GlowAlpha);
 
-		ApplyFixedMenuExposure(Settings, -1.18f);
+		ApplyFixedMenuExposure(Settings, FMath::Lerp(-1.18f, -0.55f, GlowAlpha));
 		Settings.bOverride_VignetteIntensity = true;
-		Settings.VignetteIntensity = 0.74f;
+		Settings.VignetteIntensity = FMath::Lerp(0.74f, 0.58f, GlowAlpha);
 		Settings.bOverride_SceneFringeIntensity = true;
-		Settings.SceneFringeIntensity = 0.045f;
+		Settings.SceneFringeIntensity = FMath::Lerp(0.045f, 0.0f, GlowAlpha);
 		Settings.bOverride_ChromaticAberrationStartOffset = true;
-		Settings.ChromaticAberrationStartOffset = 0.62f;
+		Settings.ChromaticAberrationStartOffset = FMath::Lerp(0.62f, 0.0f, GlowAlpha);
 		Settings.bOverride_FilmGrainIntensity = true;
-		Settings.FilmGrainIntensity = 0.075f;
+		Settings.FilmGrainIntensity = FMath::Lerp(0.075f, 0.0f, GlowAlpha);
 
 		Settings.bOverride_SceneColorTint = true;
-		Settings.SceneColorTint = FLinearColor(0.86f, 0.86f, 0.86f, 1.0f);
+		Settings.SceneColorTint = LerpLinearColor(
+			FLinearColor(0.86f, 0.86f, 0.86f, 1.0f),
+			FLinearColor(0.9f, 0.9f, 0.9f, 1.0f),
+			GlowAlpha);
 		Settings.bOverride_ColorSaturation = true;
-		Settings.ColorSaturation = FVector4(0.62f, 0.62f, 0.62f, 1.0f);
+		Settings.ColorSaturation = LerpVector4(
+			FVector4(0.62f, 0.62f, 0.62f, 1.0f),
+			FVector4(0.82f, 0.82f, 0.82f, 1.0f),
+			GlowAlpha);
 		Settings.bOverride_ColorContrast = true;
-		Settings.ColorContrast = FVector4(1.12f, 1.12f, 1.12f, 1.0f);
+		Settings.ColorContrast = LerpVector4(
+			FVector4(1.12f, 1.12f, 1.12f, 1.0f),
+			FVector4(1.0f, 1.0f, 1.0f, 1.0f),
+			GlowAlpha);
 		Settings.bOverride_ColorGamma = true;
-		Settings.ColorGamma = FVector4(0.94f, 0.94f, 0.94f, 1.0f);
+		Settings.ColorGamma = LerpVector4(
+			FVector4(0.94f, 0.94f, 0.94f, 1.0f),
+			FVector4(1.0f, 1.0f, 1.0f, 1.0f),
+			GlowAlpha);
 		Settings.bOverride_ColorGain = true;
-		Settings.ColorGain = FVector4(0.68f, 0.68f, 0.68f, 1.0f);
+		Settings.ColorGain = LerpVector4(
+			FVector4(0.68f, 0.68f, 0.68f, 1.0f),
+			FVector4(0.78f, 0.78f, 0.78f, 1.0f),
+			GlowAlpha);
 		Settings.bOverride_ColorOffset = true;
-		Settings.ColorOffset = FVector4(-0.04f, -0.04f, -0.04f, 0.0f);
-
-		Settings.bOverride_FilmSlope = true;
-		Settings.FilmSlope = 0.9f;
-		Settings.bOverride_FilmToe = true;
-		Settings.FilmToe = 0.58f;
-		Settings.bOverride_FilmShoulder = true;
-		Settings.FilmShoulder = 0.32f;
-		Settings.bOverride_FilmBlackClip = true;
-		Settings.FilmBlackClip = 0.0f;
-		Settings.bOverride_FilmWhiteClip = true;
-		Settings.FilmWhiteClip = 0.02f;
+		Settings.ColorOffset = LerpVector4(
+			FVector4(-0.04f, -0.04f, -0.04f, 0.0f),
+			FVector4(0.0f, 0.0f, 0.0f, 0.0f),
+			GlowAlpha);
 	}
 	else
 	{
@@ -1186,45 +1302,66 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutPostProcess()
 	bLoadoutPostProcessApplied = false;
 }
 
+void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlowTiming(
+	const bool bLoadoutVisible,
+	const float DeltaTime)
+{
+	if (!bLoadoutVisible)
+	{
+		if (bLoadoutBackGlowActive)
+		{
+			bMainMenuBackGlowForceComplete = true;
+		}
+
+		bLoadoutBackGlowActive = false;
+		bLoadoutBackGlowTargetVisible = false;
+		LoadoutBackGlowElapsedSeconds = 0.0f;
+		LoadoutBackGlowCurrentAlpha = 0.0f;
+		return;
+	}
+
+	if (!bLoadoutBackGlowActive)
+	{
+		bLoadoutBackGlowActive = true;
+		bLoadoutBackGlowTargetVisible = true;
+		LoadoutBackGlowElapsedSeconds = 0.0f;
+		LoadoutBackGlowCurrentAlpha = 0.0f;
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMLoadoutBackGlow] Holding loadout glow for %.2fs, then fading to bright profile over %.2fs."),
+			FMath::Max(0.0f, CVarLoadoutBrightBackGlowDelay.GetValueOnGameThread()),
+			FMath::Max(0.01f, CVarLoadoutBrightBackGlowFadeDuration.GetValueOnGameThread()));
+		return;
+	}
+
+	LoadoutBackGlowElapsedSeconds += FMath::Max(0.0f, DeltaTime);
+	const float Delay = FMath::Max(0.0f, CVarLoadoutBrightBackGlowDelay.GetValueOnGameThread());
+	const float FadeDuration = FMath::Max(0.01f, CVarLoadoutBrightBackGlowFadeDuration.GetValueOnGameThread());
+	const float FadeAlpha = FMath::Clamp((LoadoutBackGlowElapsedSeconds - Delay) / FadeDuration, 0.0f, 1.0f);
+	LoadoutBackGlowCurrentAlpha = FadeAlpha * FadeAlpha * (3.0f - 2.0f * FadeAlpha);
+}
+
 void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlow(
 	UWorld* World,
 	const bool bLoadoutVisible,
 	const float DeltaTime)
 {
+	(void)DeltaTime;
+
 	if (!World || CVarLoadoutBackGlowDucking.GetValueOnGameThread() == 0)
 	{
 		RestoreLoadoutBackGlow();
 		return;
 	}
 
-	if (bLoadoutBackGlowTargetVisible != bLoadoutVisible)
+	if (!bLoadoutVisible)
 	{
-		bLoadoutBackGlowTargetVisible = bLoadoutVisible;
-		UE_LOG(
-			LogTMMenuViewerMeshTransition,
-			Display,
-			TEXT("[TMLoadoutBackGlow] Fading rear menu glow %s. TargetScale=%.2f"),
-			bLoadoutVisible ? TEXT("down for loadout") : TEXT("up after loadout"),
-			bLoadoutVisible
-				? FMath::Clamp(CVarLoadoutBackGlowScale.GetValueOnGameThread(), 0.0f, 1.0f)
-				: 1.0f);
+		RestoreLoadoutBackGlow();
+		return;
 	}
 
-	const float TargetScale = bLoadoutVisible
-		? FMath::Clamp(CVarLoadoutBackGlowScale.GetValueOnGameThread(), 0.0f, 1.0f)
-		: 1.0f;
-	const float FadeSpeed = FMath::Max(0.01f, CVarLoadoutBackGlowFadeSpeed.GetValueOnGameThread());
-	LoadoutBackGlowCurrentScale = FMath::FInterpTo(
-		LoadoutBackGlowCurrentScale,
-		TargetScale,
-		FMath::Max(0.0f, DeltaTime),
-		FadeSpeed);
-	if (FMath::IsNearlyEqual(LoadoutBackGlowCurrentScale, TargetScale, 0.003f))
-	{
-		LoadoutBackGlowCurrentScale = TargetScale;
-	}
-
-	for (auto It = LoadoutBackGlowOriginalIntensities.CreateIterator(); It; ++It)
+	for (auto It = LoadoutBackGlowLightStates.CreateIterator(); It; ++It)
 	{
 		if (!It.Key().IsValid())
 		{
@@ -1233,6 +1370,321 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlow(
 	}
 
 	for (auto It = LoadoutBackGlowVisualStates.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	const float GlowAlpha = FMath::Clamp(LoadoutBackGlowCurrentAlpha, 0.0f, 1.0f);
+	const FVector TargetGlowLocation(-740.0f, 65.0f, -35.0f);
+	const FRotator TargetGlowRotation(0.0f, -90.0f, 0.0f);
+	const FVector TargetGlowScale(FMath::Max(0.0f, CVarLoadoutBrightBackGlowVisualScale.GetValueOnGameThread()));
+	const float TargetLightIntensity = FMath::Max(0.0f, CVarLoadoutBrightBackGlowLightIntensity.GetValueOnGameThread());
+	const float TargetAttenuationRadius =
+		FMath::Max(0.0f, CVarLoadoutBrightBackGlowAttenuationRadius.GetValueOnGameThread());
+	const float TargetSourceWidth = FMath::Max(0.0f, CVarLoadoutBrightBackGlowSourceWidth.GetValueOnGameThread());
+	const float TargetSourceHeight = FMath::Max(0.0f, CVarLoadoutBrightBackGlowSourceHeight.GetValueOnGameThread());
+
+	int32 AppliedLights = 0;
+	int32 AppliedVisuals = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (!Actor)
+		{
+			continue;
+		}
+
+		TInlineComponentArray<ULightComponent*> LightComponents(Actor);
+		for (ULightComponent* LightComponent : LightComponents)
+		{
+			if (!IsLoadoutBackGlowLight(LightComponent))
+			{
+				continue;
+			}
+
+			if (!LoadoutBackGlowLightStates.Contains(LightComponent))
+			{
+				FBackGlowLightState LightState;
+				LightState.OriginalIntensity = LightComponent->Intensity;
+				LightState.OriginalColor = LightComponent->GetLightColor();
+				if (const ULocalLightComponent* LocalLightComponent = Cast<ULocalLightComponent>(LightComponent))
+				{
+					LightState.OriginalAttenuationRadius = LocalLightComponent->AttenuationRadius;
+					LightState.bHasAttenuationRadius = true;
+				}
+				if (const URectLightComponent* RectLightComponent = Cast<URectLightComponent>(LightComponent))
+				{
+					LightState.OriginalSourceWidth = RectLightComponent->SourceWidth;
+					LightState.OriginalSourceHeight = RectLightComponent->SourceHeight;
+					LightState.bHasRectSourceSize = true;
+				}
+				LoadoutBackGlowLightStates.Add(LightComponent, LightState);
+			}
+
+			const FBackGlowLightState LightState = LoadoutBackGlowLightStates.FindRef(LightComponent);
+			LightComponent->SetLightColor(LerpLinearColor(LightState.OriginalColor, FLinearColor::White, GlowAlpha));
+			LightComponent->SetIntensity(FMath::Lerp(
+				LightState.OriginalIntensity,
+				TargetLightIntensity,
+				GlowAlpha));
+			if (ULocalLightComponent* LocalLightComponent = Cast<ULocalLightComponent>(LightComponent);
+				LocalLightComponent && LightState.bHasAttenuationRadius)
+			{
+				LocalLightComponent->SetAttenuationRadius(FMath::Lerp(
+					LightState.OriginalAttenuationRadius,
+					TargetAttenuationRadius,
+					GlowAlpha));
+			}
+			if (URectLightComponent* RectLightComponent = Cast<URectLightComponent>(LightComponent);
+				RectLightComponent && LightState.bHasRectSourceSize)
+			{
+				RectLightComponent->SetSourceWidth(FMath::Lerp(
+					LightState.OriginalSourceWidth,
+					TargetSourceWidth,
+					GlowAlpha));
+				RectLightComponent->SetSourceHeight(FMath::Lerp(
+					LightState.OriginalSourceHeight,
+					TargetSourceHeight,
+					GlowAlpha));
+			}
+			++AppliedLights;
+		}
+
+		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(Actor);
+		for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+		{
+			if (!IsLoadoutBackGlowVisual(PrimitiveComponent))
+			{
+				continue;
+			}
+
+			if (!LoadoutBackGlowVisualStates.Contains(PrimitiveComponent))
+			{
+				FBackGlowVisualState VisualState;
+				VisualState.OriginalLocation = PrimitiveComponent->GetComponentLocation();
+				VisualState.OriginalRotation = PrimitiveComponent->GetComponentRotation();
+				VisualState.OriginalScale = PrimitiveComponent->GetComponentScale();
+				VisualState.bVisible = PrimitiveComponent->IsVisible();
+				VisualState.bHiddenInGame = PrimitiveComponent->bHiddenInGame;
+				const int32 MaterialCount = PrimitiveComponent->GetNumMaterials();
+				VisualState.OriginalMaterials.Reserve(MaterialCount);
+				for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
+				{
+					VisualState.OriginalMaterials.Add(PrimitiveComponent->GetMaterial(MaterialIndex));
+				}
+				LoadoutBackGlowVisualStates.Add(PrimitiveComponent, VisualState);
+			}
+
+			const FBackGlowVisualState VisualState = LoadoutBackGlowVisualStates.FindRef(PrimitiveComponent);
+			PrimitiveComponent->SetWorldLocation(FMath::Lerp(
+				VisualState.OriginalLocation,
+				TargetGlowLocation,
+				GlowAlpha));
+			PrimitiveComponent->SetWorldRotation(FQuat::Slerp(
+				VisualState.OriginalRotation.Quaternion(),
+				TargetGlowRotation.Quaternion(),
+				GlowAlpha).Rotator());
+			PrimitiveComponent->SetWorldScale3D(FMath::Lerp(
+				VisualState.OriginalScale,
+				TargetGlowScale,
+				GlowAlpha));
+			PrimitiveComponent->SetVisibility(true, true);
+			PrimitiveComponent->SetHiddenInGame(false, true);
+
+			if (UParticleSystemComponent* ParticleComponent = Cast<UParticleSystemComponent>(PrimitiveComponent))
+			{
+				ParticleComponent->SetFloatParameter(TEXT("Alpha"), GlowAlpha);
+				ParticleComponent->SetFloatParameter(TEXT("Opacity"), GlowAlpha);
+				ParticleComponent->SetFloatParameter(TEXT("Intensity"), GlowAlpha);
+				ParticleComponent->SetFloatParameter(TEXT("Brightness"), GlowAlpha);
+				ParticleComponent->SetColorParameter(TEXT("Color"), FLinearColor::White);
+				ParticleComponent->SetColorParameter(TEXT("Tint"), FLinearColor::White);
+			}
+
+			++AppliedVisuals;
+		}
+	}
+
+	if (!LoadoutBackGlowSpawnedVisual.IsValid())
+	{
+		UParticleSystem* GlowTemplate = LoadObject<UParticleSystem>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Ambient_Glow.P_Ambient_Glow"));
+		if (GlowTemplate)
+		{
+			LoadoutBackGlowSpawnedVisual = UGameplayStatics::SpawnEmitterAtLocation(
+				World,
+				GlowTemplate,
+				TargetGlowLocation,
+				TargetGlowRotation,
+				FVector::OneVector,
+				false,
+				EPSCPoolMethod::None,
+				false);
+			if (UParticleSystemComponent* SpawnedVisual = LoadoutBackGlowSpawnedVisual.Get())
+			{
+				SpawnedVisual->ComponentTags.AddUnique(TEXT("TMSpawnedLoadoutBackGlowVisual"));
+			}
+		}
+	}
+
+	if (UParticleSystemComponent* SpawnedVisual = LoadoutBackGlowSpawnedVisual.Get())
+	{
+		const bool bVisualVisible = GlowAlpha > 0.001f;
+		SpawnedVisual->SetWorldLocation(TargetGlowLocation);
+		SpawnedVisual->SetWorldRotation(TargetGlowRotation);
+		SpawnedVisual->SetWorldScale3D(TargetGlowScale * GlowAlpha);
+		SpawnedVisual->SetVisibility(bVisualVisible, true);
+		SpawnedVisual->SetHiddenInGame(!bVisualVisible, true);
+		if (!SpawnedVisual->IsActive())
+		{
+			SpawnedVisual->ActivateSystem(true);
+		}
+		SpawnedVisual->SetFloatParameter(TEXT("Alpha"), GlowAlpha);
+		SpawnedVisual->SetFloatParameter(TEXT("Opacity"), GlowAlpha);
+		SpawnedVisual->SetFloatParameter(TEXT("Intensity"), GlowAlpha);
+		SpawnedVisual->SetFloatParameter(TEXT("Brightness"), GlowAlpha);
+		SpawnedVisual->SetColorParameter(TEXT("Color"), FLinearColor::White);
+		SpawnedVisual->SetColorParameter(TEXT("Tint"), FLinearColor::White);
+		++AppliedVisuals;
+	}
+
+	if (AppliedLights == 0 && AppliedVisuals == 0 && bLoadoutVisible)
+	{
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Verbose,
+			TEXT("[TMLoadoutBackGlow] No rear RectLight glow components found for bright loadout profile."));
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutBackGlow()
+{
+	if (UParticleSystemComponent* SpawnedVisual = LoadoutBackGlowSpawnedVisual.Get())
+	{
+		SpawnedVisual->DeactivateSystem();
+		SpawnedVisual->DestroyComponent();
+	}
+	LoadoutBackGlowSpawnedVisual.Reset();
+
+	for (const TPair<TWeakObjectPtr<ULightComponent>, FBackGlowLightState>& LightState : LoadoutBackGlowLightStates)
+	{
+		if (ULightComponent* LightComponent = LightState.Key.Get())
+		{
+			LightComponent->SetIntensity(LightState.Value.OriginalIntensity);
+			LightComponent->SetLightColor(LightState.Value.OriginalColor);
+			if (ULocalLightComponent* LocalLightComponent = Cast<ULocalLightComponent>(LightComponent);
+				LocalLightComponent && LightState.Value.bHasAttenuationRadius)
+			{
+				LocalLightComponent->SetAttenuationRadius(LightState.Value.OriginalAttenuationRadius);
+			}
+			if (URectLightComponent* RectLightComponent = Cast<URectLightComponent>(LightComponent);
+				RectLightComponent && LightState.Value.bHasRectSourceSize)
+			{
+				RectLightComponent->SetSourceWidth(LightState.Value.OriginalSourceWidth);
+				RectLightComponent->SetSourceHeight(LightState.Value.OriginalSourceHeight);
+			}
+		}
+	}
+
+	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState>& VisualState : LoadoutBackGlowVisualStates)
+	{
+		if (UPrimitiveComponent* PrimitiveComponent = VisualState.Key.Get())
+		{
+			for (int32 MaterialIndex = 0; MaterialIndex < VisualState.Value.OriginalMaterials.Num(); ++MaterialIndex)
+			{
+				if (UMaterialInterface* OriginalMaterial = VisualState.Value.OriginalMaterials[MaterialIndex].Get())
+				{
+					PrimitiveComponent->SetMaterial(MaterialIndex, OriginalMaterial);
+				}
+			}
+			PrimitiveComponent->SetWorldLocation(VisualState.Value.OriginalLocation);
+			PrimitiveComponent->SetWorldRotation(VisualState.Value.OriginalRotation);
+			PrimitiveComponent->SetWorldScale3D(VisualState.Value.OriginalScale);
+			PrimitiveComponent->SetVisibility(VisualState.Value.bVisible, true);
+			PrimitiveComponent->SetHiddenInGame(VisualState.Value.bHiddenInGame, true);
+			if (UParticleSystemComponent* ParticleComponent = Cast<UParticleSystemComponent>(PrimitiveComponent))
+			{
+				ParticleComponent->SetFloatParameter(TEXT("Alpha"), 1.0f);
+				ParticleComponent->SetFloatParameter(TEXT("Opacity"), 1.0f);
+				ParticleComponent->SetFloatParameter(TEXT("Intensity"), 1.0f);
+				ParticleComponent->SetFloatParameter(TEXT("Brightness"), 1.0f);
+			}
+		}
+	}
+
+	LoadoutBackGlowLightStates.Empty();
+	LoadoutBackGlowVisualStates.Empty();
+	LoadoutBackGlowElapsedSeconds = 0.0f;
+	LoadoutBackGlowCurrentAlpha = 0.0f;
+	bLoadoutBackGlowTargetVisible = false;
+	bLoadoutBackGlowActive = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuBackGlow(
+	UWorld* World,
+	const bool bMainMenuGlowVisible,
+	const float DeltaTime)
+{
+	if (!World || CVarMainMenuBackGlow.GetValueOnGameThread() == 0 || !bMainMenuGlowVisible)
+	{
+		RestoreMainMenuBackGlow();
+		return;
+	}
+
+	const float Delay = FMath::Max(0.0f, CVarMainMenuBackGlowDelay.GetValueOnGameThread());
+	const float FadeDuration = FMath::Max(0.01f, CVarMainMenuBackGlowFadeDuration.GetValueOnGameThread());
+	if (!bMainMenuBackGlowActive)
+	{
+		bMainMenuBackGlowActive = true;
+		if (bMainMenuBackGlowForceComplete)
+		{
+			MainMenuBackGlowElapsedSeconds = Delay + FadeDuration;
+			MainMenuBackGlowCurrentScale = FMath::Clamp(CVarMainMenuBackGlowScale.GetValueOnGameThread(), 0.0f, 1.0f);
+			bMainMenuBackGlowForceComplete = false;
+			UE_LOG(
+				LogTMMenuViewerMeshTransition,
+				Display,
+				TEXT("[TMMainMenuBackGlow] Restored final main menu rear glow immediately after leaving loadout."));
+		}
+		else
+		{
+			MainMenuBackGlowElapsedSeconds = 0.0f;
+			MainMenuBackGlowCurrentScale = 0.0f;
+			UE_LOG(
+				LogTMMenuViewerMeshTransition,
+				Display,
+				TEXT("[TMMainMenuBackGlow] Holding rear glow black for %.2fs before neon fade-in."),
+				Delay);
+		}
+	}
+	else
+	{
+		MainMenuBackGlowElapsedSeconds += FMath::Max(0.0f, DeltaTime);
+		if (bMainMenuBackGlowForceComplete)
+		{
+			MainMenuBackGlowElapsedSeconds = Delay + FadeDuration;
+			bMainMenuBackGlowForceComplete = false;
+		}
+	}
+
+	const float FadeAlpha = FMath::Clamp((MainMenuBackGlowElapsedSeconds - Delay) / FadeDuration, 0.0f, 1.0f);
+	const float SmoothAlpha = FadeAlpha * FadeAlpha * (3.0f - 2.0f * FadeAlpha);
+	MainMenuBackGlowCurrentScale =
+		FMath::Clamp(CVarMainMenuBackGlowScale.GetValueOnGameThread(), 0.0f, 1.0f) * SmoothAlpha;
+
+	for (auto It = MainMenuBackGlowLightStates.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	for (auto It = MainMenuBackGlowVisualStates.CreateIterator(); It; ++It)
 	{
 		if (!It.Key().IsValid())
 		{
@@ -1258,13 +1710,17 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlow(
 				continue;
 			}
 
-			if (!LoadoutBackGlowOriginalIntensities.Contains(LightComponent))
+			if (!MainMenuBackGlowLightStates.Contains(LightComponent))
 			{
-				LoadoutBackGlowOriginalIntensities.Add(LightComponent, LightComponent->Intensity);
+				FBackGlowLightState LightState;
+				LightState.OriginalIntensity = LightComponent->Intensity;
+				LightState.OriginalColor = LightComponent->GetLightColor();
+				MainMenuBackGlowLightStates.Add(LightComponent, LightState);
 			}
 
-			const float OriginalIntensity = LoadoutBackGlowOriginalIntensities.FindRef(LightComponent);
-			LightComponent->SetIntensity(OriginalIntensity * LoadoutBackGlowCurrentScale);
+			const FBackGlowLightState LightState = MainMenuBackGlowLightStates.FindRef(LightComponent);
+			LightComponent->SetLightColor(FLinearColor::White);
+			LightComponent->SetIntensity(LightState.OriginalIntensity * MainMenuBackGlowCurrentScale);
 			++AppliedLights;
 		}
 
@@ -1276,9 +1732,11 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlow(
 				continue;
 			}
 
-			if (!LoadoutBackGlowVisualStates.Contains(PrimitiveComponent))
+			if (!MainMenuBackGlowVisualStates.Contains(PrimitiveComponent))
 			{
 				FBackGlowVisualState VisualState;
+				VisualState.OriginalLocation = PrimitiveComponent->GetComponentLocation();
+				VisualState.OriginalRotation = PrimitiveComponent->GetComponentRotation();
 				VisualState.OriginalScale = PrimitiveComponent->GetComponentScale();
 				VisualState.bVisible = PrimitiveComponent->IsVisible();
 				VisualState.bHiddenInGame = PrimitiveComponent->bHiddenInGame;
@@ -1288,15 +1746,12 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlow(
 				{
 					VisualState.OriginalMaterials.Add(PrimitiveComponent->GetMaterial(MaterialIndex));
 				}
-				LoadoutBackGlowVisualStates.Add(PrimitiveComponent, VisualState);
+				MainMenuBackGlowVisualStates.Add(PrimitiveComponent, VisualState);
 			}
 
-			const FBackGlowVisualState VisualState = LoadoutBackGlowVisualStates.FindRef(PrimitiveComponent);
-			const float VisualMinimumScale = FMath::Clamp(
-				CVarLoadoutBackGlowVisualScale.GetValueOnGameThread(),
-				0.0f,
-				1.0f);
-			const float VisualScale = FMath::Lerp(VisualMinimumScale, 1.0f, LoadoutBackGlowCurrentScale);
+			const FBackGlowVisualState VisualState = MainMenuBackGlowVisualStates.FindRef(PrimitiveComponent);
+			const float VisualScale =
+				FMath::Clamp(CVarMainMenuBackGlowVisualScale.GetValueOnGameThread(), 0.0f, 1.0f) * SmoothAlpha;
 			PrimitiveComponent->SetVisibility(VisualState.bVisible, true);
 			PrimitiveComponent->SetHiddenInGame(VisualState.bHiddenInGame, true);
 			PrimitiveComponent->SetWorldScale3D(VisualState.OriginalScale * VisualScale);
@@ -1312,47 +1767,49 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlow(
 				}
 				if (DynamicMaterial)
 				{
-					DynamicMaterial->SetScalarParameterValue(TEXT("Emissive"), 5.0f * VisualScale);
+					const float Emissive = FMath::Max(0.0f, CVarMainMenuBackGlowEmissive.GetValueOnGameThread()) * SmoothAlpha;
+					DynamicMaterial->SetScalarParameterValue(TEXT("Emissive"), Emissive);
+					DynamicMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor::White);
+					DynamicMaterial->SetVectorParameterValue(TEXT("EmissiveColor"), FLinearColor::White);
+					DynamicMaterial->SetVectorParameterValue(TEXT("Tint"), FLinearColor::White);
 				}
 			}
 
 			if (UParticleSystemComponent* ParticleComponent = Cast<UParticleSystemComponent>(PrimitiveComponent))
 			{
-				ParticleComponent->SetFloatParameter(TEXT("Alpha"), VisualScale);
-				ParticleComponent->SetFloatParameter(TEXT("Opacity"), VisualScale);
-				ParticleComponent->SetFloatParameter(TEXT("Intensity"), VisualScale);
-				ParticleComponent->SetFloatParameter(TEXT("Brightness"), VisualScale);
+				ParticleComponent->SetFloatParameter(TEXT("Alpha"), SmoothAlpha);
+				ParticleComponent->SetFloatParameter(TEXT("Opacity"), SmoothAlpha);
+				ParticleComponent->SetFloatParameter(TEXT("Intensity"), SmoothAlpha);
+				ParticleComponent->SetFloatParameter(TEXT("Brightness"), SmoothAlpha);
+				ParticleComponent->SetColorParameter(TEXT("Color"), FLinearColor::White);
+				ParticleComponent->SetColorParameter(TEXT("Tint"), FLinearColor::White);
 			}
 
 			++AppliedVisuals;
 		}
 	}
 
-	if (!bLoadoutVisible && FMath::IsNearlyEqual(LoadoutBackGlowCurrentScale, 1.0f, 0.003f))
-	{
-		RestoreLoadoutBackGlow();
-	}
-
-	if (AppliedLights == 0 && AppliedVisuals == 0 && bLoadoutVisible)
+	if (AppliedLights == 0 && AppliedVisuals == 0)
 	{
 		UE_LOG(
 			LogTMMenuViewerMeshTransition,
 			Verbose,
-			TEXT("[TMLoadoutBackGlow] No rear RectLight glow components found to fade."));
+			TEXT("[TMMainMenuBackGlow] No rear glow components found."));
 	}
 }
 
-void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutBackGlow()
+void UTMMenuViewerMeshTransitionSubsystem::RestoreMainMenuBackGlow()
 {
-	for (const TPair<TWeakObjectPtr<ULightComponent>, float>& LightState : LoadoutBackGlowOriginalIntensities)
+	for (const TPair<TWeakObjectPtr<ULightComponent>, FBackGlowLightState>& LightState : MainMenuBackGlowLightStates)
 	{
 		if (ULightComponent* LightComponent = LightState.Key.Get())
 		{
-			LightComponent->SetIntensity(LightState.Value);
+			LightComponent->SetIntensity(LightState.Value.OriginalIntensity);
+			LightComponent->SetLightColor(LightState.Value.OriginalColor);
 		}
 	}
 
-	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState>& VisualState : LoadoutBackGlowVisualStates)
+	for (const TPair<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState>& VisualState : MainMenuBackGlowVisualStates)
 	{
 		if (UPrimitiveComponent* PrimitiveComponent = VisualState.Key.Get())
 		{
@@ -1363,6 +1820,8 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutBackGlow()
 					PrimitiveComponent->SetMaterial(MaterialIndex, OriginalMaterial);
 				}
 			}
+			PrimitiveComponent->SetWorldLocation(VisualState.Value.OriginalLocation);
+			PrimitiveComponent->SetWorldRotation(VisualState.Value.OriginalRotation);
 			PrimitiveComponent->SetWorldScale3D(VisualState.Value.OriginalScale);
 			PrimitiveComponent->SetVisibility(VisualState.Value.bVisible, true);
 			PrimitiveComponent->SetHiddenInGame(VisualState.Value.bHiddenInGame, true);
@@ -1376,10 +1835,11 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutBackGlow()
 		}
 	}
 
-	LoadoutBackGlowOriginalIntensities.Empty();
-	LoadoutBackGlowVisualStates.Empty();
-	LoadoutBackGlowCurrentScale = 1.0f;
-	bLoadoutBackGlowTargetVisible = false;
+	MainMenuBackGlowLightStates.Empty();
+	MainMenuBackGlowVisualStates.Empty();
+	MainMenuBackGlowElapsedSeconds = 0.0f;
+	MainMenuBackGlowCurrentScale = 0.0f;
+	bMainMenuBackGlowActive = false;
 }
 
 UTMMenuViewerMeshTransitionSubsystem::FLoadoutPostProcessFocus

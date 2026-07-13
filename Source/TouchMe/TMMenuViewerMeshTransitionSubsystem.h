@@ -10,6 +10,7 @@ class APlayerCameraManager;
 class UCameraComponent;
 class ULightComponent;
 class UMaterialInterface;
+class UParticleSystemComponent;
 class UPrimitiveComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
@@ -63,10 +64,23 @@ private:
 
 	struct FBackGlowVisualState
 	{
+		FVector OriginalLocation = FVector::ZeroVector;
+		FRotator OriginalRotation = FRotator::ZeroRotator;
 		FVector OriginalScale = FVector::OneVector;
 		TArray<TWeakObjectPtr<UMaterialInterface>> OriginalMaterials;
 		bool bVisible = true;
 		bool bHiddenInGame = false;
+	};
+
+	struct FBackGlowLightState
+	{
+		float OriginalIntensity = 0.0f;
+		FLinearColor OriginalColor = FLinearColor::White;
+		float OriginalAttenuationRadius = 0.0f;
+		float OriginalSourceWidth = 0.0f;
+		float OriginalSourceHeight = 0.0f;
+		bool bHasAttenuationRadius = false;
+		bool bHasRectSourceSize = false;
 	};
 
 	void TrackMenuViewer(AActor* Actor, float DeltaTime, bool bLoadoutPreviewVisible);
@@ -111,8 +125,11 @@ private:
 	void UpdateLoadoutPostProcess(UWorld* World, bool bPostProcessVisible, bool bLoadoutVisible);
 	void ApplyLoadoutPostProcess(UWorld* World, UCameraComponent* CameraComponent, bool bLoadoutVisible);
 	void RestoreLoadoutPostProcess();
+	void UpdateLoadoutBackGlowTiming(bool bLoadoutVisible, float DeltaTime);
 	void UpdateLoadoutBackGlow(UWorld* World, bool bLoadoutVisible, float DeltaTime);
 	void RestoreLoadoutBackGlow();
+	void UpdateMainMenuBackGlow(UWorld* World, bool bMainMenuGlowVisible, float DeltaTime);
+	void RestoreMainMenuBackGlow();
 	AActor* ResolveLoadoutPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
 	FLoadoutPostProcessFocus ResolveLoadoutPostProcessFocus(UWorld* World, const UCameraComponent* CameraComponent) const;
 	void RestoreLoadoutFOV();
@@ -122,16 +139,25 @@ private:
 	TWeakObjectPtr<APlayerCameraManager> MenuFOVCameraManager;
 	TWeakObjectPtr<APlayerCameraManager> LoadoutFOVCameraManager;
 	TWeakObjectPtr<UCameraComponent> LoadoutPostProcessCamera;
-	TMap<TWeakObjectPtr<ULightComponent>, float> LoadoutBackGlowOriginalIntensities;
+	TWeakObjectPtr<UParticleSystemComponent> LoadoutBackGlowSpawnedVisual;
+	TMap<TWeakObjectPtr<ULightComponent>, FBackGlowLightState> LoadoutBackGlowLightStates;
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> LoadoutBackGlowVisualStates;
+	TMap<TWeakObjectPtr<ULightComponent>, FBackGlowLightState> MainMenuBackGlowLightStates;
+	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> MainMenuBackGlowVisualStates;
 	FPostProcessSettings SavedLoadoutPostProcessSettings;
 	float SavedMenuPreviousDefaultFOV = 90.0f;
 	float SavedLoadoutPreviousFOV = 90.0f;
 	float SavedLoadoutPostProcessBlendWeight = 0.0f;
-	float LoadoutBackGlowCurrentScale = 1.0f;
+	float LoadoutBackGlowElapsedSeconds = 0.0f;
+	float LoadoutBackGlowCurrentAlpha = 0.0f;
+	float MainMenuBackGlowElapsedSeconds = 0.0f;
+	float MainMenuBackGlowCurrentScale = 0.0f;
 	bool bMenuFOVApplied = false;
 	bool bLoadoutFOVApplied = false;
 	bool bLoadoutPostProcessApplied = false;
 	bool bLoadoutPostProcessLastLoadoutMode = false;
 	bool bLoadoutBackGlowTargetVisible = false;
+	bool bLoadoutBackGlowActive = false;
+	bool bMainMenuBackGlowActive = false;
+	bool bMainMenuBackGlowForceComplete = false;
 };
