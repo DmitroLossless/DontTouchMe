@@ -1355,7 +1355,7 @@ void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
 			5.0f,
 			100.0f);
 
-		ApplyFixedMenuExposure(Settings, -1.0f);
+		ApplyFixedMenuExposure(Settings, -0.985f);
 		Settings.bOverride_VignetteIntensity = true;
 		Settings.VignetteIntensity = FMath::Clamp(
 			CVarLoadoutPostProcessVignette.GetValueOnGameThread(),
