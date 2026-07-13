@@ -117,6 +117,12 @@ static TAutoConsoleVariable<float> CVarLoadoutPostProcessVignette(
 	TEXT("Dark vignette strength for the cinematic main menu post process."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<float> CVarAttachmentsPreviewBrightness(
+	TEXT("tm.AttachmentsPreviewBrightness"),
+	0.22f,
+	TEXT("Delayed exposure and color lift used only while W_Attachments is visible."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarLoadoutBackGlowDucking(
 	TEXT("tm.LoadoutBackGlowDucking"),
 	1,
@@ -201,6 +207,30 @@ static TAutoConsoleVariable<float> CVarMainMenuBackGlowEmissive(
 	TEXT("Final emissive multiplier for delayed main menu rear glow materials."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarMainMenuCameraDrift(
+	TEXT("tm.MainMenuCameraDrift"),
+	1,
+	TEXT("Enables a subtle closed-loop main menu camera drift."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMainMenuCameraDriftPeriod(
+	TEXT("tm.MainMenuCameraDrift.Period"),
+	36.0f,
+	TEXT("Seconds for one closed main menu camera drift loop."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMainMenuCameraDriftLocationAmplitude(
+	TEXT("tm.MainMenuCameraDrift.LocationAmplitude"),
+	2.0f,
+	TEXT("Maximum main menu camera drift position amplitude in centimeters."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarMainMenuCameraDriftRotationAmplitude(
+	TEXT("tm.MainMenuCameraDrift.RotationAmplitude"),
+	0.18f,
+	TEXT("Maximum main menu camera drift rotation amplitude in degrees."),
+	ECVF_Default);
+
 static TWeakObjectPtr<USkeletalMesh> GLastMenuViewerVestMesh;
 
 float GetMenuFOVAngle()
@@ -247,6 +277,7 @@ FLinearColor LerpLinearColor(const FLinearColor& From, const FLinearColor& To, c
 
 void UTMMenuViewerMeshTransitionSubsystem::Deinitialize()
 {
+	RestoreMainMenuCameraDrift();
 	RestoreLoadoutPostProcess();
 	RestoreMainMenuBackGlow();
 	RestoreLoadoutBackGlow();
@@ -270,6 +301,7 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 		IsLoadoutFOVVisible(World);
 	const bool bLoadoutFOVEnabled =
 		CVarLoadoutFOV.GetValueOnGameThread() != 0 && bLoadoutFOVVisible;
+	const bool bAttachmentsVisible = IsAttachmentsVisible(World);
 	const bool bMainMenuVisible = IsMainMenuVisible(World);
 	const bool bPostProcessVisible =
 		CVarLoadoutPostProcess.GetValueOnGameThread() != 0
@@ -277,7 +309,9 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 	UpdateMenuFOV(World, bMainMenuVisible, bLoadoutFOVVisible);
 	UpdateLoadoutFOV(World, bLoadoutFOVEnabled);
 	UpdateLoadoutBackGlowTiming(bLoadoutFOVVisible, DeltaTime);
-	UpdateLoadoutPostProcess(World, bPostProcessVisible, bLoadoutFOVVisible);
+	UpdateAttachmentsPreviewBrightnessTiming(bAttachmentsVisible, bLoadoutFOVVisible, DeltaTime);
+	UpdateMainMenuCameraDrift(World, bMainMenuVisible || bLoadoutFOVVisible, bLoadoutFOVVisible, DeltaTime);
+	UpdateLoadoutPostProcess(World, bPostProcessVisible, bLoadoutFOVVisible, bAttachmentsVisible);
 	if (bLoadoutFOVVisible)
 	{
 		UpdateMainMenuBackGlow(World, false, DeltaTime);
@@ -506,6 +540,55 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutFOVVisible(UWorld* World)
 		const UClass* WidgetClass = Widget->GetClass();
 		const FString ClassName = WidgetClass ? WidgetClass->GetName() : FString();
 		if (!ClassName.Contains(TEXT("W_Loadout")) && !ClassName.Contains(TEXT("W_Attachments")))
+		{
+			continue;
+		}
+
+		if (!Widget->IsVisible())
+		{
+			continue;
+		}
+
+		const ESlateVisibility Visibility = Widget->GetVisibility();
+		if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+		{
+			continue;
+		}
+
+		if (Widget->IsInViewport())
+		{
+			return true;
+		}
+
+		const FVector2D DrawnSize = Widget->GetCachedGeometry().GetLocalSize();
+		if (DrawnSize.X > 16.0f && DrawnSize.Y > 16.0f)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsAttachmentsVisible(UWorld* World)
+{
+	if (!World)
+	{
+		return false;
+	}
+
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		const FString ClassPath = WidgetClass ? WidgetClass->GetPathName() : FString();
+		const FString ClassName = WidgetClass ? WidgetClass->GetName() : FString();
+		if (!ClassName.Contains(TEXT("W_Attachments")) && !ClassPath.Contains(TEXT("W_Attachments")))
 		{
 			continue;
 		}
@@ -1063,7 +1146,8 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutFOV()
 void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutPostProcess(
 	UWorld* World,
 	const bool bPostProcessVisible,
-	const bool bLoadoutVisible)
+	const bool bLoadoutVisible,
+	const bool bAttachmentsVisible)
 {
 	if (!bPostProcessVisible)
 	{
@@ -1111,13 +1195,14 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutPostProcess(
 			*GetNameSafe(CameraComponent));
 	}
 
-	ApplyLoadoutPostProcess(World, CameraComponent, bLoadoutVisible);
+	ApplyLoadoutPostProcess(World, CameraComponent, bLoadoutVisible, bAttachmentsVisible);
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
 	UWorld* World,
 	UCameraComponent* CameraComponent,
-	const bool bLoadoutVisible)
+	const bool bLoadoutVisible,
+	const bool bAttachmentsVisible)
 {
 	if (!CameraComponent)
 	{
@@ -1126,6 +1211,10 @@ void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
 
 	FPostProcessSettings Settings = SavedLoadoutPostProcessSettings;
 	const FLoadoutPostProcessFocus Focus = ResolveLoadoutPostProcessFocus(World, CameraComponent);
+	const float AttachmentsBrightness = bLoadoutVisible
+		? FMath::Clamp(CVarAttachmentsPreviewBrightness.GetValueOnGameThread(), 0.0f, 0.5f)
+			* FMath::Clamp(AttachmentsPreviewBrightnessCurrentAlpha, 0.0f, 1.0f)
+		: 0.0f;
 
 	if (bLoadoutVisible)
 	{
@@ -1183,9 +1272,12 @@ void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
 			FLinearColor::White,
 			GlowAlpha);
 
-		ApplyFixedMenuExposure(Settings, FMath::Lerp(-1.18f, -0.55f, GlowAlpha));
+		ApplyFixedMenuExposure(Settings, FMath::Lerp(-1.18f, -0.55f, GlowAlpha) + AttachmentsBrightness);
 		Settings.bOverride_VignetteIntensity = true;
-		Settings.VignetteIntensity = FMath::Lerp(0.74f, 0.58f, GlowAlpha);
+		Settings.VignetteIntensity = FMath::Clamp(
+			FMath::Lerp(0.74f, 0.58f, GlowAlpha) - AttachmentsBrightness * 0.35f,
+			0.0f,
+			1.0f);
 		Settings.bOverride_SceneFringeIntensity = true;
 		Settings.SceneFringeIntensity = FMath::Lerp(0.045f, 0.0f, GlowAlpha);
 		Settings.bOverride_ChromaticAberrationStartOffset = true;
@@ -1216,7 +1308,11 @@ void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
 		Settings.bOverride_ColorGain = true;
 		Settings.ColorGain = LerpVector4(
 			FVector4(0.68f, 0.68f, 0.68f, 1.0f),
-			FVector4(0.78f, 0.78f, 0.78f, 1.0f),
+			FVector4(
+				0.78f + AttachmentsBrightness * 0.35f,
+				0.78f + AttachmentsBrightness * 0.35f,
+				0.78f + AttachmentsBrightness * 0.35f,
+				1.0f),
 			GlowAlpha);
 		Settings.bOverride_ColorOffset = true;
 		Settings.ColorOffset = LerpVector4(
@@ -1300,6 +1396,70 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutPostProcess()
 	SavedLoadoutPostProcessSettings = FPostProcessSettings();
 	SavedLoadoutPostProcessBlendWeight = 0.0f;
 	bLoadoutPostProcessApplied = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsPreviewBrightnessTiming(
+	const bool bAttachmentsVisible,
+	const bool bLoadoutVisible,
+	const float DeltaTime)
+{
+	if (!bLoadoutVisible)
+	{
+		bAttachmentsPreviewBrightnessActive = false;
+		bAttachmentsPreviewBrightnessTargetVisible = false;
+		AttachmentsPreviewBrightnessElapsedSeconds = 0.0f;
+		AttachmentsPreviewBrightnessTransitionStartAlpha = 0.0f;
+		AttachmentsPreviewBrightnessCurrentAlpha = 0.0f;
+		return;
+	}
+
+	if (!bAttachmentsPreviewBrightnessActive)
+	{
+		if (!bAttachmentsVisible)
+		{
+			AttachmentsPreviewBrightnessElapsedSeconds = 0.0f;
+			AttachmentsPreviewBrightnessTransitionStartAlpha = 0.0f;
+			AttachmentsPreviewBrightnessCurrentAlpha = 0.0f;
+			return;
+		}
+
+		bAttachmentsPreviewBrightnessActive = true;
+		bAttachmentsPreviewBrightnessTargetVisible = true;
+		AttachmentsPreviewBrightnessElapsedSeconds = 0.0f;
+		AttachmentsPreviewBrightnessTransitionStartAlpha = AttachmentsPreviewBrightnessCurrentAlpha;
+		AttachmentsPreviewBrightnessCurrentAlpha = 0.0f;
+		return;
+	}
+
+	if (bAttachmentsPreviewBrightnessTargetVisible != bAttachmentsVisible)
+	{
+		bAttachmentsPreviewBrightnessTargetVisible = bAttachmentsVisible;
+		AttachmentsPreviewBrightnessElapsedSeconds = 0.0f;
+		AttachmentsPreviewBrightnessTransitionStartAlpha = AttachmentsPreviewBrightnessCurrentAlpha;
+		return;
+	}
+
+	AttachmentsPreviewBrightnessElapsedSeconds += FMath::Max(0.0f, DeltaTime);
+	const float Delay = FMath::Max(0.0f, CVarLoadoutBrightBackGlowDelay.GetValueOnGameThread());
+	const float FadeDuration = FMath::Max(0.01f, CVarLoadoutBrightBackGlowFadeDuration.GetValueOnGameThread());
+	const float FadeAlpha = FMath::Clamp(
+		(AttachmentsPreviewBrightnessElapsedSeconds - Delay) / FadeDuration,
+		0.0f,
+		1.0f);
+	const float SmoothAlpha = FadeAlpha * FadeAlpha * (3.0f - 2.0f * FadeAlpha);
+	const float TargetAlpha = bAttachmentsPreviewBrightnessTargetVisible ? 1.0f : 0.0f;
+	AttachmentsPreviewBrightnessCurrentAlpha = FMath::Lerp(
+		AttachmentsPreviewBrightnessTransitionStartAlpha,
+		TargetAlpha,
+		SmoothAlpha);
+
+	if (!bAttachmentsPreviewBrightnessTargetVisible && FadeAlpha >= 1.0f)
+	{
+		bAttachmentsPreviewBrightnessActive = false;
+		AttachmentsPreviewBrightnessElapsedSeconds = 0.0f;
+		AttachmentsPreviewBrightnessTransitionStartAlpha = 0.0f;
+		AttachmentsPreviewBrightnessCurrentAlpha = 0.0f;
+	}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutBackGlowTiming(
@@ -1840,6 +2000,132 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreMainMenuBackGlow()
 	MainMenuBackGlowElapsedSeconds = 0.0f;
 	MainMenuBackGlowCurrentScale = 0.0f;
 	bMainMenuBackGlowActive = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuCameraDrift(
+	UWorld* World,
+	const bool bMenuDriftVisible,
+	const bool bLoadoutMode,
+	const float DeltaTime)
+{
+	if (!World || CVarMainMenuCameraDrift.GetValueOnGameThread() == 0 || !bMenuDriftVisible)
+	{
+		RestoreMainMenuCameraDrift();
+		return;
+	}
+
+	UCameraComponent* CameraComponent = ResolveActiveCameraComponent(World);
+	if (!CameraComponent)
+	{
+		RestoreMainMenuCameraDrift();
+		return;
+	}
+
+	if (bMainMenuCameraDriftApplied && MainMenuCameraDriftCamera.Get() != CameraComponent)
+	{
+		RestoreMainMenuCameraDrift();
+	}
+
+	if (bMainMenuCameraDriftApplied && bMainMenuCameraDriftLoadoutMode != bLoadoutMode)
+	{
+		const FVector ExpectedLocation =
+			MainMenuCameraDriftBaseRelativeLocation + MainMenuCameraDriftLastRelativeLocationOffset;
+		const FRotator ExpectedRotation =
+			MainMenuCameraDriftBaseRelativeRotation + MainMenuCameraDriftLastRelativeRotationOffset;
+		if (CameraComponent->GetRelativeLocation().Equals(ExpectedLocation, 0.1f)
+			&& CameraComponent->GetRelativeRotation().Equals(ExpectedRotation, 0.01f))
+		{
+			CameraComponent->SetRelativeLocationAndRotation(
+				MainMenuCameraDriftBaseRelativeLocation,
+				MainMenuCameraDriftBaseRelativeRotation);
+		}
+
+		MainMenuCameraDriftCamera.Reset();
+		MainMenuCameraDriftBaseRelativeLocation = FVector::ZeroVector;
+		MainMenuCameraDriftLastRelativeLocationOffset = FVector::ZeroVector;
+		MainMenuCameraDriftBaseRelativeRotation = FRotator::ZeroRotator;
+		MainMenuCameraDriftLastRelativeRotationOffset = FRotator::ZeroRotator;
+		MainMenuCameraDriftElapsedSeconds = 0.0f;
+		bMainMenuCameraDriftApplied = false;
+		bMainMenuCameraDriftLoadoutMode = false;
+	}
+
+	if (!bMainMenuCameraDriftApplied)
+	{
+		MainMenuCameraDriftCamera = CameraComponent;
+		MainMenuCameraDriftBaseRelativeLocation = CameraComponent->GetRelativeLocation();
+		MainMenuCameraDriftBaseRelativeRotation = CameraComponent->GetRelativeRotation();
+		MainMenuCameraDriftLastRelativeLocationOffset = FVector::ZeroVector;
+		MainMenuCameraDriftLastRelativeRotationOffset = FRotator::ZeroRotator;
+		MainMenuCameraDriftElapsedSeconds = 0.0f;
+		bMainMenuCameraDriftApplied = true;
+		bMainMenuCameraDriftLoadoutMode = bLoadoutMode;
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMMenuCameraDrift] Captured %s base camera transform on %s."),
+			bLoadoutMode ? TEXT("loadout") : TEXT("main menu"),
+			*GetNameSafe(CameraComponent));
+	}
+
+	const float Period = FMath::Max(4.0f, CVarMainMenuCameraDriftPeriod.GetValueOnGameThread());
+	MainMenuCameraDriftElapsedSeconds = FMath::Fmod(
+		MainMenuCameraDriftElapsedSeconds + FMath::Max(0.0f, DeltaTime),
+		Period);
+
+	const float Angle = (MainMenuCameraDriftElapsedSeconds / Period) * UE_TWO_PI;
+	const float LocationAmplitude = FMath::Clamp(
+		CVarMainMenuCameraDriftLocationAmplitude.GetValueOnGameThread(),
+		0.0f,
+		8.0f);
+	const float RotationAmplitude = FMath::Clamp(
+		CVarMainMenuCameraDriftRotationAmplitude.GetValueOnGameThread(),
+		0.0f,
+		0.65f);
+
+	const FVector RelativeLocationOffset(
+		FMath::Sin(Angle) * LocationAmplitude * 0.35f,
+		FMath::Sin(Angle * 2.0f) * LocationAmplitude,
+		FMath::Sin(Angle * 3.0f) * LocationAmplitude * 0.28f);
+	const FRotator RelativeRotationOffset(
+		FMath::Sin(Angle * 2.0f) * RotationAmplitude * 0.65f,
+		FMath::Sin(Angle) * RotationAmplitude,
+		FMath::Sin(Angle * 3.0f) * RotationAmplitude * 0.12f);
+
+	MainMenuCameraDriftLastRelativeLocationOffset = RelativeLocationOffset;
+	MainMenuCameraDriftLastRelativeRotationOffset = RelativeRotationOffset;
+	CameraComponent->SetRelativeLocationAndRotation(
+		MainMenuCameraDriftBaseRelativeLocation + RelativeLocationOffset,
+		MainMenuCameraDriftBaseRelativeRotation + RelativeRotationOffset);
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreMainMenuCameraDrift()
+{
+	if (!bMainMenuCameraDriftApplied)
+	{
+		return;
+	}
+
+	if (UCameraComponent* CameraComponent = MainMenuCameraDriftCamera.Get())
+	{
+		CameraComponent->SetRelativeLocationAndRotation(
+			MainMenuCameraDriftBaseRelativeLocation,
+			MainMenuCameraDriftBaseRelativeRotation);
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMMenuCameraDrift] Restored base camera transform on %s."),
+			*GetNameSafe(CameraComponent));
+	}
+
+	MainMenuCameraDriftCamera.Reset();
+	MainMenuCameraDriftBaseRelativeLocation = FVector::ZeroVector;
+	MainMenuCameraDriftLastRelativeLocationOffset = FVector::ZeroVector;
+	MainMenuCameraDriftBaseRelativeRotation = FRotator::ZeroRotator;
+	MainMenuCameraDriftLastRelativeRotationOffset = FRotator::ZeroRotator;
+	MainMenuCameraDriftElapsedSeconds = 0.0f;
+	bMainMenuCameraDriftApplied = false;
+	bMainMenuCameraDriftLoadoutMode = false;
 }
 
 UTMMenuViewerMeshTransitionSubsystem::FLoadoutPostProcessFocus
