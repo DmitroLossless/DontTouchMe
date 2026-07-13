@@ -173,7 +173,7 @@ static TAutoConsoleVariable<int32> CVarMainMenuBackGlow(
 
 static TAutoConsoleVariable<float> CVarMainMenuBackGlowDelay(
 	TEXT("tm.MainMenuBackGlow.Delay"),
-	2.0f,
+	1.0f,
 	TEXT("Seconds to keep the rear main menu glow black before fading it in."),
 	ECVF_Default);
 
@@ -185,19 +185,19 @@ static TAutoConsoleVariable<float> CVarMainMenuBackGlowFadeDuration(
 
 static TAutoConsoleVariable<float> CVarMainMenuBackGlowScale(
 	TEXT("tm.MainMenuBackGlow.Scale"),
-	1.0f,
+	1.25f,
 	TEXT("Final RectLight intensity scale for the delayed main menu rear glow."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarMainMenuBackGlowVisualScale(
 	TEXT("tm.MainMenuBackGlow.VisualScale"),
-	1.0f,
+	1.18f,
 	TEXT("Final P_Ambient_Glow scale for the delayed main menu rear glow."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarMainMenuBackGlowEmissive(
 	TEXT("tm.MainMenuBackGlow.Emissive"),
-	220.0f,
+	280.0f,
 	TEXT("Final emissive multiplier for delayed main menu rear glow materials."),
 	ECVF_Default);
 
@@ -1643,7 +1643,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuBackGlow(
 		if (bMainMenuBackGlowForceComplete)
 		{
 			MainMenuBackGlowElapsedSeconds = Delay + FadeDuration;
-			MainMenuBackGlowCurrentScale = FMath::Clamp(CVarMainMenuBackGlowScale.GetValueOnGameThread(), 0.0f, 1.0f);
+			MainMenuBackGlowCurrentScale = FMath::Clamp(CVarMainMenuBackGlowScale.GetValueOnGameThread(), 0.0f, 2.0f);
 			bMainMenuBackGlowForceComplete = false;
 			UE_LOG(
 				LogTMMenuViewerMeshTransition,
@@ -1674,7 +1674,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuBackGlow(
 	const float FadeAlpha = FMath::Clamp((MainMenuBackGlowElapsedSeconds - Delay) / FadeDuration, 0.0f, 1.0f);
 	const float SmoothAlpha = FadeAlpha * FadeAlpha * (3.0f - 2.0f * FadeAlpha);
 	MainMenuBackGlowCurrentScale =
-		FMath::Clamp(CVarMainMenuBackGlowScale.GetValueOnGameThread(), 0.0f, 1.0f) * SmoothAlpha;
+		FMath::Clamp(CVarMainMenuBackGlowScale.GetValueOnGameThread(), 0.0f, 2.0f) * SmoothAlpha;
 
 	for (auto It = MainMenuBackGlowLightStates.CreateIterator(); It; ++It)
 	{
@@ -1751,7 +1751,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuBackGlow(
 
 			const FBackGlowVisualState VisualState = MainMenuBackGlowVisualStates.FindRef(PrimitiveComponent);
 			const float VisualScale =
-				FMath::Clamp(CVarMainMenuBackGlowVisualScale.GetValueOnGameThread(), 0.0f, 1.0f) * SmoothAlpha;
+				FMath::Clamp(CVarMainMenuBackGlowVisualScale.GetValueOnGameThread(), 0.0f, 2.0f) * SmoothAlpha;
 			PrimitiveComponent->SetVisibility(VisualState.bVisible, true);
 			PrimitiveComponent->SetHiddenInGame(VisualState.bHiddenInGame, true);
 			PrimitiveComponent->SetWorldScale3D(VisualState.OriginalScale * VisualScale);
