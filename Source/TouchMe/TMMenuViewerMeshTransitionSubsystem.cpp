@@ -4,11 +4,17 @@
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/ActorComponent.h"
+#include "Components/ContentWidget.h"
 #include "Components/LightComponent.h"
 #include "Components/LocalLightComponent.h"
+#include "Components/PanelWidget.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/RectLightComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/TextBlock.h"
+#include "Components/Widget.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -231,6 +237,144 @@ static TAutoConsoleVariable<float> CVarMainMenuCameraDriftRotationAmplitude(
 	TEXT("Maximum main menu camera drift rotation amplitude in degrees."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarAttachmentsCameraFocus(
+	TEXT("tm.AttachmentsCameraFocus"),
+	1,
+	TEXT("Enables delayed smooth camera focus moves for W_Attachments slot tabs."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusDelay(
+	TEXT("tm.AttachmentsCameraFocus.Delay"),
+	0.5f,
+	TEXT("Seconds to hold the current W_Attachments camera after selecting a new attachment slot tab."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusDuration(
+	TEXT("tm.AttachmentsCameraFocus.Duration"),
+	0.45f,
+	TEXT("Seconds used for the smooth W_Attachments camera move after the delay."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusTargetScreenX(
+	TEXT("tm.AttachmentsCameraFocus.TargetScreenX"),
+	0.60f,
+	TEXT("Normalized screen X target for the active W_Attachments socket, biased into the empty weapon preview area."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusTargetScreenY(
+	TEXT("tm.AttachmentsCameraFocus.TargetScreenY"),
+	0.56f,
+	TEXT("Normalized screen Y target for the active W_Attachments socket, biased into the empty weapon preview area."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusLocationScale(
+	TEXT("tm.AttachmentsCameraFocus.LocationScale"),
+	1.0f,
+	TEXT("Global scale for W_Attachments camera focus position offsets."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusRotationScale(
+	TEXT("tm.AttachmentsCameraFocus.RotationScale"),
+	1.0f,
+	TEXT("Global scale for W_Attachments camera focus rotation offsets."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusOpticsPanY(
+	TEXT("tm.AttachmentsCameraFocus.Optics.PanY"),
+	0.0f,
+	TEXT("Camera local Y offset for W_Attachments Optics focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusOpticsHeightZ(
+	TEXT("tm.AttachmentsCameraFocus.Optics.HeightZ"),
+	3.0f,
+	TEXT("Camera local Z offset for W_Attachments Optics focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusOpticsPitch(
+	TEXT("tm.AttachmentsCameraFocus.Optics.Pitch"),
+	-0.2f,
+	TEXT("Camera pitch offset for W_Attachments Optics focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusOpticsYaw(
+	TEXT("tm.AttachmentsCameraFocus.Optics.Yaw"),
+	0.15f,
+	TEXT("Camera yaw offset for W_Attachments Optics focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusSideRailPanY(
+	TEXT("tm.AttachmentsCameraFocus.SideRail.PanY"),
+	-8.0f,
+	TEXT("Camera local Y offset for W_Attachments Side Rail focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusSideRailHeightZ(
+	TEXT("tm.AttachmentsCameraFocus.SideRail.HeightZ"),
+	1.5f,
+	TEXT("Camera local Z offset for W_Attachments Side Rail focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusSideRailPitch(
+	TEXT("tm.AttachmentsCameraFocus.SideRail.Pitch"),
+	-0.15f,
+	TEXT("Camera pitch offset for W_Attachments Side Rail focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusSideRailYaw(
+	TEXT("tm.AttachmentsCameraFocus.SideRail.Yaw"),
+	-0.85f,
+	TEXT("Camera yaw offset for W_Attachments Side Rail focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusUnderbarrelPanY(
+	TEXT("tm.AttachmentsCameraFocus.Underbarrel.PanY"),
+	-13.0f,
+	TEXT("Camera local Y offset for W_Attachments Underbarrel focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusUnderbarrelHeightZ(
+	TEXT("tm.AttachmentsCameraFocus.Underbarrel.HeightZ"),
+	-3.0f,
+	TEXT("Camera local Z offset for W_Attachments Underbarrel focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusUnderbarrelPitch(
+	TEXT("tm.AttachmentsCameraFocus.Underbarrel.Pitch"),
+	-0.45f,
+	TEXT("Camera pitch offset for W_Attachments Underbarrel focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusUnderbarrelYaw(
+	TEXT("tm.AttachmentsCameraFocus.Underbarrel.Yaw"),
+	-1.15f,
+	TEXT("Camera yaw offset for W_Attachments Underbarrel focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusMuzzlePanY(
+	TEXT("tm.AttachmentsCameraFocus.Muzzle.PanY"),
+	-26.0f,
+	TEXT("Camera local Y offset for W_Attachments Muzzle focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusMuzzleHeightZ(
+	TEXT("tm.AttachmentsCameraFocus.Muzzle.HeightZ"),
+	0.0f,
+	TEXT("Camera local Z offset for W_Attachments Muzzle focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusMuzzlePitch(
+	TEXT("tm.AttachmentsCameraFocus.Muzzle.Pitch"),
+	-0.1f,
+	TEXT("Camera pitch offset for W_Attachments Muzzle focus."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusMuzzleYaw(
+	TEXT("tm.AttachmentsCameraFocus.Muzzle.Yaw"),
+	-2.35f,
+	TEXT("Camera yaw offset for W_Attachments Muzzle focus."),
+	ECVF_Default);
+
 static TWeakObjectPtr<USkeletalMesh> GLastMenuViewerVestMesh;
 
 float GetMenuFOVAngle()
@@ -273,6 +417,94 @@ FLinearColor LerpLinearColor(const FLinearColor& From, const FLinearColor& To, c
 		FMath::Lerp(From.B, To.B, Alpha),
 		FMath::Lerp(From.A, To.A, Alpha));
 }
+
+float SmoothStep01(const float Alpha)
+{
+	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+	return ClampedAlpha * ClampedAlpha * (3.0f - 2.0f * ClampedAlpha);
+}
+
+bool IsVisibleWidgetInstance(const UUserWidget* Widget)
+{
+	if (!IsValid(Widget) || !Widget->IsVisible())
+	{
+		return false;
+	}
+
+	const ESlateVisibility Visibility = Widget->GetVisibility();
+	if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+	{
+		return false;
+	}
+
+	if (Widget->IsInViewport())
+	{
+		return true;
+	}
+
+	const FVector2D DrawnSize = Widget->GetCachedGeometry().GetLocalSize();
+	return DrawnSize.X > 16.0f && DrawnSize.Y > 16.0f;
+}
+
+void VisitWidgetTree(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
+{
+	if (!Widget)
+	{
+		return;
+	}
+
+	const ESlateVisibility Visibility = Widget->GetVisibility();
+	if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+	{
+		return;
+	}
+
+	Visitor(Widget);
+
+	if (UUserWidget* UserWidget = Cast<UUserWidget>(Widget))
+	{
+		if (UWidget* RootWidget = UserWidget->GetRootWidget())
+		{
+			if (RootWidget != Widget)
+			{
+				VisitWidgetTree(RootWidget, Visitor);
+			}
+		}
+	}
+
+	if (UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget))
+	{
+		const int32 ChildCount = PanelWidget->GetChildrenCount();
+		for (int32 ChildIndex = 0; ChildIndex < ChildCount; ++ChildIndex)
+		{
+			VisitWidgetTree(PanelWidget->GetChildAt(ChildIndex), Visitor);
+		}
+		return;
+	}
+
+	if (UContentWidget* ContentWidget = Cast<UContentWidget>(Widget))
+	{
+		VisitWidgetTree(ContentWidget->GetContent(), Visitor);
+	}
+}
+
+float ResolveViewportAspectRatio(UWorld* World)
+{
+	if (World)
+	{
+		if (const UGameViewportClient* GameViewportClient = World->GetGameViewport())
+		{
+			FVector2D ViewportSize = FVector2D::ZeroVector;
+			GameViewportClient->GetViewportSize(ViewportSize);
+			if (ViewportSize.X > 1.0f && ViewportSize.Y > 1.0f)
+			{
+				return ViewportSize.X / ViewportSize.Y;
+			}
+		}
+	}
+
+	return 16.0f / 9.0f;
+}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::Deinitialize()
@@ -310,7 +542,7 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 	UpdateLoadoutFOV(World, bLoadoutFOVEnabled);
 	UpdateLoadoutBackGlowTiming(bLoadoutFOVVisible, DeltaTime);
 	UpdateAttachmentsPreviewBrightnessTiming(bAttachmentsVisible, bLoadoutFOVVisible, DeltaTime);
-	UpdateMainMenuCameraDrift(World, bMainMenuVisible || bLoadoutFOVVisible, bLoadoutFOVVisible, DeltaTime);
+	UpdateMainMenuCameraDrift(World, bMainMenuVisible || bLoadoutFOVVisible, bLoadoutFOVVisible, bAttachmentsVisible, DeltaTime);
 	UpdateLoadoutPostProcess(World, bPostProcessVisible, bLoadoutFOVVisible, bAttachmentsVisible);
 	if (bLoadoutFOVVisible)
 	{
@@ -834,6 +1066,69 @@ AActor* UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutPreviewWeaponActor(
 
 		AActor* ActiveWeapon = Cast<AActor>(ActiveWeaponProperty->GetObjectPropertyValue_InContainer(Widget));
 		if (IsVisibleLoadoutPreviewWeaponActor(ActiveWeapon))
+		{
+			return ActiveWeapon;
+		}
+	}
+
+	AActor* BestActor = nullptr;
+	float BestDistanceSq = TNumericLimits<float>::Max();
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (!IsVisibleLoadoutPreviewWeaponActor(Actor))
+		{
+			continue;
+		}
+
+		const float DistanceSq = FVector::DistSquared(CameraLocation, Actor->GetActorLocation());
+		if (FMath::IsFinite(DistanceSq) && DistanceSq < BestDistanceSq)
+		{
+			BestActor = Actor;
+			BestDistanceSq = DistanceSq;
+		}
+	}
+
+	return BestActor;
+}
+
+AActor* UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentsPreviewWeaponActor(
+	UWorld* World,
+	const FVector& CameraLocation) const
+{
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Attachments")))
+		{
+			continue;
+		}
+
+		if (!IsVisibleWidgetInstance(Widget))
+		{
+			continue;
+		}
+
+		const FObjectPropertyBase* ActiveWeaponProperty =
+			FindFProperty<FObjectPropertyBase>(WidgetClass, TEXT("ActiveWeapon"));
+		if (!ActiveWeaponProperty)
+		{
+			continue;
+		}
+
+		AActor* ActiveWeapon = Cast<AActor>(ActiveWeaponProperty->GetObjectPropertyValue_InContainer(Widget));
+		if (IsValid(ActiveWeapon))
 		{
 			return ActiveWeapon;
 		}
@@ -2006,6 +2301,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuCameraDrift(
 	UWorld* World,
 	const bool bMenuDriftVisible,
 	const bool bLoadoutMode,
+	const bool bAttachmentsVisible,
 	const float DeltaTime)
 {
 	if (!World || CVarMainMenuCameraDrift.GetValueOnGameThread() == 0 || !bMenuDriftVisible)
@@ -2046,6 +2342,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuCameraDrift(
 		MainMenuCameraDriftBaseRelativeRotation = FRotator::ZeroRotator;
 		MainMenuCameraDriftLastRelativeRotationOffset = FRotator::ZeroRotator;
 		MainMenuCameraDriftElapsedSeconds = 0.0f;
+		ResetAttachmentsCameraFocus();
 		bMainMenuCameraDriftApplied = false;
 		bMainMenuCameraDriftLoadoutMode = false;
 	}
@@ -2068,6 +2365,8 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuCameraDrift(
 			*GetNameSafe(CameraComponent));
 	}
 
+	UpdateAttachmentsCameraFocus(World, bLoadoutMode && bAttachmentsVisible, DeltaTime, CameraComponent);
+
 	const float Period = FMath::Max(4.0f, CVarMainMenuCameraDriftPeriod.GetValueOnGameThread());
 	MainMenuCameraDriftElapsedSeconds = FMath::Fmod(
 		MainMenuCameraDriftElapsedSeconds + FMath::Max(0.0f, DeltaTime),
@@ -2083,20 +2382,452 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateMainMenuCameraDrift(
 		0.0f,
 		0.65f);
 
-	const FVector RelativeLocationOffset(
+	const FVector DriftLocationOffset(
 		FMath::Sin(Angle) * LocationAmplitude * 0.35f,
 		FMath::Sin(Angle * 2.0f) * LocationAmplitude,
 		FMath::Sin(Angle * 3.0f) * LocationAmplitude * 0.28f);
-	const FRotator RelativeRotationOffset(
+	const FRotator DriftRotationOffset(
 		FMath::Sin(Angle * 2.0f) * RotationAmplitude * 0.65f,
 		FMath::Sin(Angle) * RotationAmplitude,
 		FMath::Sin(Angle * 3.0f) * RotationAmplitude * 0.12f);
+	const FVector RelativeLocationOffset = DriftLocationOffset + AttachmentsCameraFocusCurrentLocationOffset;
+	const FRotator RelativeRotationOffset = DriftRotationOffset + AttachmentsCameraFocusCurrentRotationOffset;
 
 	MainMenuCameraDriftLastRelativeLocationOffset = RelativeLocationOffset;
 	MainMenuCameraDriftLastRelativeRotationOffset = RelativeRotationOffset;
 	CameraComponent->SetRelativeLocationAndRotation(
 		MainMenuCameraDriftBaseRelativeLocation + RelativeLocationOffset,
 		MainMenuCameraDriftBaseRelativeRotation + RelativeRotationOffset);
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
+	UWorld* World,
+	const bool bAttachmentsVisible,
+	const float DeltaTime,
+	UCameraComponent* CameraComponent)
+{
+	if (!CameraComponent || CVarAttachmentsCameraFocus.GetValueOnGameThread() == 0)
+	{
+		ResetAttachmentsCameraFocus();
+		return;
+	}
+
+	const EAttachmentCameraFocusGroup ObservedGroup = bAttachmentsVisible
+		? ResolveActiveAttachmentCameraFocusGroup(World)
+		: EAttachmentCameraFocusGroup::None;
+
+	if (ObservedGroup != AttachmentsCameraFocusObservedGroup)
+	{
+		const FAttachmentCameraFocusPose TargetPose =
+			ResolveAttachmentCameraFocusPose(World, CameraComponent, ObservedGroup);
+		AttachmentsCameraFocusObservedGroup = ObservedGroup;
+		AttachmentsCameraFocusTargetGroup = ObservedGroup;
+		AttachmentsCameraFocusStartLocationOffset = AttachmentsCameraFocusCurrentLocationOffset;
+		AttachmentsCameraFocusStartRotationOffset = AttachmentsCameraFocusCurrentRotationOffset;
+		AttachmentsCameraFocusTargetLocationOffset = TargetPose.LocationOffset;
+		AttachmentsCameraFocusTargetRotationOffset = TargetPose.RotationOffset;
+		AttachmentsCameraFocusDelayElapsedSeconds = 0.0f;
+		AttachmentsCameraFocusBlendElapsedSeconds = 0.0f;
+		bAttachmentsCameraFocusWaitingForDelay = ObservedGroup != EAttachmentCameraFocusGroup::None
+			&& CVarAttachmentsCameraFocusDelay.GetValueOnGameThread() > 0.0f;
+		bAttachmentsCameraFocusTransitionActive = true;
+
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMAttachmentsCameraFocus] Target=%s Delay=%.2f Duration=%.2f Loc=%s Rot=%s"),
+			*DescribeAttachmentCameraFocusGroup(ObservedGroup),
+			bAttachmentsCameraFocusWaitingForDelay ? FMath::Max(0.0f, CVarAttachmentsCameraFocusDelay.GetValueOnGameThread()) : 0.0f,
+			FMath::Max(0.01f, CVarAttachmentsCameraFocusDuration.GetValueOnGameThread()),
+			*AttachmentsCameraFocusTargetLocationOffset.ToString(),
+			*AttachmentsCameraFocusTargetRotationOffset.ToString());
+	}
+
+	if (!bAttachmentsCameraFocusTransitionActive)
+	{
+		return;
+	}
+
+	if (bAttachmentsCameraFocusWaitingForDelay)
+	{
+		AttachmentsCameraFocusDelayElapsedSeconds += FMath::Max(0.0f, DeltaTime);
+		if (AttachmentsCameraFocusDelayElapsedSeconds < FMath::Max(0.0f, CVarAttachmentsCameraFocusDelay.GetValueOnGameThread()))
+		{
+			return;
+		}
+
+		bAttachmentsCameraFocusWaitingForDelay = false;
+		AttachmentsCameraFocusBlendElapsedSeconds = 0.0f;
+	}
+
+	AttachmentsCameraFocusBlendElapsedSeconds += FMath::Max(0.0f, DeltaTime);
+	const float Duration = FMath::Max(0.01f, CVarAttachmentsCameraFocusDuration.GetValueOnGameThread());
+	const float Alpha = SmoothStep01(AttachmentsCameraFocusBlendElapsedSeconds / Duration);
+	AttachmentsCameraFocusCurrentLocationOffset = FMath::Lerp(
+		AttachmentsCameraFocusStartLocationOffset,
+		AttachmentsCameraFocusTargetLocationOffset,
+		Alpha);
+	AttachmentsCameraFocusCurrentRotationOffset = FMath::Lerp(
+		AttachmentsCameraFocusStartRotationOffset,
+		AttachmentsCameraFocusTargetRotationOffset,
+		Alpha);
+
+	if (Alpha >= 1.0f)
+	{
+		AttachmentsCameraFocusCurrentLocationOffset = AttachmentsCameraFocusTargetLocationOffset;
+		AttachmentsCameraFocusCurrentRotationOffset = AttachmentsCameraFocusTargetRotationOffset;
+		bAttachmentsCameraFocusTransitionActive = false;
+
+		if (AttachmentsCameraFocusTargetGroup == EAttachmentCameraFocusGroup::None
+			&& AttachmentsCameraFocusCurrentLocationOffset.IsNearlyZero(0.01f)
+			&& AttachmentsCameraFocusCurrentRotationOffset.IsNearlyZero(0.01f))
+		{
+			ResetAttachmentsCameraFocus();
+		}
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::ResetAttachmentsCameraFocus()
+{
+	AttachmentsCameraFocusCurrentLocationOffset = FVector::ZeroVector;
+	AttachmentsCameraFocusStartLocationOffset = FVector::ZeroVector;
+	AttachmentsCameraFocusTargetLocationOffset = FVector::ZeroVector;
+	AttachmentsCameraFocusCurrentRotationOffset = FRotator::ZeroRotator;
+	AttachmentsCameraFocusStartRotationOffset = FRotator::ZeroRotator;
+	AttachmentsCameraFocusTargetRotationOffset = FRotator::ZeroRotator;
+	AttachmentsCameraFocusDelayElapsedSeconds = 0.0f;
+	AttachmentsCameraFocusBlendElapsedSeconds = 0.0f;
+	AttachmentsCameraFocusObservedGroup = EAttachmentCameraFocusGroup::None;
+	AttachmentsCameraFocusTargetGroup = EAttachmentCameraFocusGroup::None;
+	bAttachmentsCameraFocusWaitingForDelay = false;
+	bAttachmentsCameraFocusTransitionActive = false;
+}
+
+UTMMenuViewerMeshTransitionSubsystem::EAttachmentCameraFocusGroup
+UTMMenuViewerMeshTransitionSubsystem::ResolveActiveAttachmentCameraFocusGroup(UWorld* World) const
+{
+	if (!World)
+	{
+		return EAttachmentCameraFocusGroup::None;
+	}
+
+	static const FName AttachmentListNames[] =
+	{
+		TEXT("AttachmentList"),
+		TEXT("AttachmentList_1"),
+		TEXT("AttachmentsList")
+	};
+
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Attachments")))
+		{
+			continue;
+		}
+
+		if (!IsVisibleWidgetInstance(Widget))
+		{
+			continue;
+		}
+
+		for (const FName AttachmentListName : AttachmentListNames)
+		{
+			UWidget* AttachmentList = Widget->GetWidgetFromName(AttachmentListName);
+			if (!AttachmentList)
+			{
+				continue;
+			}
+
+			EAttachmentCameraFocusGroup Result = EAttachmentCameraFocusGroup::None;
+			VisitWidgetTree(AttachmentList, [&Result](UWidget* ChildWidget)
+			{
+				const UTextBlock* TextBlock = Cast<UTextBlock>(ChildWidget);
+				if (!TextBlock)
+				{
+					return;
+				}
+
+				const EAttachmentCameraFocusGroup Candidate =
+					InferAttachmentCameraFocusGroupFromText(TextBlock->GetText().ToString());
+				if (Candidate != EAttachmentCameraFocusGroup::None)
+				{
+					Result = Candidate;
+				}
+			});
+
+			if (Result != EAttachmentCameraFocusGroup::None)
+			{
+				return Result;
+			}
+		}
+	}
+
+	return EAttachmentCameraFocusGroup::None;
+}
+
+UTMMenuViewerMeshTransitionSubsystem::FAttachmentCameraFocusPose
+UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusPose(
+	UWorld* World,
+	const UCameraComponent* CameraComponent,
+	const EAttachmentCameraFocusGroup Group) const
+{
+	float PanY = 0.0f;
+	float HeightZ = 0.0f;
+	float Pitch = 0.0f;
+	float Yaw = 0.0f;
+
+	switch (Group)
+	{
+	case EAttachmentCameraFocusGroup::Optics:
+		PanY = CVarAttachmentsCameraFocusOpticsPanY.GetValueOnGameThread();
+		HeightZ = CVarAttachmentsCameraFocusOpticsHeightZ.GetValueOnGameThread();
+		Pitch = CVarAttachmentsCameraFocusOpticsPitch.GetValueOnGameThread();
+		Yaw = CVarAttachmentsCameraFocusOpticsYaw.GetValueOnGameThread();
+		break;
+	case EAttachmentCameraFocusGroup::SideRail:
+		PanY = CVarAttachmentsCameraFocusSideRailPanY.GetValueOnGameThread();
+		HeightZ = CVarAttachmentsCameraFocusSideRailHeightZ.GetValueOnGameThread();
+		Pitch = CVarAttachmentsCameraFocusSideRailPitch.GetValueOnGameThread();
+		Yaw = CVarAttachmentsCameraFocusSideRailYaw.GetValueOnGameThread();
+		break;
+	case EAttachmentCameraFocusGroup::Underbarrel:
+		PanY = CVarAttachmentsCameraFocusUnderbarrelPanY.GetValueOnGameThread();
+		HeightZ = CVarAttachmentsCameraFocusUnderbarrelHeightZ.GetValueOnGameThread();
+		Pitch = CVarAttachmentsCameraFocusUnderbarrelPitch.GetValueOnGameThread();
+		Yaw = CVarAttachmentsCameraFocusUnderbarrelYaw.GetValueOnGameThread();
+		break;
+	case EAttachmentCameraFocusGroup::Muzzle:
+		PanY = CVarAttachmentsCameraFocusMuzzlePanY.GetValueOnGameThread();
+		HeightZ = CVarAttachmentsCameraFocusMuzzleHeightZ.GetValueOnGameThread();
+		Pitch = CVarAttachmentsCameraFocusMuzzlePitch.GetValueOnGameThread();
+		Yaw = CVarAttachmentsCameraFocusMuzzleYaw.GetValueOnGameThread();
+		break;
+	default:
+		break;
+	}
+
+	const float LocationScale = FMath::Clamp(CVarAttachmentsCameraFocusLocationScale.GetValueOnGameThread(), 0.0f, 4.0f);
+	const float RotationScale = FMath::Clamp(CVarAttachmentsCameraFocusRotationScale.GetValueOnGameThread(), 0.0f, 4.0f);
+	FAttachmentCameraFocusPose Pose;
+	Pose.LocationOffset = FVector(
+		0.0f,
+		FMath::Clamp(PanY, -80.0f, 80.0f) * LocationScale,
+		FMath::Clamp(HeightZ, -40.0f, 40.0f) * LocationScale);
+	Pose.RotationOffset = FRotator(
+		FMath::Clamp(Pitch, -6.0f, 6.0f) * RotationScale,
+		FMath::Clamp(Yaw, -8.0f, 8.0f) * RotationScale,
+		0.0f);
+
+	FVector SocketWorldLocation = FVector::ZeroVector;
+	if (!CameraComponent
+		|| Group == EAttachmentCameraFocusGroup::None
+		|| !ResolveAttachmentCameraFocusSocketWorldLocation(World, Group, SocketWorldLocation))
+	{
+		return Pose;
+	}
+
+	const USceneComponent* ParentComponent = CameraComponent->GetAttachParent();
+	const FTransform ParentWorldTransform = ParentComponent
+		? ParentComponent->GetComponentTransform()
+		: FTransform::Identity;
+	const FTransform BaseRelativeTransform(MainMenuCameraDriftBaseRelativeRotation, MainMenuCameraDriftBaseRelativeLocation);
+	const FTransform DesiredRelativeTransform(MainMenuCameraDriftBaseRelativeRotation + Pose.RotationOffset, MainMenuCameraDriftBaseRelativeLocation);
+	const FTransform BaseWorldTransform = BaseRelativeTransform * ParentWorldTransform;
+	const FTransform DesiredWorldTransform = DesiredRelativeTransform * ParentWorldTransform;
+
+	const FVector DesiredForward = DesiredWorldTransform.GetRotation().GetForwardVector().GetSafeNormal();
+	const FVector DesiredRight = DesiredWorldTransform.GetUnitAxis(EAxis::Y).GetSafeNormal();
+	const FVector DesiredUp = DesiredWorldTransform.GetUnitAxis(EAxis::Z).GetSafeNormal();
+	const float SocketDepth = FVector::DotProduct(SocketWorldLocation - BaseWorldTransform.GetLocation(), DesiredForward);
+	if (!FMath::IsFinite(SocketDepth) || SocketDepth <= 10.0f)
+	{
+		return Pose;
+	}
+
+	const APlayerCameraManager* CameraManager = ResolvePlayerCameraManager(World);
+	const float HorizontalFOV = FMath::Clamp(
+		CameraManager ? CameraManager->GetFOVAngle() : CameraComponent->FieldOfView,
+		5.0f,
+		170.0f);
+	const float AspectRatio = FMath::Clamp(ResolveViewportAspectRatio(World), 0.3f, 4.0f);
+	const float HalfHorizontalSize = FMath::Tan(FMath::DegreesToRadians(HorizontalFOV * 0.5f)) * SocketDepth;
+	const float HalfVerticalSize = HalfHorizontalSize / AspectRatio;
+	const float TargetScreenX = FMath::Clamp(CVarAttachmentsCameraFocusTargetScreenX.GetValueOnGameThread(), 0.1f, 0.9f);
+	const float TargetScreenY = FMath::Clamp(CVarAttachmentsCameraFocusTargetScreenY.GetValueOnGameThread(), 0.1f, 0.9f);
+	const float DesiredPlaneY = (TargetScreenX - 0.5f) * 2.0f * HalfHorizontalSize;
+	const float DesiredPlaneZ = (0.5f - TargetScreenY) * 2.0f * HalfVerticalSize;
+	const FVector TargetWorldLocation = SocketWorldLocation
+		- DesiredForward * SocketDepth
+		- DesiredRight * DesiredPlaneY
+		- DesiredUp * DesiredPlaneZ;
+	const FVector TargetRelativeLocation = ParentComponent
+		? ParentWorldTransform.InverseTransformPosition(TargetWorldLocation)
+		: TargetWorldLocation;
+	Pose.LocationOffset = (TargetRelativeLocation - MainMenuCameraDriftBaseRelativeLocation) * LocationScale;
+	UE_LOG(
+		LogTMMenuViewerMeshTransition,
+		Display,
+		TEXT("[TMAttachmentsCameraFocus] Socket=%s Screen=%.2f,%.2f Depth=%.1f Aspect=%.2f Loc=%s"),
+		*DescribeAttachmentCameraFocusGroup(Group),
+		TargetScreenX,
+		TargetScreenY,
+		SocketDepth,
+		AspectRatio,
+		*Pose.LocationOffset.ToString());
+	return Pose;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusSocketWorldLocation(
+	UWorld* World,
+	const EAttachmentCameraFocusGroup Group,
+	FVector& OutLocation) const
+{
+	if (!World || Group == EAttachmentCameraFocusGroup::None)
+	{
+		return false;
+	}
+
+	const UCameraComponent* CameraComponent = ResolveActiveCameraComponent(World);
+	const FVector CameraLocation = CameraComponent ? CameraComponent->GetComponentLocation() : FVector::ZeroVector;
+	AActor* WeaponActor = ResolveAttachmentsPreviewWeaponActor(World, CameraLocation);
+	if (!IsValid(WeaponActor))
+	{
+		return false;
+	}
+
+	TArray<FName, TInlineAllocator<6>> CandidateSockets;
+	switch (Group)
+	{
+	case EAttachmentCameraFocusGroup::Optics:
+		CandidateSockets.Append({ TEXT("Optics"), TEXT("RearSight"), TEXT("AimTarget"), TEXT("ADS_Eye") });
+		break;
+	case EAttachmentCameraFocusGroup::SideRail:
+		CandidateSockets.Append({ TEXT("AT_Backup"), TEXT("SideRail"), TEXT("Canted"), TEXT("Backup") });
+		break;
+	case EAttachmentCameraFocusGroup::Underbarrel:
+		CandidateSockets.Append({ TEXT("Underbarrel"), TEXT("Foregrip") });
+		break;
+	case EAttachmentCameraFocusGroup::Muzzle:
+		CandidateSockets.Append({ TEXT("Muzzle"), TEXT("MuzzleSilencerco") });
+		break;
+	default:
+		break;
+	}
+
+	TInlineComponentArray<USceneComponent*> SceneComponents(WeaponActor);
+	for (const FName CandidateSocket : CandidateSockets)
+	{
+		for (USceneComponent* SceneComponent : SceneComponents)
+		{
+			if (!IsValid(SceneComponent) || !SceneComponent->IsRegistered())
+			{
+				continue;
+			}
+
+			if (SceneComponent->DoesSocketExist(CandidateSocket))
+			{
+				OutLocation = SceneComponent->GetSocketLocation(CandidateSocket);
+				return true;
+			}
+		}
+	}
+
+	TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(WeaponActor);
+	for (const FName CandidateSocket : CandidateSockets)
+	{
+		for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+		{
+			if (!IsValid(PrimitiveComponent) || !PrimitiveComponent->IsVisible())
+			{
+				continue;
+			}
+
+			const FString AttachSocketName = PrimitiveComponent->GetAttachSocketName().ToString();
+			if (AttachSocketName.Equals(CandidateSocket.ToString(), ESearchCase::IgnoreCase)
+				|| AttachSocketName.Contains(CandidateSocket.ToString(), ESearchCase::IgnoreCase))
+			{
+				OutLocation = PrimitiveComponent->Bounds.Origin;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+UTMMenuViewerMeshTransitionSubsystem::EAttachmentCameraFocusGroup
+UTMMenuViewerMeshTransitionSubsystem::InferAttachmentCameraFocusGroupFromText(const FString& Text)
+{
+	FString Normalized = Text.TrimStartAndEnd();
+	Normalized.ReplaceInline(TEXT(" "), TEXT(""));
+	Normalized.ReplaceInline(TEXT("_"), TEXT(""));
+	Normalized.ReplaceInline(TEXT("-"), TEXT(""));
+
+	if (Normalized.IsEmpty() || Normalized.Equals(TEXT("Empty"), ESearchCase::IgnoreCase))
+	{
+		return EAttachmentCameraFocusGroup::None;
+	}
+
+	if (Normalized.Contains(TEXT("Silencer"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Compensator"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Muzzle"), ESearchCase::IgnoreCase))
+	{
+		return EAttachmentCameraFocusGroup::Muzzle;
+	}
+
+	if (Normalized.Contains(TEXT("Foregrip"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("VGrip"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Underbarrel"), ESearchCase::IgnoreCase))
+	{
+		return EAttachmentCameraFocusGroup::Underbarrel;
+	}
+
+	if (Normalized.Contains(TEXT("Laser"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("SideRail"), ESearchCase::IgnoreCase))
+	{
+		return EAttachmentCameraFocusGroup::SideRail;
+	}
+
+	if (Normalized.Contains(TEXT("IronSight"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("MiniSight"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("RDS"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Canted"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Scope"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Holo"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Acog"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("AimPoint"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Specter"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Blaze"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Optic"), ESearchCase::IgnoreCase))
+	{
+		return EAttachmentCameraFocusGroup::Optics;
+	}
+
+	return EAttachmentCameraFocusGroup::None;
+}
+
+FString UTMMenuViewerMeshTransitionSubsystem::DescribeAttachmentCameraFocusGroup(const EAttachmentCameraFocusGroup Group)
+{
+	switch (Group)
+	{
+	case EAttachmentCameraFocusGroup::Optics:
+		return TEXT("Optics");
+	case EAttachmentCameraFocusGroup::SideRail:
+		return TEXT("SideRail");
+	case EAttachmentCameraFocusGroup::Underbarrel:
+		return TEXT("Underbarrel");
+	case EAttachmentCameraFocusGroup::Muzzle:
+		return TEXT("Muzzle");
+	default:
+		return TEXT("None");
+	}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::RestoreMainMenuCameraDrift()
@@ -2124,6 +2855,7 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreMainMenuCameraDrift()
 	MainMenuCameraDriftBaseRelativeRotation = FRotator::ZeroRotator;
 	MainMenuCameraDriftLastRelativeRotationOffset = FRotator::ZeroRotator;
 	MainMenuCameraDriftElapsedSeconds = 0.0f;
+	ResetAttachmentsCameraFocus();
 	bMainMenuCameraDriftApplied = false;
 	bMainMenuCameraDriftLoadoutMode = false;
 }

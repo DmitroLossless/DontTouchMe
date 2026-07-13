@@ -83,6 +83,21 @@ private:
 		bool bHasRectSourceSize = false;
 	};
 
+	enum class EAttachmentCameraFocusGroup : uint8
+	{
+		None,
+		Optics,
+		SideRail,
+		Underbarrel,
+		Muzzle
+	};
+
+	struct FAttachmentCameraFocusPose
+	{
+		FVector LocationOffset = FVector::ZeroVector;
+		FRotator RotationOffset = FRotator::ZeroRotator;
+	};
+
 	void TrackMenuViewer(AActor* Actor, float DeltaTime, bool bLoadoutPreviewVisible);
 	void NoteMeshChanged(const FMenuViewerState& State, USkeletalMeshComponent* VestComponent, USkeletalMesh* PreviousMesh) const;
 	void CaptureStableState(FMenuViewerState& State, USkeletalMeshComponent* VestComponent);
@@ -116,6 +131,8 @@ private:
 	static float GetBeatSyncWindow();
 	static float GetBeatSyncPulseThreshold();
 	static FBeatSyncSnapshot MakeBeatSyncSnapshot(const UTMAudioEnvelopeFollower* Follower);
+	static EAttachmentCameraFocusGroup InferAttachmentCameraFocusGroupFromText(const FString& Text);
+	static FString DescribeAttachmentCameraFocusGroup(EAttachmentCameraFocusGroup Group);
 
 	USkeletalMesh* ChooseNextMenuMesh(USkeletalMesh* CurrentMesh) const;
 	FBeatSyncSnapshot FindActiveBeatSync(UWorld* World) const;
@@ -132,10 +149,16 @@ private:
 	void RestoreLoadoutBackGlow();
 	void UpdateMainMenuBackGlow(UWorld* World, bool bMainMenuGlowVisible, float DeltaTime);
 	void RestoreMainMenuBackGlow();
-	void UpdateMainMenuCameraDrift(UWorld* World, bool bMenuDriftVisible, bool bLoadoutMode, float DeltaTime);
+	void UpdateMainMenuCameraDrift(UWorld* World, bool bMenuDriftVisible, bool bLoadoutMode, bool bAttachmentsVisible, float DeltaTime);
 	void RestoreMainMenuCameraDrift();
+	void UpdateAttachmentsCameraFocus(UWorld* World, bool bAttachmentsVisible, float DeltaTime, UCameraComponent* CameraComponent);
+	void ResetAttachmentsCameraFocus();
 	AActor* ResolveLoadoutPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
+	AActor* ResolveAttachmentsPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
 	FLoadoutPostProcessFocus ResolveLoadoutPostProcessFocus(UWorld* World, const UCameraComponent* CameraComponent) const;
+	EAttachmentCameraFocusGroup ResolveActiveAttachmentCameraFocusGroup(UWorld* World) const;
+	FAttachmentCameraFocusPose ResolveAttachmentCameraFocusPose(UWorld* World, const UCameraComponent* CameraComponent, EAttachmentCameraFocusGroup Group) const;
+	bool ResolveAttachmentCameraFocusSocketWorldLocation(UWorld* World, EAttachmentCameraFocusGroup Group, FVector& OutLocation) const;
 	void RestoreLoadoutFOV();
 	void RestoreMenuFOV();
 
@@ -154,6 +177,12 @@ private:
 	FVector MainMenuCameraDriftLastRelativeLocationOffset = FVector::ZeroVector;
 	FRotator MainMenuCameraDriftBaseRelativeRotation = FRotator::ZeroRotator;
 	FRotator MainMenuCameraDriftLastRelativeRotationOffset = FRotator::ZeroRotator;
+	FVector AttachmentsCameraFocusCurrentLocationOffset = FVector::ZeroVector;
+	FVector AttachmentsCameraFocusStartLocationOffset = FVector::ZeroVector;
+	FVector AttachmentsCameraFocusTargetLocationOffset = FVector::ZeroVector;
+	FRotator AttachmentsCameraFocusCurrentRotationOffset = FRotator::ZeroRotator;
+	FRotator AttachmentsCameraFocusStartRotationOffset = FRotator::ZeroRotator;
+	FRotator AttachmentsCameraFocusTargetRotationOffset = FRotator::ZeroRotator;
 	float SavedMenuPreviousDefaultFOV = 90.0f;
 	float SavedLoadoutPreviousFOV = 90.0f;
 	float SavedLoadoutPostProcessBlendWeight = 0.0f;
@@ -165,6 +194,10 @@ private:
 	float MainMenuBackGlowElapsedSeconds = 0.0f;
 	float MainMenuBackGlowCurrentScale = 0.0f;
 	float MainMenuCameraDriftElapsedSeconds = 0.0f;
+	float AttachmentsCameraFocusDelayElapsedSeconds = 0.0f;
+	float AttachmentsCameraFocusBlendElapsedSeconds = 0.0f;
+	EAttachmentCameraFocusGroup AttachmentsCameraFocusObservedGroup = EAttachmentCameraFocusGroup::None;
+	EAttachmentCameraFocusGroup AttachmentsCameraFocusTargetGroup = EAttachmentCameraFocusGroup::None;
 	bool bMenuFOVApplied = false;
 	bool bLoadoutFOVApplied = false;
 	bool bLoadoutPostProcessApplied = false;
@@ -177,4 +210,6 @@ private:
 	bool bMainMenuBackGlowForceComplete = false;
 	bool bMainMenuCameraDriftApplied = false;
 	bool bMainMenuCameraDriftLoadoutMode = false;
+	bool bAttachmentsCameraFocusWaitingForDelay = false;
+	bool bAttachmentsCameraFocusTransitionActive = false;
 };
