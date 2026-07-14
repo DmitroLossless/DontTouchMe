@@ -17,10 +17,15 @@ namespace
 		TEXT("B_Multiplayer"),
 		TEXT("B_Loadout"),
 		TEXT("B_Settings"),
-		TEXT("B_Quit")
+		TEXT("B_Quit"),
+		TEXT("B_Join"),
+		TEXT("B_Host"),
+		TEXT("B_Loadout_Hide"),
+		TEXT("B_Settings_Hide")
 	};
 
 	constexpr float MainMenuLabelHoverScale = 1.07f;
+	constexpr float MainMenuSubmenuLabelHoverFontScale = 1.15f;
 	const FName MainMenuLabelHoverTypeface(TEXT("Light"));
 
 	void VisitMainMenuHoverWidgetTree(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
@@ -46,6 +51,27 @@ namespace
 		{
 			VisitMainMenuHoverWidgetTree(ContentWidget->GetContent(), Visitor);
 		}
+	}
+
+	bool IsMainMenuHoverWidgetTreeHovered(UWidget* RootWidget)
+	{
+		bool bHovered = false;
+		VisitMainMenuHoverWidgetTree(RootWidget, [&bHovered](UWidget* Widget)
+		{
+			if (!bHovered && Widget && Widget->IsHovered())
+			{
+				bHovered = true;
+			}
+		});
+
+		return bHovered;
+	}
+
+	bool IsMainMenuSubmenuLabel(const FString& Text)
+	{
+		const FString TrimmedText = Text.TrimStartAndEnd();
+		return TrimmedText.Equals(TEXT("Join Match"), ESearchCase::IgnoreCase)
+			|| TrimmedText.Equals(TEXT("Host Match"), ESearchCase::IgnoreCase);
 	}
 }
 
@@ -117,7 +143,7 @@ void UTMMainMenuHoverStyleSubsystem::ApplyMainMenuHoverStyle()
 			}
 
 			SeenLabels.Add(Label);
-			SetLabelHovered(Label, Button->IsHovered());
+			SetLabelHovered(Label, Button->IsHovered() || IsMainMenuHoverWidgetTreeHovered(Button));
 		}
 	}
 
@@ -148,8 +174,11 @@ bool UTMMainMenuHoverStyleSubsystem::IsMainMenuLargeLabel(const FString& Text)
 	const FString TrimmedText = Text.TrimStartAndEnd();
 	return TrimmedText.Equals(TEXT("Go"), ESearchCase::IgnoreCase)
 		|| TrimmedText.Equals(TEXT("Instrument"), ESearchCase::IgnoreCase)
+		|| TrimmedText.Equals(TEXT("Loadout"), ESearchCase::IgnoreCase)
 		|| TrimmedText.Equals(TEXT("Settings"), ESearchCase::IgnoreCase)
-		|| TrimmedText.Equals(TEXT("Quit"), ESearchCase::IgnoreCase);
+		|| TrimmedText.Equals(TEXT("Quit"), ESearchCase::IgnoreCase)
+		|| TrimmedText.Equals(TEXT("Join Match"), ESearchCase::IgnoreCase)
+		|| TrimmedText.Equals(TEXT("Host Match"), ESearchCase::IgnoreCase);
 }
 
 UTextBlock* UTMMainMenuHoverStyleSubsystem::FindLargeLabelText(UWidget* RootWidget)
@@ -191,7 +220,7 @@ void UTMMainMenuHoverStyleSubsystem::SetLabelHovered(UTextBlock* TextBlock, cons
 		Style = &TrackedLabels.Add(TextBlock, NewStyle);
 	}
 
-	if (Style->bHovered == bHovered)
+	if (Style->bHovered == bHovered && !bHovered)
 	{
 		return;
 	}
@@ -200,11 +229,17 @@ void UTMMainMenuHoverStyleSubsystem::SetLabelHovered(UTextBlock* TextBlock, cons
 
 	if (bHovered)
 	{
+		const bool bSubmenuLabel = IsMainMenuSubmenuLabel(TextBlock->GetText().ToString());
+
 		FSlateFontInfo HoverFont = Style->NormalFont;
 		HoverFont.TypefaceFontName = MainMenuLabelHoverTypeface;
+		if (bSubmenuLabel)
+		{
+			HoverFont.Size = FMath::Max(1, FMath::RoundToInt(Style->NormalFont.Size * MainMenuSubmenuLabelHoverFontScale));
+		}
 
 		FWidgetTransform HoverTransform = Style->NormalTransform;
-		HoverTransform.Scale = Style->NormalTransform.Scale * MainMenuLabelHoverScale;
+		HoverTransform.Scale = Style->NormalTransform.Scale * (bSubmenuLabel ? 1.0f : MainMenuLabelHoverScale);
 
 		TextBlock->SetFont(HoverFont);
 		TextBlock->SetRenderTransformPivot(FVector2D(0.0f, 0.5f));

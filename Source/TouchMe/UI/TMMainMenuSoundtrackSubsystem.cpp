@@ -3,9 +3,14 @@
 #include "TMMainMenuSoundtrackSubsystem.h"
 
 #include "Animation/WidgetAnimation.h"
+#include "Blueprint/WidgetTree.h"
 #include "Blueprint/UserWidget.h"
 #include "Components/AudioComponent.h"
+#include "Components/Button.h"
+#include "Components/Image.h"
+#include "Components/TextBlock.h"
 #include "Components/Widget.h"
+#include "Components/WidgetSwitcher.h"
 #include "Engine/World.h"
 #include "GameFramework/GameModeBase.h"
 #include "Kismet/GameplayStatics.h"
@@ -35,6 +40,8 @@ namespace
 	constexpr float LoadoutSoundtrackDuckingVolumeScale = 0.28f;
 	constexpr float LoadoutSoundtrackLowPassFrequency = 650.0f;
 	constexpr float MainMenuSoundtrackRestoredLowPassFrequency = 10000.0f;
+	const FLinearColor MainMenuArrowRed(1.0f, 0.0f, 0.0f, 1.0f);
+	constexpr float MainMenuReturnArrowFallbackSize = 28.0f;
 
 	bool IsMainMenuWorld(UWorld* World)
 	{
@@ -57,6 +64,96 @@ namespace
 		const FString GameModePath = GameModeClass ? GameModeClass->GetPathName() : FString();
 		return GameModePath.Contains(TEXT("/MainMenuPawn/GM_Menu."), ESearchCase::IgnoreCase)
 			|| GameModePath.Contains(TEXT("GM_Menu_C"), ESearchCase::IgnoreCase);
+	}
+
+	UWidget* FindWidgetByName(UUserWidget* Widget, const FName WidgetName)
+	{
+		return Widget && Widget->WidgetTree ? Widget->WidgetTree->FindWidget(WidgetName) : nullptr;
+	}
+
+	void SetNamedWidgetVisibility(
+		UUserWidget* Widget,
+		const FName WidgetName,
+		const ESlateVisibility Visibility)
+	{
+		UWidget* TargetWidget = FindWidgetByName(Widget, WidgetName);
+		if (TargetWidget && TargetWidget->GetVisibility() != Visibility)
+		{
+			TargetWidget->SetVisibility(Visibility);
+		}
+	}
+
+	bool IsMainMenuMultiplayerBarActive(UUserWidget* Widget)
+	{
+		if (!Widget || !Widget->GetClass()->GetName().Contains(TEXT("W_MainMenu")))
+		{
+			return false;
+		}
+
+		const UWidgetSwitcher* MainMenuSwitcher = Cast<UWidgetSwitcher>(
+			FindWidgetByName(Widget, TEXT("MainMenu_Switcher")));
+		const UWidget* ActiveWidget = MainMenuSwitcher ? MainMenuSwitcher->GetActiveWidget() : nullptr;
+		return ActiveWidget && ActiveWidget->GetName().Contains(TEXT("MultiplayerBar"), ESearchCase::IgnoreCase);
+	}
+
+	float ResolveMainMenuReturnArrowSize(UUserWidget* Widget)
+	{
+		const UTextBlock* HeaderText = Cast<UTextBlock>(FindWidgetByName(Widget, TEXT("HeaderText")));
+		if (!HeaderText)
+		{
+			return MainMenuReturnArrowFallbackSize;
+		}
+
+		return FMath::Clamp(static_cast<float>(HeaderText->GetFont().Size), 22.0f, 34.0f);
+	}
+
+	void ApplyMainMenuReturnArrowStyle(UUserWidget* Widget)
+	{
+		UButton* ReturnButton = Cast<UButton>(FindWidgetByName(Widget, TEXT("B_Return_1")));
+		UImage* ReturnImage = Cast<UImage>(FindWidgetByName(Widget, TEXT("I_Return_1")));
+		if (!ReturnImage)
+		{
+			return;
+		}
+
+		FSlateBrush ReturnBrush = ReturnImage->GetBrush();
+		const float ArrowSize = ResolveMainMenuReturnArrowSize(Widget);
+		ReturnBrush.ImageSize = FVector2D(ArrowSize, ArrowSize);
+		ReturnBrush.TintColor = FSlateColor(ReturnButton && ReturnButton->IsHovered()
+			? FLinearColor::White
+			: MainMenuArrowRed);
+
+		ReturnImage->SetBrush(ReturnBrush);
+		ReturnImage->SetColorAndOpacity(FLinearColor::White);
+		ReturnImage->SetRenderTransform(FWidgetTransform());
+		ReturnImage->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
+	}
+
+	void ApplyMainMenuGoVisualCleanup(UUserWidget* Widget)
+	{
+		if (!Widget || !Widget->GetClass()->GetName().Contains(TEXT("W_MainMenu")))
+		{
+			return;
+		}
+
+		const bool bMultiplayerBarActive = IsMainMenuMultiplayerBarActive(Widget);
+		SetNamedWidgetVisibility(
+			Widget,
+			TEXT("B_Return_1"),
+			ESlateVisibility::Visible);
+		ApplyMainMenuReturnArrowStyle(Widget);
+		SetNamedWidgetVisibility(
+			Widget,
+			TEXT("B_Multiplayer_R"),
+			bMultiplayerBarActive ? ESlateVisibility::Hidden : ESlateVisibility::Visible);
+		SetNamedWidgetVisibility(
+			Widget,
+			TEXT("B_Loadout_Hide"),
+			bMultiplayerBarActive ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
+		SetNamedWidgetVisibility(
+			Widget,
+			TEXT("B_Settings_Hide"),
+			bMultiplayerBarActive ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
 	}
 }
 
@@ -129,6 +226,8 @@ void UTMMainMenuSoundtrackSubsystem::Tick(const float DeltaTime)
 		{
 			continue;
 		}
+
+		ApplyMainMenuGoVisualCleanup(Widget);
 
 		if (!bPlayedFirstUserCreatedSound && IsIntroWidgetReady(Widget))
 		{
