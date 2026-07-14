@@ -184,6 +184,18 @@ private:
 		float TargetScreenX,
 		float TargetScreenY,
 		float DepthScale) const;
+	float ResolveAttachmentCameraFocusTurnYaw(
+		UWorld* World,
+		const UCameraComponent* CameraComponent,
+		EAttachmentCameraFocusGroup Group,
+		float MaxYaw,
+		float CurrentYaw) const;
+	bool ResolveAttachmentCameraFocusTurnSubject(
+		UWorld* World,
+		EAttachmentCameraFocusGroup Group,
+		FVector& OutAttachmentLocation,
+		FVector& OutWeaponCenter) const;
+	static float ResolveAttachmentCameraFocusBaseYaw(EAttachmentCameraFocusGroup Group);
 	bool ResolveAttachmentCameraFocusSocketWorldLocation(UWorld* World, EAttachmentCameraFocusGroup Group, FVector& OutLocation) const;
 	void RestoreLoadoutFOV();
 	void RestoreMenuFOV();

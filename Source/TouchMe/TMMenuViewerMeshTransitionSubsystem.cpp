@@ -275,22 +275,10 @@ static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusCloseDepthScale(
 	TEXT("Depth scale for W_Attachments focus moves; lower values move the camera closer to the weapon."),
 	ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusRandomYawMin(
-	TEXT("tm.AttachmentsCameraFocus.RandomYawMin"),
-	20.0f,
-	TEXT("Minimum absolute random yaw angle applied to each W_Attachments focus move."),
-	ECVF_Default);
-
-static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusRandomYawMax(
-	TEXT("tm.AttachmentsCameraFocus.RandomYawMax"),
-	35.0f,
-	TEXT("Maximum absolute random yaw angle applied to each W_Attachments focus move."),
-	ECVF_Default);
-
-static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusRandomPitchMax(
-	TEXT("tm.AttachmentsCameraFocus.RandomPitchMax"),
-	4.5f,
-	TEXT("Maximum absolute random pitch angle paired with the random W_Attachments yaw angle."),
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusTurnYawMax(
+	TEXT("tm.AttachmentsCameraFocus.TurnYawMax"),
+	30.0f,
+	TEXT("Maximum deterministic yaw turn, in degrees, used to angle the installed attachment toward the camera."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusLocationScale(
@@ -2767,26 +2755,26 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
 		const float DepthScale = FocusGroup != EAttachmentCameraFocusGroup::None
 			? FMath::Clamp(CVarAttachmentsCameraFocusCloseDepthScale.GetValueOnGameThread(), 0.55f, 1.0f)
 			: 1.0f;
-		float RandomPitch = 0.0f;
-		float RandomYaw = 0.0f;
+		float AdditionalPitch = 0.0f;
+		float AdditionalYaw = 0.0f;
 
 		if (FocusGroup != EAttachmentCameraFocusGroup::None)
 		{
-			const float MinYaw = FMath::Clamp(CVarAttachmentsCameraFocusRandomYawMin.GetValueOnGameThread(), 0.0f, 89.0f);
-			const float MaxYaw = FMath::Clamp(CVarAttachmentsCameraFocusRandomYawMax.GetValueOnGameThread(), MinYaw, 89.0f);
-			const float RandomYawMagnitude = FMath::FRandRange(MinYaw, MaxYaw);
-			const float RandomYawDirection = FMath::RandBool() ? 1.0f : -1.0f;
-			const float RandomPitchMax = FMath::Clamp(CVarAttachmentsCameraFocusRandomPitchMax.GetValueOnGameThread(), 0.0f, 20.0f);
-			RandomYaw = RandomYawMagnitude * RandomYawDirection;
-			RandomPitch = FMath::FRandRange(-RandomPitchMax, RandomPitchMax);
+			const float MaxYaw = FMath::Clamp(CVarAttachmentsCameraFocusTurnYawMax.GetValueOnGameThread(), 0.0f, 30.0f);
+			AdditionalYaw = ResolveAttachmentCameraFocusTurnYaw(
+				World,
+				CameraComponent,
+				FocusGroup,
+				MaxYaw,
+				AttachmentsCameraFocusCurrentRotationOffset.Yaw);
 		}
 
 		const FAttachmentCameraFocusPose CenterPose = ResolveAttachmentCameraFocusPose(
 			World,
 			CameraComponent,
 			FocusGroup,
-			RandomPitch,
-			RandomYaw,
+			AdditionalPitch,
+			AdditionalYaw,
 			TargetScreenX,
 			TargetScreenY,
 			DepthScale);
@@ -2807,15 +2795,15 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
 		UE_LOG(
 			LogTMMenuViewerMeshTransition,
 			Display,
-			TEXT("[TMAttachmentsCameraFocus] Active=%s Installed=%s Signature=%u Target=%s Delay=%.2f Duration=%.2f RandomPitch=%.1f RandomYaw=%.1f TargetLoc=%s TargetRot=%s"),
+			TEXT("[TMAttachmentsCameraFocus] Active=%s Installed=%s Signature=%u Target=%s Delay=%.2f Duration=%.2f AdditionalPitch=%.1f AdditionalYaw=%.1f TargetLoc=%s TargetRot=%s"),
 			*DescribeAttachmentCameraFocusGroup(ObservedGroup),
 			bObservedInstalled ? TEXT("true") : TEXT("false"),
 			ObservedInstallSignature,
 			*DescribeAttachmentCameraFocusGroup(FocusGroup),
 			bAttachmentsCameraFocusWaitingForDelay ? FMath::Max(0.0f, CVarAttachmentsCameraFocusDelay.GetValueOnGameThread()) : 0.0f,
 			FMath::Max(0.01f, CVarAttachmentsCameraFocusDuration.GetValueOnGameThread()),
-			RandomPitch,
-			RandomYaw,
+			AdditionalPitch,
+			AdditionalYaw,
 			*AttachmentsCameraFocusTargetLocationOffset.ToString(),
 			*AttachmentsCameraFocusTargetRotationOffset.ToString());
 	}
@@ -3602,6 +3590,206 @@ bool UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusComponent
 	}
 
 	return bFoundInstalledAttachment;
+}
+
+float UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusBaseYaw(
+	const EAttachmentCameraFocusGroup Group)
+{
+	switch (Group)
+	{
+	case EAttachmentCameraFocusGroup::Optics:
+		return CVarAttachmentsCameraFocusOpticsYaw.GetValueOnGameThread();
+	case EAttachmentCameraFocusGroup::SideRail:
+		return CVarAttachmentsCameraFocusSideRailYaw.GetValueOnGameThread();
+	case EAttachmentCameraFocusGroup::Underbarrel:
+		return CVarAttachmentsCameraFocusUnderbarrelYaw.GetValueOnGameThread();
+	case EAttachmentCameraFocusGroup::Muzzle:
+		return CVarAttachmentsCameraFocusMuzzleYaw.GetValueOnGameThread();
+	default:
+		return 0.0f;
+	}
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusTurnSubject(
+	UWorld* World,
+	const EAttachmentCameraFocusGroup Group,
+	FVector& OutAttachmentLocation,
+	FVector& OutWeaponCenter) const
+{
+	OutAttachmentLocation = FVector::ZeroVector;
+	OutWeaponCenter = FVector::ZeroVector;
+	if (!World || Group == EAttachmentCameraFocusGroup::None)
+	{
+		return false;
+	}
+
+	const UCameraComponent* CameraComponent = ResolveActiveCameraComponent(World);
+	const FVector CameraLocation = CameraComponent ? CameraComponent->GetComponentLocation() : FVector::ZeroVector;
+	AActor* WeaponActor = ResolveAttachmentsPreviewWeaponActor(World, CameraLocation);
+	if (!IsValid(WeaponActor))
+	{
+		return false;
+	}
+
+	FVector WeaponExtent = FVector::ZeroVector;
+	WeaponActor->GetActorBounds(false, OutWeaponCenter, WeaponExtent);
+
+	TArray<FName, TInlineAllocator<6>> CandidateSockets;
+	switch (Group)
+	{
+	case EAttachmentCameraFocusGroup::Optics:
+		CandidateSockets.Append({ TEXT("Optics"), TEXT("RearSight"), TEXT("AimTarget"), TEXT("ADS_Eye") });
+		break;
+	case EAttachmentCameraFocusGroup::SideRail:
+		CandidateSockets.Append({ TEXT("AT_Backup"), TEXT("SideRail"), TEXT("Canted"), TEXT("Backup") });
+		break;
+	case EAttachmentCameraFocusGroup::Underbarrel:
+		CandidateSockets.Append({ TEXT("Underbarrel"), TEXT("Foregrip") });
+		break;
+	case EAttachmentCameraFocusGroup::Muzzle:
+		CandidateSockets.Append({ TEXT("Muzzle"), TEXT("MuzzleSilencerco") });
+		break;
+	default:
+		break;
+	}
+
+	FBox AttachmentBounds(ForceInit);
+	TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(WeaponActor);
+	for (const UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+	{
+		if (!IsValid(PrimitiveComponent)
+			|| !PrimitiveComponent->IsRegistered()
+			|| !PrimitiveComponent->IsVisible()
+			|| PrimitiveComponent->bHiddenInGame)
+		{
+			continue;
+		}
+
+		const FString AttachSocketName = PrimitiveComponent->GetAttachSocketName().ToString();
+		bool bMatchesSocket = false;
+		for (const FName CandidateSocket : CandidateSockets)
+		{
+			if (AttachSocketName.Equals(CandidateSocket.ToString(), ESearchCase::IgnoreCase)
+				|| AttachSocketName.Contains(CandidateSocket.ToString(), ESearchCase::IgnoreCase))
+			{
+				bMatchesSocket = true;
+				break;
+			}
+		}
+
+		if (bMatchesSocket)
+		{
+			AttachmentBounds += FBox::BuildAABB(PrimitiveComponent->Bounds.Origin, PrimitiveComponent->Bounds.BoxExtent);
+		}
+	}
+
+	if (AttachmentBounds.IsValid)
+	{
+		OutAttachmentLocation = AttachmentBounds.GetCenter();
+		return !OutAttachmentLocation.Equals(OutWeaponCenter, 1.0f);
+	}
+
+	return ResolveAttachmentCameraFocusSocketWorldLocation(World, Group, OutAttachmentLocation)
+		&& !OutAttachmentLocation.Equals(OutWeaponCenter, 1.0f);
+}
+
+float UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusTurnYaw(
+	UWorld* World,
+	const UCameraComponent* CameraComponent,
+	const EAttachmentCameraFocusGroup Group,
+	const float MaxYaw,
+	const float CurrentYaw) const
+{
+	const float BaseYaw = ResolveAttachmentCameraFocusBaseYaw(Group);
+	if (!World || !CameraComponent || Group == EAttachmentCameraFocusGroup::None || MaxYaw <= KINDA_SMALL_NUMBER)
+	{
+		return 0.0f;
+	}
+
+	FVector AttachmentLocation = FVector::ZeroVector;
+	FVector WeaponCenter = FVector::ZeroVector;
+	if (!ResolveAttachmentCameraFocusTurnSubject(World, Group, AttachmentLocation, WeaponCenter))
+	{
+		return FMath::Clamp(BaseYaw, -MaxYaw, MaxYaw) - BaseYaw;
+	}
+
+	const float NormalizedCurrentYaw = FMath::Clamp(FRotator::NormalizeAxis(CurrentYaw), -MaxYaw, MaxYaw);
+	const float MinCandidateYaw = FMath::Max(-MaxYaw, NormalizedCurrentYaw - MaxYaw);
+	const float MaxCandidateYaw = FMath::Min(MaxYaw, NormalizedCurrentYaw + MaxYaw);
+
+	TArray<float, TInlineAllocator<4>> CandidateYaws;
+	const auto AddCandidateYaw = [&CandidateYaws](const float CandidateYaw)
+	{
+		for (const float ExistingYaw : CandidateYaws)
+		{
+			if (FMath::IsNearlyEqual(ExistingYaw, CandidateYaw, 0.01f))
+			{
+				return;
+			}
+		}
+
+		CandidateYaws.Add(CandidateYaw);
+	};
+
+	AddCandidateYaw(MinCandidateYaw);
+	AddCandidateYaw(MaxCandidateYaw);
+	AddCandidateYaw(FMath::Clamp(NormalizedCurrentYaw, MinCandidateYaw, MaxCandidateYaw));
+	AddCandidateYaw(FMath::Clamp(BaseYaw, MinCandidateYaw, MaxCandidateYaw));
+
+	const USceneComponent* ParentComponent = CameraComponent->GetAttachParent();
+	const FTransform ParentWorldTransform = ParentComponent
+		? ParentComponent->GetComponentTransform()
+		: FTransform::Identity;
+	const FVector AttachmentOutward = (AttachmentLocation - WeaponCenter).GetSafeNormal();
+	if (AttachmentOutward.IsNearlyZero())
+	{
+		return FMath::Clamp(BaseYaw, -MaxYaw, MaxYaw) - BaseYaw;
+	}
+
+	float BestYaw = FMath::Clamp(BaseYaw, MinCandidateYaw, MaxCandidateYaw);
+	float BestScore = -TNumericLimits<float>::Max();
+	float BestDelta = TNumericLimits<float>::Max();
+	for (const float CandidateYaw : CandidateYaws)
+	{
+		const FTransform CandidateRelativeTransform(
+			MainMenuCameraDriftBaseRelativeRotation + FRotator(0.0f, CandidateYaw, 0.0f),
+			MainMenuCameraDriftBaseRelativeLocation);
+		const FTransform CandidateWorldTransform = CandidateRelativeTransform * ParentWorldTransform;
+		const FVector CandidateForward = CandidateWorldTransform.GetRotation().GetForwardVector().GetSafeNormal();
+		if (CandidateForward.IsNearlyZero())
+		{
+			continue;
+		}
+
+		const float CandidateScore = FVector::DotProduct(AttachmentOutward, -CandidateForward);
+		const float CandidateDelta = FMath::Abs(CandidateYaw - NormalizedCurrentYaw);
+		if (CandidateScore > BestScore + KINDA_SMALL_NUMBER
+			|| (FMath::IsNearlyEqual(CandidateScore, BestScore, KINDA_SMALL_NUMBER) && CandidateDelta < BestDelta))
+		{
+			BestYaw = CandidateYaw;
+			BestScore = CandidateScore;
+			BestDelta = CandidateDelta;
+		}
+	}
+
+	if (!FMath::IsFinite(BestScore))
+	{
+		return FMath::Clamp(BaseYaw, -MaxYaw, MaxYaw) - BaseYaw;
+	}
+
+	UE_LOG(
+		LogTMMenuViewerMeshTransition,
+		Display,
+		TEXT("[TMAttachmentsCameraFocus] Turn Group=%s CurrentYaw=%.1f ChosenYaw=%.1f MaxYaw=%.1f Score=%.3f Attachment=%s Weapon=%s"),
+		*DescribeAttachmentCameraFocusGroup(Group),
+		NormalizedCurrentYaw,
+		BestYaw,
+		MaxYaw,
+		BestScore,
+		*AttachmentLocation.ToString(),
+		*WeaponCenter.ToString());
+
+	return BestYaw - BaseYaw;
 }
 
 UTMMenuViewerMeshTransitionSubsystem::FAttachmentCameraFocusPose
