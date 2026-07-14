@@ -41,7 +41,7 @@ namespace
 	const TCHAR* AcogGlassMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Glass_Acog.M_Scope_Glass_Acog");
 	const TCHAR* AcogMaterialParameterCollectionPath = TEXT("/Game/Fps/Weapons/Camera/MPC_FP.MPC_FP");
 	const TCHAR* OpticsTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Optics.DT_Optics");
-	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/NiagaraExamples/FX_Misc/NS_HitDissolve.NS_HitDissolve");
+	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/NiagaraExamples/FX_Sparks/NS_Spark_Burst.NS_Spark_Burst");
 	const TCHAR* AdditionalAttachmentSmokeFXPath = TEXT("/Game/Realistic_Starter_VFX_Pack_Vol2/Particles/Smoke/P_Smoke_F.P_Smoke_F");
 	const TCHAR* DefaultAttachmentFeedbackSoundPath = nullptr;
 	const TCHAR* DefaultWeaponSpawnFeedbackFXPath = TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Dust_Dark.P_Dust_Dark");
@@ -1095,7 +1095,7 @@ void AGun::SpawnAttachmentFeedbackAtLocation(const FVector Location, const FRota
 	}
 
 	SpawnLoadoutFeedbackFX(this, World, FeedbackFX, Location, Rotation, AttachmentFeedbackScale);
-	SpawnAdditionalLoadoutFeedbackFX(this, World, AdditionalAttachmentSmokeFXPath, Location, Rotation, AdditionalAttachmentSmokeScale);
+	// SpawnAdditionalLoadoutFeedbackFX(this, World, AdditionalAttachmentSmokeFXPath, Location, Rotation, AdditionalAttachmentSmokeScale);
 
 	USoundBase* FeedbackSound = ResolveLoadoutFeedbackSound(AttachmentFeedbackSound, DefaultAttachmentFeedbackSoundPath);
 
@@ -1291,11 +1291,17 @@ FTransform AGun::ResolveAttachmentFeedbackTransform() const
 		ResolvedPreferredSocketName = ResolveCompatibleWeaponAttachmentSocketName(MainMesh, PreferredSocketName);
 		if (!ResolvedPreferredSocketName.IsNone() && MainMesh->DoesSocketExist(ResolvedPreferredSocketName))
 		{
-			return MainMesh->GetSocketTransform(ResolvedPreferredSocketName, RTS_World);
+			const FTransform SocketTransform = MainMesh->GetSocketTransform(ResolvedPreferredSocketName, RTS_World);
+			const FRotator FeedbackRotation = ResolveAttachmentFeedbackRotation(
+				SocketTransform.GetLocation(),
+				ResolvedPreferredSocketName,
+				SocketTransform.Rotator());
+			return FTransform(FeedbackRotation, SocketTransform.GetLocation(), SocketTransform.GetScale3D());
 		}
 	}
 
 	UStaticMeshComponent* BestComponent = nullptr;
+	FName BestComponentSocketName = NAME_None;
 	int32 BestScore = MIN_int32;
 	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
 	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
@@ -1356,19 +1362,40 @@ FTransform AGun::ResolveAttachmentFeedbackTransform() const
 		{
 			BestScore = Score;
 			BestComponent = StaticMeshComponent;
+			BestComponentSocketName = ResolvedSocketName;
 		}
 	}
 
 	if (BestComponent)
 	{
-		return BestComponent->GetComponentTransform();
+		if (MainMesh && !BestComponentSocketName.IsNone() && MainMesh->DoesSocketExist(BestComponentSocketName))
+		{
+			const FTransform SocketTransform = MainMesh->GetSocketTransform(BestComponentSocketName, RTS_World);
+			const FRotator FeedbackRotation = ResolveAttachmentFeedbackRotation(
+				SocketTransform.GetLocation(),
+				BestComponentSocketName,
+				SocketTransform.Rotator());
+			return FTransform(FeedbackRotation, SocketTransform.GetLocation(), SocketTransform.GetScale3D());
+		}
+
+		const FTransform ComponentTransform = BestComponent->GetComponentTransform();
+		const FRotator FeedbackRotation = ResolveAttachmentFeedbackRotation(
+			ComponentTransform.GetLocation(),
+			BestComponentSocketName,
+			ComponentTransform.Rotator());
+		return FTransform(FeedbackRotation, ComponentTransform.GetLocation(), ComponentTransform.GetScale3D());
 	}
 
 	if (MainMesh)
 	{
 		if (!ResolvedPreferredSocketName.IsNone() && MainMesh->DoesSocketExist(ResolvedPreferredSocketName))
 		{
-			return MainMesh->GetSocketTransform(ResolvedPreferredSocketName, RTS_World);
+			const FTransform SocketTransform = MainMesh->GetSocketTransform(ResolvedPreferredSocketName, RTS_World);
+			const FRotator FeedbackRotation = ResolveAttachmentFeedbackRotation(
+				SocketTransform.GetLocation(),
+				ResolvedPreferredSocketName,
+				SocketTransform.Rotator());
+			return FTransform(FeedbackRotation, SocketTransform.GetLocation(), SocketTransform.GetScale3D());
 		}
 
 		static const FName FallbackSocketNames[] =
@@ -1386,7 +1413,12 @@ FTransform AGun::ResolveAttachmentFeedbackTransform() const
 			const FName ResolvedSocketName = ResolveCompatibleWeaponAttachmentSocketName(MainMesh, FallbackSocketName);
 			if (MainMesh->DoesSocketExist(ResolvedSocketName))
 			{
-				return MainMesh->GetSocketTransform(ResolvedSocketName, RTS_World);
+				const FTransform SocketTransform = MainMesh->GetSocketTransform(ResolvedSocketName, RTS_World);
+				const FRotator FeedbackRotation = ResolveAttachmentFeedbackRotation(
+					SocketTransform.GetLocation(),
+					ResolvedSocketName,
+					SocketTransform.Rotator());
+				return FTransform(FeedbackRotation, SocketTransform.GetLocation(), SocketTransform.GetScale3D());
 			}
 		}
 
@@ -1399,6 +1431,108 @@ FTransform AGun::ResolveAttachmentFeedbackTransform() const
 	}
 
 	return GetActorTransform();
+}
+
+UStaticMeshComponent* AGun::ResolveAttachmentFeedbackTargetComponent(const FName SocketName) const
+{
+	if (SocketName.IsNone())
+	{
+		return nullptr;
+	}
+
+	const USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	const bool bHasSocketLocation = MainMesh && MainMesh->DoesSocketExist(SocketName);
+	const FVector SocketLocation = bHasSocketLocation
+		? MainMesh->GetSocketLocation(SocketName)
+		: FVector::ZeroVector;
+
+	UStaticMeshComponent* BestComponent = nullptr;
+	float BestDistanceSq = 0.0f;
+
+	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
+	for (UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
+	{
+		if (!IsValid(StaticMeshComponent)
+			|| !StaticMeshComponent->IsVisible()
+			|| !IsWeaponAttachmentMesh(StaticMeshComponent))
+		{
+			continue;
+		}
+
+		const USceneComponent* AttachParent = StaticMeshComponent->GetAttachParent();
+		if (MainMesh && AttachParent != MainMesh)
+		{
+			continue;
+		}
+
+		const FName AttachSocketName = StaticMeshComponent->GetAttachSocketName();
+		if (AttachSocketName.IsNone())
+		{
+			continue;
+		}
+
+		const FName ResolvedSocketName = ResolveCompatibleWeaponAttachmentSocketName(AttachParent, AttachSocketName);
+		if (ResolvedSocketName != SocketName)
+		{
+			continue;
+		}
+
+		if (AttachParent && !AttachParent->DoesSocketExist(ResolvedSocketName))
+		{
+			continue;
+		}
+
+		const float DistanceSq = bHasSocketLocation
+			? FVector::DistSquared(StaticMeshComponent->Bounds.Origin, SocketLocation)
+			: 0.0f;
+		if (!BestComponent || DistanceSq < BestDistanceSq)
+		{
+			BestComponent = StaticMeshComponent;
+			BestDistanceSq = DistanceSq;
+		}
+	}
+
+	return BestComponent;
+}
+
+FRotator AGun::ResolveAttachmentFeedbackRotation(
+	const FVector FeedbackLocation,
+	const FName SocketName,
+	const FRotator FallbackRotation) const
+{
+	const auto MakeRotationFromDirection = [&FallbackRotation](const FVector& Direction)
+	{
+		const FVector SafeDirection = Direction.GetSafeNormal();
+		return SafeDirection.IsNearlyZero()
+			? FallbackRotation
+			: SafeDirection.Rotation();
+	};
+
+	if (const UStaticMeshComponent* TargetComponent = ResolveAttachmentFeedbackTargetComponent(SocketName))
+	{
+		FVector Direction = TargetComponent->Bounds.Origin - FeedbackLocation;
+		if (Direction.IsNearlyZero())
+		{
+			Direction = TargetComponent->GetComponentLocation() - FeedbackLocation;
+		}
+		if (Direction.IsNearlyZero())
+		{
+			Direction = TargetComponent->GetForwardVector();
+		}
+		return MakeRotationFromDirection(Direction);
+	}
+
+	if (const USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh())
+	{
+		return MakeRotationFromDirection(FeedbackLocation - MainMesh->Bounds.Origin);
+	}
+
+	if (const USceneComponent* Root = GetRootComponent())
+	{
+		return MakeRotationFromDirection(FeedbackLocation - Root->GetComponentLocation());
+	}
+
+	return FallbackRotation;
 }
 
 FTransform AGun::ResolveWeaponSpawnFeedbackTransform() const

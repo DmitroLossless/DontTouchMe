@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/Scene.h"
+#include "Styling/SlateColor.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "TMMenuViewerMeshTransitionSubsystem.generated.h"
 
@@ -14,6 +15,7 @@ class UParticleSystemComponent;
 class UPrimitiveComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
+class UTextBlock;
 class UTMAudioEnvelopeFollower;
 
 UCLASS()
@@ -98,6 +100,11 @@ private:
 		FRotator RotationOffset = FRotator::ZeroRotator;
 	};
 
+	struct FAttachmentSelectionLabelStyle
+	{
+		FSlateColor OriginalColorAndOpacity;
+	};
+
 	void TrackMenuViewer(AActor* Actor, float DeltaTime, bool bLoadoutPreviewVisible);
 	void NoteMeshChanged(const FMenuViewerState& State, USkeletalMeshComponent* VestComponent, USkeletalMesh* PreviousMesh) const;
 	void CaptureStableState(FMenuViewerState& State, USkeletalMeshComponent* VestComponent);
@@ -151,12 +158,20 @@ private:
 	void RestoreMainMenuBackGlow();
 	void UpdateMainMenuCameraDrift(UWorld* World, bool bMenuDriftVisible, bool bLoadoutMode, bool bAttachmentsVisible, float DeltaTime);
 	void RestoreMainMenuCameraDrift();
+	void UpdateAttachmentSelectionHighlight(UWorld* World, bool bAttachmentsVisible);
+	void RestoreAttachmentSelectionHighlight();
+	void UpdateWeaponSelectionHighlight(UWorld* World, bool bLoadoutVisible);
+	void RestoreWeaponSelectionHighlight();
 	void UpdateAttachmentsCameraFocus(UWorld* World, bool bAttachmentsVisible, float DeltaTime, UCameraComponent* CameraComponent);
 	void ResetAttachmentsCameraFocus();
 	AActor* ResolveLoadoutPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
 	AActor* ResolveAttachmentsPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
 	FLoadoutPostProcessFocus ResolveLoadoutPostProcessFocus(UWorld* World, const UCameraComponent* CameraComponent) const;
 	EAttachmentCameraFocusGroup ResolveActiveAttachmentCameraFocusGroup(UWorld* World) const;
+	bool ResolveActiveLoadoutWeaponHighlightTokens(UWorld* World, TSet<FString>& OutTokens) const;
+	bool ResolveInstalledAttachmentHighlightTokens(UWorld* World, EAttachmentCameraFocusGroup Group, TSet<FString>& OutTokens) const;
+	bool ReadInstalledAttachmentHighlightTokensFromObject(const UObject* Object, EAttachmentCameraFocusGroup Group, TSet<FString>& OutTokens) const;
+	bool ResolveAttachmentComponentHighlightTokens(UWorld* World, EAttachmentCameraFocusGroup Group, TSet<FString>& OutTokens) const;
 	bool ResolveAttachmentCameraFocusInstallSignature(UWorld* World, EAttachmentCameraFocusGroup Group, uint32& OutSignature) const;
 	bool ReadAttachmentCameraFocusInstallSignatureFromObject(const UObject* Object, EAttachmentCameraFocusGroup Group, uint32& OutSignature) const;
 	bool ResolveAttachmentCameraFocusComponentInstallSignature(UWorld* World, EAttachmentCameraFocusGroup Group, uint32& OutSignature) const;
@@ -182,6 +197,8 @@ private:
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> LoadoutBackGlowVisualStates;
 	TMap<TWeakObjectPtr<ULightComponent>, FBackGlowLightState> MainMenuBackGlowLightStates;
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> MainMenuBackGlowVisualStates;
+	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> AttachmentSelectionLabelStyles;
+	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> WeaponSelectionLabelStyles;
 	TWeakObjectPtr<UCameraComponent> MainMenuCameraDriftCamera;
 	FPostProcessSettings SavedLoadoutPostProcessSettings;
 	FVector MainMenuCameraDriftBaseRelativeLocation = FVector::ZeroVector;

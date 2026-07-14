@@ -235,6 +235,8 @@ private:
 	void RunDeferredAttachmentSanitize();
 	void PlayAttachmentFeedback();
 	FTransform ResolveAttachmentFeedbackTransform() const;
+	UStaticMeshComponent* ResolveAttachmentFeedbackTargetComponent(FName SocketName) const;
+	FRotator ResolveAttachmentFeedbackRotation(FVector FeedbackLocation, FName SocketName, FRotator FallbackRotation) const;
 	FTransform ResolveWeaponSpawnFeedbackTransform() const;
 	FName ResolveAttachmentFeedbackPreferredSocket(const UFunction* Function) const;
 	FName ResolveAttachmentFeedbackSocketFromContext(const FString& Context, FName SocketName) const;

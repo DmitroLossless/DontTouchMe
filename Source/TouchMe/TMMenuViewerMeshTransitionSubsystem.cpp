@@ -12,10 +12,12 @@
 #include "Components/RectLightComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Components/TextBlock.h"
 #include "Components/Widget.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Gun/Gun.h"
@@ -552,6 +554,144 @@ bool IsEmptyAttachmentFocusValue(const FString& Text)
 		|| Normalized.Equals(TEXT("NewEnumerator0"), ESearchCase::IgnoreCase);
 }
 
+const FLinearColor& AttachmentSelectionHighlightColor()
+{
+	static const FLinearColor Color = FLinearColor::FromSRGBColor(FColor(210, 22, 18, 255));
+	return Color;
+}
+
+bool IsGenericAttachmentHighlightToken(const FString& NormalizedToken)
+{
+	if (NormalizedToken.Len() < 3)
+	{
+		return true;
+	}
+
+	static const TCHAR* GenericTokens[] =
+	{
+		TEXT("Muzzle"),
+		TEXT("MuzzleSilencerco"),
+		TEXT("Optics"),
+		TEXT("Optic"),
+		TEXT("RearSight"),
+		TEXT("AimTarget"),
+		TEXT("ADSEye"),
+		TEXT("ATBackup"),
+		TEXT("SideRail"),
+		TEXT("Canted"),
+		TEXT("Backup"),
+		TEXT("Underbarrel"),
+		TEXT("Foregrip"),
+		TEXT("Socket"),
+		TEXT("StaticMesh"),
+		TEXT("SkeletalMesh"),
+		TEXT("ScriptEngineStaticMesh"),
+		TEXT("ScriptCoreUObjectObject")
+	};
+
+	for (const TCHAR* GenericToken : GenericTokens)
+	{
+		if (NormalizedToken.Equals(GenericToken, ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void AddAttachmentHighlightToken(TSet<FString>& OutTokens, const FString& Text)
+{
+	FString CleanText = Text;
+	CleanText.TrimStartAndEndInline();
+	CleanText.RemoveFromStart(TEXT("Default__"));
+	CleanText.RemoveFromEnd(TEXT("_C"));
+
+	const auto AddOne = [&OutTokens](const FString& Candidate)
+	{
+		const FString Normalized = NormalizeAttachmentFocusToken(Candidate);
+		if (!IsEmptyAttachmentFocusValue(Normalized) && !IsGenericAttachmentHighlightToken(Normalized))
+		{
+			OutTokens.Add(Normalized);
+		}
+	};
+
+	AddOne(CleanText);
+
+	FString AssetLeaf;
+	if (CleanText.Split(TEXT("/"), nullptr, &AssetLeaf, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
+	{
+		FString AssetName;
+		if (AssetLeaf.Split(TEXT("."), &AssetName, nullptr, ESearchCase::CaseSensitive, ESearchDir::FromStart))
+		{
+			AddOne(AssetName);
+		}
+		AddOne(AssetLeaf);
+	}
+}
+
+bool IsAttachmentSelectionOptionText(const FString& Text)
+{
+	const FString Normalized = NormalizeAttachmentFocusToken(Text);
+	if (Normalized.IsEmpty())
+	{
+		return false;
+	}
+
+	static const TCHAR* GroupHeaderTokens[] =
+	{
+		TEXT("Muzzle"),
+		TEXT("Optics"),
+		TEXT("SideRail"),
+		TEXT("Underbarrel")
+	};
+
+	for (const TCHAR* GroupHeaderToken : GroupHeaderTokens)
+	{
+		if (Normalized.Equals(GroupHeaderToken, ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+int32 ScoreSelectionTextAgainstTokens(const FString& Text, const TSet<FString>& Tokens)
+{
+	const FString NormalizedText = NormalizeAttachmentFocusToken(Text);
+	if (NormalizedText.IsEmpty())
+	{
+		return INDEX_NONE;
+	}
+
+	int32 BestScore = INDEX_NONE;
+	for (const FString& Token : Tokens)
+	{
+		if (Token.Equals(NormalizedText, ESearchCase::IgnoreCase))
+		{
+			BestScore = FMath::Max(BestScore, 100000 + NormalizedText.Len());
+		}
+		else if (Token.Contains(NormalizedText, ESearchCase::IgnoreCase))
+		{
+			BestScore = FMath::Max(BestScore, 50000 + NormalizedText.Len());
+		}
+		else if (NormalizedText.Contains(Token, ESearchCase::IgnoreCase))
+		{
+			BestScore = FMath::Max(BestScore, 40000 + Token.Len());
+		}
+	}
+
+	return BestScore;
+}
+
+int32 ScoreAttachmentSelectionTextAgainstTokens(const FString& Text, const TSet<FString>& Tokens)
+{
+	return IsAttachmentSelectionOptionText(Text)
+		? ScoreSelectionTextAgainstTokens(Text, Tokens)
+		: INDEX_NONE;
+}
+
 bool IsInstalledAttachmentPropertyName(const FString& PropertyName)
 {
 	const FString Normalized = NormalizeAttachmentFocusToken(PropertyName);
@@ -633,11 +773,35 @@ void AppendAttachmentFocusValueTexts(const FProperty* Property, const void* Valu
 		return;
 	}
 
+	if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (!StructProperty->Struct)
+		{
+			return;
+		}
+
+		for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
+		{
+			const FProperty* ChildProperty = *It;
+			if (!ChildProperty)
+			{
+				continue;
+			}
+
+			AppendAttachmentFocusValueTexts(
+				ChildProperty,
+				ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr),
+				OutTexts);
+		}
+		return;
+	}
+
 	if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
 	{
 		if (const UObject* ObjectValue = ObjectProperty->GetObjectPropertyValue(ValuePtr))
 		{
 			OutTexts.Add(ObjectValue->GetName());
+			OutTexts.Add(ObjectValue->GetPathName());
 			if (const UClass* ObjectClass = ObjectValue->GetClass())
 			{
 				OutTexts.Add(ObjectClass->GetPathName());
@@ -661,6 +825,8 @@ void UTMMenuViewerMeshTransitionSubsystem::Deinitialize()
 	RestoreLoadoutBackGlow();
 	RestoreLoadoutFOV();
 	RestoreMenuFOV();
+	RestoreAttachmentSelectionHighlight();
+	RestoreWeaponSelectionHighlight();
 	MenuViewerStates.Empty();
 	Super::Deinitialize();
 }
@@ -690,6 +856,8 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 	UpdateAttachmentsPreviewBrightnessTiming(bAttachmentsVisible, bLoadoutFOVVisible, DeltaTime);
 	UpdateMainMenuCameraDrift(World, bMainMenuVisible || bLoadoutFOVVisible, bLoadoutFOVVisible, bAttachmentsVisible, DeltaTime);
 	UpdateLoadoutPostProcess(World, bPostProcessVisible, bLoadoutFOVVisible, bAttachmentsVisible);
+	UpdateAttachmentSelectionHighlight(World, bAttachmentsVisible);
+	UpdateWeaponSelectionHighlight(World, bLoadoutFOVVisible && !bAttachmentsVisible);
 	if (bLoadoutFOVVisible)
 	{
 		UpdateMainMenuBackGlow(World, false, DeltaTime);
@@ -2568,10 +2736,31 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
 	const EAttachmentCameraFocusGroup FocusGroup = bObservedInstalled
 		? ObservedGroup
 		: EAttachmentCameraFocusGroup::None;
-
-	if (ObservedGroup != AttachmentsCameraFocusObservedGroup
+	const bool bObservedStateChanged =
+		ObservedGroup != AttachmentsCameraFocusObservedGroup
 		|| bObservedInstalled != bAttachmentsCameraFocusObservedInstalled
-		|| ObservedInstallSignature != AttachmentsCameraFocusObservedInstallSignature)
+		|| ObservedInstallSignature != AttachmentsCameraFocusObservedInstallSignature;
+	const bool bReplacingInstalledAttachmentInSameGroup =
+		ObservedGroup == AttachmentsCameraFocusObservedGroup
+		&& ObservedGroup != EAttachmentCameraFocusGroup::None
+		&& bObservedInstalled
+		&& bAttachmentsCameraFocusObservedInstalled
+		&& ObservedInstallSignature != AttachmentsCameraFocusObservedInstallSignature;
+
+	if (bObservedStateChanged && bReplacingInstalledAttachmentInSameGroup)
+	{
+		AttachmentsCameraFocusObservedGroup = ObservedGroup;
+		AttachmentsCameraFocusObservedInstallSignature = ObservedInstallSignature;
+		bAttachmentsCameraFocusObservedInstalled = bObservedInstalled;
+
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Display,
+			TEXT("[TMAttachmentsCameraFocus] Active=%s replaced installed attachment in same group. Keeping current focus. Signature=%u"),
+			*DescribeAttachmentCameraFocusGroup(ObservedGroup),
+			ObservedInstallSignature);
+	}
+	else if (bObservedStateChanged)
 	{
 		const float TargetScreenX = FMath::Clamp(CVarAttachmentsCameraFocusTargetScreenX.GetValueOnGameThread(), 0.1f, 0.9f);
 		const float TargetScreenY = FMath::Clamp(CVarAttachmentsCameraFocusTargetScreenY.GetValueOnGameThread(), 0.1f, 0.9f);
@@ -2754,6 +2943,500 @@ UTMMenuViewerMeshTransitionSubsystem::ResolveActiveAttachmentCameraFocusGroup(UW
 	}
 
 	return EAttachmentCameraFocusGroup::None;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UWorld* World, const bool bAttachmentsVisible)
+{
+	if (!World || !bAttachmentsVisible)
+	{
+		RestoreAttachmentSelectionHighlight();
+		return;
+	}
+
+	const EAttachmentCameraFocusGroup ActiveGroup = ResolveActiveAttachmentCameraFocusGroup(World);
+	if (ActiveGroup == EAttachmentCameraFocusGroup::None)
+	{
+		RestoreAttachmentSelectionHighlight();
+		return;
+	}
+
+	TSet<FString> HighlightTokens;
+	if (!ResolveInstalledAttachmentHighlightTokens(World, ActiveGroup, HighlightTokens) || HighlightTokens.IsEmpty())
+	{
+		HighlightTokens.Add(NormalizeAttachmentFocusToken(TEXT("Empty")));
+	}
+
+	static const FName AttachmentListNames[] =
+	{
+		TEXT("AttachmentList"),
+		TEXT("AttachmentList_1"),
+		TEXT("AttachmentsList")
+	};
+
+	TSet<TWeakObjectPtr<UTextBlock>> SeenLabels;
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Attachments")))
+		{
+			continue;
+		}
+
+		if (!IsVisibleWidgetInstance(Widget))
+		{
+			continue;
+		}
+
+		for (const FName AttachmentListName : AttachmentListNames)
+		{
+			UWidget* AttachmentList = Widget->GetWidgetFromName(AttachmentListName);
+			if (!AttachmentList)
+			{
+				continue;
+			}
+
+			TArray<UTextBlock*> AttachmentLabels;
+			VisitWidgetTree(AttachmentList, [&AttachmentLabels](UWidget* ChildWidget)
+			{
+				UTextBlock* TextBlock = Cast<UTextBlock>(ChildWidget);
+				if (!IsValid(TextBlock) || !IsAttachmentSelectionOptionText(TextBlock->GetText().ToString()))
+				{
+					return;
+				}
+
+				AttachmentLabels.Add(TextBlock);
+			});
+
+			UTextBlock* BestLabel = nullptr;
+			int32 BestScore = INDEX_NONE;
+			for (UTextBlock* TextBlock : AttachmentLabels)
+			{
+				SeenLabels.Add(TextBlock);
+				FAttachmentSelectionLabelStyle* StoredStyle = AttachmentSelectionLabelStyles.Find(TextBlock);
+				if (!StoredStyle)
+				{
+					FAttachmentSelectionLabelStyle NewStyle;
+					NewStyle.OriginalColorAndOpacity = TextBlock->GetColorAndOpacity();
+					StoredStyle = &AttachmentSelectionLabelStyles.Add(TextBlock, NewStyle);
+				}
+
+				const int32 Score = ScoreAttachmentSelectionTextAgainstTokens(TextBlock->GetText().ToString(), HighlightTokens);
+				if (Score > BestScore)
+				{
+					BestScore = Score;
+					BestLabel = TextBlock;
+				}
+			}
+
+			for (UTextBlock* TextBlock : AttachmentLabels)
+			{
+				const FAttachmentSelectionLabelStyle* StoredStyle = AttachmentSelectionLabelStyles.Find(TextBlock);
+				if (!StoredStyle)
+				{
+					continue;
+				}
+
+				const bool bHighlighted = TextBlock == BestLabel && BestScore != INDEX_NONE;
+				TextBlock->SetColorAndOpacity(bHighlighted
+					? FSlateColor(AttachmentSelectionHighlightColor())
+					: StoredStyle->OriginalColorAndOpacity);
+			}
+		}
+	}
+
+	for (auto It = AttachmentSelectionLabelStyles.CreateIterator(); It; ++It)
+	{
+		UTextBlock* TextBlock = It.Key().Get();
+		if (!IsValid(TextBlock))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+
+		if (!SeenLabels.Contains(TextBlock))
+		{
+			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreAttachmentSelectionHighlight()
+{
+	for (auto It = AttachmentSelectionLabelStyles.CreateIterator(); It; ++It)
+	{
+		UTextBlock* TextBlock = It.Key().Get();
+		if (IsValid(TextBlock))
+		{
+			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
+		}
+		It.RemoveCurrent();
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld* World, const bool bLoadoutVisible)
+{
+	if (!World || !bLoadoutVisible)
+	{
+		RestoreWeaponSelectionHighlight();
+		return;
+	}
+
+	TSet<FString> HighlightTokens;
+	if (!ResolveActiveLoadoutWeaponHighlightTokens(World, HighlightTokens) || HighlightTokens.IsEmpty())
+	{
+		HighlightTokens.Add(NormalizeAttachmentFocusToken(TEXT("Empty")));
+	}
+
+	TSet<TWeakObjectPtr<UTextBlock>> SeenLabels;
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Loadout")))
+		{
+			continue;
+		}
+
+		if (!IsVisibleWidgetInstance(Widget))
+		{
+			continue;
+		}
+
+		TArray<UTextBlock*> WeaponLabels;
+		VisitWidgetTree(Widget, [&WeaponLabels](UWidget* ChildWidget)
+		{
+			UTextBlock* TextBlock = Cast<UTextBlock>(ChildWidget);
+			if (!IsValid(TextBlock))
+			{
+				return;
+			}
+
+			const FString NormalizedText = NormalizeAttachmentFocusToken(TextBlock->GetText().ToString());
+			if (!NormalizedText.IsEmpty())
+			{
+				WeaponLabels.Add(TextBlock);
+			}
+		});
+
+		UTextBlock* BestLabel = nullptr;
+		int32 BestScore = INDEX_NONE;
+		for (UTextBlock* TextBlock : WeaponLabels)
+		{
+			SeenLabels.Add(TextBlock);
+			FAttachmentSelectionLabelStyle* StoredStyle = WeaponSelectionLabelStyles.Find(TextBlock);
+			if (!StoredStyle)
+			{
+				FAttachmentSelectionLabelStyle NewStyle;
+				NewStyle.OriginalColorAndOpacity = TextBlock->GetColorAndOpacity();
+				StoredStyle = &WeaponSelectionLabelStyles.Add(TextBlock, NewStyle);
+			}
+
+			const int32 Score = ScoreSelectionTextAgainstTokens(TextBlock->GetText().ToString(), HighlightTokens);
+			if (Score > BestScore)
+			{
+				BestScore = Score;
+				BestLabel = TextBlock;
+			}
+		}
+
+		for (UTextBlock* TextBlock : WeaponLabels)
+		{
+			const FAttachmentSelectionLabelStyle* StoredStyle = WeaponSelectionLabelStyles.Find(TextBlock);
+			if (!StoredStyle)
+			{
+				continue;
+			}
+
+			const bool bHighlighted = TextBlock == BestLabel && BestScore != INDEX_NONE;
+			TextBlock->SetColorAndOpacity(bHighlighted
+				? FSlateColor(AttachmentSelectionHighlightColor())
+				: StoredStyle->OriginalColorAndOpacity);
+		}
+	}
+
+	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)
+	{
+		UTextBlock* TextBlock = It.Key().Get();
+		if (!IsValid(TextBlock))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+
+		if (!SeenLabels.Contains(TextBlock))
+		{
+			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreWeaponSelectionHighlight()
+{
+	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)
+	{
+		UTextBlock* TextBlock = It.Key().Get();
+		if (IsValid(TextBlock))
+		{
+			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
+		}
+		It.RemoveCurrent();
+	}
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ResolveActiveLoadoutWeaponHighlightTokens(
+	UWorld* World,
+	TSet<FString>& OutTokens) const
+{
+	OutTokens.Reset();
+	if (!World)
+	{
+		return false;
+	}
+
+	for (TObjectIterator<UUserWidget> It; It; ++It)
+	{
+		UUserWidget* Widget = *It;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const UClass* WidgetClass = Widget->GetClass();
+		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Loadout")))
+		{
+			continue;
+		}
+
+		if (!IsVisibleWidgetInstance(Widget))
+		{
+			continue;
+		}
+
+		const FObjectPropertyBase* ActiveWeaponProperty =
+			FindFProperty<FObjectPropertyBase>(WidgetClass, TEXT("ActiveWeapon"));
+		if (!ActiveWeaponProperty)
+		{
+			continue;
+		}
+
+		const UObject* ActiveWeaponObject =
+			ActiveWeaponProperty->GetObjectPropertyValue_InContainer(Widget);
+		if (!IsValid(ActiveWeaponObject))
+		{
+			continue;
+		}
+
+		if (const AGun* ActiveGun = Cast<AGun>(ActiveWeaponObject))
+		{
+			AddAttachmentHighlightToken(OutTokens, ActiveGun->GetWeaponDisplayName().ToString());
+		}
+
+		AddAttachmentHighlightToken(OutTokens, ActiveWeaponObject->GetName());
+		if (const UClass* ActiveWeaponClass = ActiveWeaponObject->GetClass())
+		{
+			AddAttachmentHighlightToken(OutTokens, ActiveWeaponClass->GetName());
+		}
+
+		if (!OutTokens.IsEmpty())
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ResolveInstalledAttachmentHighlightTokens(
+	UWorld* World,
+	const EAttachmentCameraFocusGroup Group,
+	TSet<FString>& OutTokens) const
+{
+	OutTokens.Reset();
+	if (!World || Group == EAttachmentCameraFocusGroup::None)
+	{
+		return false;
+	}
+
+	bool bFoundInstalledAttachment = false;
+	const UCameraComponent* CameraComponent = ResolveActiveCameraComponent(World);
+	const FVector CameraLocation = CameraComponent ? CameraComponent->GetComponentLocation() : FVector::ZeroVector;
+	if (AActor* WeaponActor = ResolveAttachmentsPreviewWeaponActor(World, CameraLocation))
+	{
+		bFoundInstalledAttachment = ReadInstalledAttachmentHighlightTokensFromObject(
+			WeaponActor,
+			Group,
+			OutTokens);
+		if (bFoundInstalledAttachment && !OutTokens.IsEmpty())
+		{
+			return true;
+		}
+	}
+
+	return ResolveAttachmentComponentHighlightTokens(World, Group, OutTokens) && !OutTokens.IsEmpty();
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ReadInstalledAttachmentHighlightTokensFromObject(
+	const UObject* Object,
+	const EAttachmentCameraFocusGroup Group,
+	TSet<FString>& OutTokens) const
+{
+	if (!IsValid(Object) || Group == EAttachmentCameraFocusGroup::None)
+	{
+		return false;
+	}
+
+	bool bFoundInstalledAttachment = false;
+	for (TFieldIterator<FProperty> It(Object->GetClass()); It; ++It)
+	{
+		const FProperty* Property = *It;
+		if (!Property)
+		{
+			continue;
+		}
+
+		const FString PropertyName = Property->GetName();
+		if (IsCompatibleAttachmentListPropertyName(PropertyName)
+			|| !IsInstalledAttachmentPropertyName(PropertyName))
+		{
+			continue;
+		}
+
+		const FString NormalizedPropertyName = NormalizeAttachmentFocusToken(PropertyName);
+		const bool bActiveAttachmentArray =
+			NormalizedPropertyName.Contains(TEXT("ActiveAttachments"), ESearchCase::IgnoreCase);
+		const bool bGroupSpecificProperty =
+			(Group == EAttachmentCameraFocusGroup::Muzzle
+				&& NormalizedPropertyName.Contains(TEXT("Muzzle"), ESearchCase::IgnoreCase))
+			|| (Group == EAttachmentCameraFocusGroup::Optics
+				&& (NormalizedPropertyName.Contains(TEXT("Optic"), ESearchCase::IgnoreCase)
+					|| NormalizedPropertyName.Contains(TEXT("Sight"), ESearchCase::IgnoreCase)))
+			|| (Group == EAttachmentCameraFocusGroup::SideRail
+				&& NormalizedPropertyName.Contains(TEXT("SideRail"), ESearchCase::IgnoreCase))
+			|| (Group == EAttachmentCameraFocusGroup::Underbarrel
+				&& NormalizedPropertyName.Contains(TEXT("Underbarrel"), ESearchCase::IgnoreCase));
+
+		if (!bActiveAttachmentArray && !bGroupSpecificProperty)
+		{
+			continue;
+		}
+
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
+		TArray<FString> ValueTexts;
+		AppendAttachmentFocusValueTexts(Property, ValuePtr, ValueTexts);
+		for (const FString& ValueText : ValueTexts)
+		{
+			if (IsEmptyAttachmentFocusValue(ValueText))
+			{
+				continue;
+			}
+
+			const EAttachmentCameraFocusGroup ValueGroup = InferAttachmentCameraFocusGroupFromText(ValueText);
+			if (ValueGroup == Group || bGroupSpecificProperty)
+			{
+				const int32 PreviousTokenCount = OutTokens.Num();
+				AddAttachmentHighlightToken(OutTokens, ValueText);
+				bFoundInstalledAttachment |= OutTokens.Num() > PreviousTokenCount;
+			}
+		}
+	}
+
+	return bFoundInstalledAttachment;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentComponentHighlightTokens(
+	UWorld* World,
+	const EAttachmentCameraFocusGroup Group,
+	TSet<FString>& OutTokens) const
+{
+	if (!World || Group == EAttachmentCameraFocusGroup::None)
+	{
+		return false;
+	}
+
+	const UCameraComponent* CameraComponent = ResolveActiveCameraComponent(World);
+	const FVector CameraLocation = CameraComponent ? CameraComponent->GetComponentLocation() : FVector::ZeroVector;
+	AActor* WeaponActor = ResolveAttachmentsPreviewWeaponActor(World, CameraLocation);
+	if (!IsValid(WeaponActor))
+	{
+		return false;
+	}
+
+	TArray<FName, TInlineAllocator<6>> CandidateSockets;
+	switch (Group)
+	{
+	case EAttachmentCameraFocusGroup::Optics:
+		CandidateSockets.Append({ TEXT("Optics"), TEXT("RearSight"), TEXT("AimTarget"), TEXT("ADS_Eye") });
+		break;
+	case EAttachmentCameraFocusGroup::SideRail:
+		CandidateSockets.Append({ TEXT("AT_Backup"), TEXT("SideRail"), TEXT("Canted"), TEXT("Backup") });
+		break;
+	case EAttachmentCameraFocusGroup::Underbarrel:
+		CandidateSockets.Append({ TEXT("Underbarrel"), TEXT("Foregrip") });
+		break;
+	case EAttachmentCameraFocusGroup::Muzzle:
+		CandidateSockets.Append({ TEXT("Muzzle"), TEXT("MuzzleSilencerco") });
+		break;
+	default:
+		break;
+	}
+
+	bool bFoundInstalledAttachment = false;
+	TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(WeaponActor);
+	for (const UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+	{
+		if (!IsValid(PrimitiveComponent)
+			|| !PrimitiveComponent->IsRegistered()
+			|| !PrimitiveComponent->IsVisible()
+			|| PrimitiveComponent->bHiddenInGame)
+		{
+			continue;
+		}
+
+		const FString AttachSocketName = PrimitiveComponent->GetAttachSocketName().ToString();
+		bool bMatchesSocket = false;
+		for (const FName CandidateSocket : CandidateSockets)
+		{
+			if (AttachSocketName.Equals(CandidateSocket.ToString(), ESearchCase::IgnoreCase)
+				|| AttachSocketName.Contains(CandidateSocket.ToString(), ESearchCase::IgnoreCase))
+			{
+				bMatchesSocket = true;
+				break;
+			}
+		}
+
+		if (!bMatchesSocket)
+		{
+			continue;
+		}
+
+		const int32 PreviousTokenCount = OutTokens.Num();
+		AddAttachmentHighlightToken(OutTokens, PrimitiveComponent->GetName());
+		AddAttachmentHighlightToken(OutTokens, PrimitiveComponent->GetPathName());
+		if (const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(PrimitiveComponent))
+		{
+			if (const UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh())
+			{
+				AddAttachmentHighlightToken(OutTokens, StaticMesh->GetName());
+				AddAttachmentHighlightToken(OutTokens, StaticMesh->GetPathName());
+			}
+		}
+		bFoundInstalledAttachment |= OutTokens.Num() > PreviousTokenCount;
+	}
+
+	return bFoundInstalledAttachment;
 }
 
 bool UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusInstallSignature(

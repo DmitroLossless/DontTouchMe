@@ -23,7 +23,7 @@ namespace
 	constexpr float MainMenuLabelHoverScale = 1.07f;
 	const FName MainMenuLabelHoverTypeface(TEXT("Light"));
 
-	void VisitWidgetTree(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
+	void VisitMainMenuHoverWidgetTree(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
 	{
 		if (!Widget)
 		{
@@ -37,14 +37,14 @@ namespace
 			const int32 ChildCount = PanelWidget->GetChildrenCount();
 			for (int32 ChildIndex = 0; ChildIndex < ChildCount; ++ChildIndex)
 			{
-				VisitWidgetTree(PanelWidget->GetChildAt(ChildIndex), Visitor);
+				VisitMainMenuHoverWidgetTree(PanelWidget->GetChildAt(ChildIndex), Visitor);
 			}
 			return;
 		}
 
 		if (UContentWidget* ContentWidget = Cast<UContentWidget>(Widget))
 		{
-			VisitWidgetTree(ContentWidget->GetContent(), Visitor);
+			VisitMainMenuHoverWidgetTree(ContentWidget->GetContent(), Visitor);
 		}
 	}
 }
@@ -155,7 +155,7 @@ bool UTMMainMenuHoverStyleSubsystem::IsMainMenuLargeLabel(const FString& Text)
 UTextBlock* UTMMainMenuHoverStyleSubsystem::FindLargeLabelText(UWidget* RootWidget)
 {
 	UTextBlock* Result = nullptr;
-	VisitWidgetTree(RootWidget, [&Result](UWidget* Widget)
+	VisitMainMenuHoverWidgetTree(RootWidget, [&Result](UWidget* Widget)
 	{
 		if (Result)
 		{
