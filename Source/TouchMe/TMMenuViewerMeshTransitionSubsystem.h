@@ -157,7 +157,18 @@ private:
 	AActor* ResolveAttachmentsPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
 	FLoadoutPostProcessFocus ResolveLoadoutPostProcessFocus(UWorld* World, const UCameraComponent* CameraComponent) const;
 	EAttachmentCameraFocusGroup ResolveActiveAttachmentCameraFocusGroup(UWorld* World) const;
-	FAttachmentCameraFocusPose ResolveAttachmentCameraFocusPose(UWorld* World, const UCameraComponent* CameraComponent, EAttachmentCameraFocusGroup Group) const;
+	bool ResolveAttachmentCameraFocusInstallSignature(UWorld* World, EAttachmentCameraFocusGroup Group, uint32& OutSignature) const;
+	bool ReadAttachmentCameraFocusInstallSignatureFromObject(const UObject* Object, EAttachmentCameraFocusGroup Group, uint32& OutSignature) const;
+	bool ResolveAttachmentCameraFocusComponentInstallSignature(UWorld* World, EAttachmentCameraFocusGroup Group, uint32& OutSignature) const;
+	FAttachmentCameraFocusPose ResolveAttachmentCameraFocusPose(
+		UWorld* World,
+		const UCameraComponent* CameraComponent,
+		EAttachmentCameraFocusGroup Group,
+		float AdditionalPitch,
+		float AdditionalYaw,
+		float TargetScreenX,
+		float TargetScreenY,
+		float DepthScale) const;
 	bool ResolveAttachmentCameraFocusSocketWorldLocation(UWorld* World, EAttachmentCameraFocusGroup Group, FVector& OutLocation) const;
 	void RestoreLoadoutFOV();
 	void RestoreMenuFOV();
@@ -198,6 +209,8 @@ private:
 	float AttachmentsCameraFocusBlendElapsedSeconds = 0.0f;
 	EAttachmentCameraFocusGroup AttachmentsCameraFocusObservedGroup = EAttachmentCameraFocusGroup::None;
 	EAttachmentCameraFocusGroup AttachmentsCameraFocusTargetGroup = EAttachmentCameraFocusGroup::None;
+	uint32 AttachmentsCameraFocusObservedInstallSignature = 0;
+	bool bAttachmentsCameraFocusObservedInstalled = false;
 	bool bMenuFOVApplied = false;
 	bool bLoadoutFOVApplied = false;
 	bool bLoadoutPostProcessApplied = false;

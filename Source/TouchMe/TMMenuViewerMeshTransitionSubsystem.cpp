@@ -251,8 +251,8 @@ static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusDelay(
 
 static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusDuration(
 	TEXT("tm.AttachmentsCameraFocus.Duration"),
-	0.45f,
-	TEXT("Seconds used for the smooth W_Attachments camera move after the delay."),
+	0.38f,
+	TEXT("Seconds used for the final W_Attachments socket-centering move."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusTargetScreenX(
@@ -265,6 +265,30 @@ static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusTargetScreenY(
 	TEXT("tm.AttachmentsCameraFocus.TargetScreenY"),
 	0.56f,
 	TEXT("Normalized screen Y target for the active W_Attachments socket, biased into the empty weapon preview area."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusCloseDepthScale(
+	TEXT("tm.AttachmentsCameraFocus.CloseDepthScale"),
+	0.82f,
+	TEXT("Depth scale for W_Attachments focus moves; lower values move the camera closer to the weapon."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusRandomYawMin(
+	TEXT("tm.AttachmentsCameraFocus.RandomYawMin"),
+	20.0f,
+	TEXT("Minimum absolute random yaw angle applied to each W_Attachments focus move."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusRandomYawMax(
+	TEXT("tm.AttachmentsCameraFocus.RandomYawMax"),
+	35.0f,
+	TEXT("Maximum absolute random yaw angle applied to each W_Attachments focus move."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusRandomPitchMax(
+	TEXT("tm.AttachmentsCameraFocus.RandomPitchMax"),
+	4.5f,
+	TEXT("Maximum absolute random pitch angle paired with the random W_Attachments yaw angle."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusLocationScale(
@@ -504,6 +528,128 @@ float ResolveViewportAspectRatio(UWorld* World)
 	}
 
 	return 16.0f / 9.0f;
+}
+
+FString NormalizeAttachmentFocusToken(FString Text)
+{
+	Text.TrimStartAndEndInline();
+	Text.ReplaceInline(TEXT(" "), TEXT(""));
+	Text.ReplaceInline(TEXT("_"), TEXT(""));
+	Text.ReplaceInline(TEXT("-"), TEXT(""));
+	Text.ReplaceInline(TEXT("::"), TEXT(""));
+	return Text;
+}
+
+bool IsEmptyAttachmentFocusValue(const FString& Text)
+{
+	const FString Normalized = NormalizeAttachmentFocusToken(Text);
+	return Normalized.IsEmpty()
+		|| Normalized.Equals(TEXT("0"), ESearchCase::IgnoreCase)
+		|| Normalized.Equals(TEXT("None"), ESearchCase::IgnoreCase)
+		|| Normalized.Equals(TEXT("Null"), ESearchCase::IgnoreCase)
+		|| Normalized.Equals(TEXT("Empty"), ESearchCase::IgnoreCase)
+		|| Normalized.Equals(TEXT("ENUMAttachmentsNewEnumerator0"), ESearchCase::IgnoreCase)
+		|| Normalized.Equals(TEXT("NewEnumerator0"), ESearchCase::IgnoreCase);
+}
+
+bool IsInstalledAttachmentPropertyName(const FString& PropertyName)
+{
+	const FString Normalized = NormalizeAttachmentFocusToken(PropertyName);
+	return Normalized.Contains(TEXT("ActiveAttachments"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("MuzzleItem"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("OpticsItem"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("OpticItem"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("SideRailItem"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Underbarreltem"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("UnderbarrelItem"), ESearchCase::IgnoreCase);
+}
+
+bool IsCompatibleAttachmentListPropertyName(const FString& PropertyName)
+{
+	const FString Normalized = NormalizeAttachmentFocusToken(PropertyName);
+	return Normalized.Contains(TEXT("Compatible"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("AttachmentList"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("AttachmentsList"), ESearchCase::IgnoreCase);
+}
+
+void AppendAttachmentFocusValueTexts(const FProperty* Property, const void* ValuePtr, TArray<FString>& OutTexts)
+{
+	if (!Property || !ValuePtr)
+	{
+		return;
+	}
+
+	if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+		{
+			AppendAttachmentFocusValueTexts(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), OutTexts);
+		}
+		return;
+	}
+
+	if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+	{
+		const int64 Value = EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
+		if (const UEnum* Enum = EnumProperty->GetEnum())
+		{
+			OutTexts.Add(Enum->GetNameStringByValue(Value));
+			OutTexts.Add(Enum->GetDisplayNameTextByValue(Value).ToString());
+		}
+		return;
+	}
+
+	if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+	{
+		const uint8 Value = ByteProperty->GetPropertyValue(ValuePtr);
+		if (const UEnum* Enum = ByteProperty->Enum)
+		{
+			OutTexts.Add(Enum->GetNameStringByValue(Value));
+			OutTexts.Add(Enum->GetDisplayNameTextByValue(Value).ToString());
+		}
+		else
+		{
+			OutTexts.Add(FString::FromInt(Value));
+		}
+		return;
+	}
+
+	if (const FNameProperty* NameProperty = CastField<FNameProperty>(Property))
+	{
+		OutTexts.Add(NameProperty->GetPropertyValue(ValuePtr).ToString());
+		return;
+	}
+
+	if (const FStrProperty* StringProperty = CastField<FStrProperty>(Property))
+	{
+		OutTexts.Add(StringProperty->GetPropertyValue(ValuePtr));
+		return;
+	}
+
+	if (const FTextProperty* TextProperty = CastField<FTextProperty>(Property))
+	{
+		OutTexts.Add(TextProperty->GetPropertyValue(ValuePtr).ToString());
+		return;
+	}
+
+	if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+	{
+		if (const UObject* ObjectValue = ObjectProperty->GetObjectPropertyValue(ValuePtr))
+		{
+			OutTexts.Add(ObjectValue->GetName());
+			if (const UClass* ObjectClass = ObjectValue->GetClass())
+			{
+				OutTexts.Add(ObjectClass->GetPathName());
+			}
+		}
+	}
+}
+
+uint32 CombineAttachmentFocusSignature(uint32 Signature, const FString& Text)
+{
+	const uint32 ValueHash = GetTypeHash(NormalizeAttachmentFocusToken(Text));
+	return HashCombine(Signature == 0 ? 0x811C9DC5u : Signature, ValueHash);
 }
 }
 
@@ -2415,30 +2561,72 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
 	const EAttachmentCameraFocusGroup ObservedGroup = bAttachmentsVisible
 		? ResolveActiveAttachmentCameraFocusGroup(World)
 		: EAttachmentCameraFocusGroup::None;
+	uint32 ObservedInstallSignature = 0;
+	const bool bObservedInstalled = bAttachmentsVisible
+		&& ObservedGroup != EAttachmentCameraFocusGroup::None
+		&& ResolveAttachmentCameraFocusInstallSignature(World, ObservedGroup, ObservedInstallSignature);
+	const EAttachmentCameraFocusGroup FocusGroup = bObservedInstalled
+		? ObservedGroup
+		: EAttachmentCameraFocusGroup::None;
 
-	if (ObservedGroup != AttachmentsCameraFocusObservedGroup)
+	if (ObservedGroup != AttachmentsCameraFocusObservedGroup
+		|| bObservedInstalled != bAttachmentsCameraFocusObservedInstalled
+		|| ObservedInstallSignature != AttachmentsCameraFocusObservedInstallSignature)
 	{
-		const FAttachmentCameraFocusPose TargetPose =
-			ResolveAttachmentCameraFocusPose(World, CameraComponent, ObservedGroup);
+		const float TargetScreenX = FMath::Clamp(CVarAttachmentsCameraFocusTargetScreenX.GetValueOnGameThread(), 0.1f, 0.9f);
+		const float TargetScreenY = FMath::Clamp(CVarAttachmentsCameraFocusTargetScreenY.GetValueOnGameThread(), 0.1f, 0.9f);
+		const float DepthScale = FocusGroup != EAttachmentCameraFocusGroup::None
+			? FMath::Clamp(CVarAttachmentsCameraFocusCloseDepthScale.GetValueOnGameThread(), 0.55f, 1.0f)
+			: 1.0f;
+		float RandomPitch = 0.0f;
+		float RandomYaw = 0.0f;
+
+		if (FocusGroup != EAttachmentCameraFocusGroup::None)
+		{
+			const float MinYaw = FMath::Clamp(CVarAttachmentsCameraFocusRandomYawMin.GetValueOnGameThread(), 0.0f, 89.0f);
+			const float MaxYaw = FMath::Clamp(CVarAttachmentsCameraFocusRandomYawMax.GetValueOnGameThread(), MinYaw, 89.0f);
+			const float RandomYawMagnitude = FMath::FRandRange(MinYaw, MaxYaw);
+			const float RandomYawDirection = FMath::RandBool() ? 1.0f : -1.0f;
+			const float RandomPitchMax = FMath::Clamp(CVarAttachmentsCameraFocusRandomPitchMax.GetValueOnGameThread(), 0.0f, 20.0f);
+			RandomYaw = RandomYawMagnitude * RandomYawDirection;
+			RandomPitch = FMath::FRandRange(-RandomPitchMax, RandomPitchMax);
+		}
+
+		const FAttachmentCameraFocusPose CenterPose = ResolveAttachmentCameraFocusPose(
+			World,
+			CameraComponent,
+			FocusGroup,
+			RandomPitch,
+			RandomYaw,
+			TargetScreenX,
+			TargetScreenY,
+			DepthScale);
 		AttachmentsCameraFocusObservedGroup = ObservedGroup;
-		AttachmentsCameraFocusTargetGroup = ObservedGroup;
+		AttachmentsCameraFocusObservedInstallSignature = ObservedInstallSignature;
+		bAttachmentsCameraFocusObservedInstalled = bObservedInstalled;
+		AttachmentsCameraFocusTargetGroup = FocusGroup;
 		AttachmentsCameraFocusStartLocationOffset = AttachmentsCameraFocusCurrentLocationOffset;
 		AttachmentsCameraFocusStartRotationOffset = AttachmentsCameraFocusCurrentRotationOffset;
-		AttachmentsCameraFocusTargetLocationOffset = TargetPose.LocationOffset;
-		AttachmentsCameraFocusTargetRotationOffset = TargetPose.RotationOffset;
+		AttachmentsCameraFocusTargetLocationOffset = CenterPose.LocationOffset;
+		AttachmentsCameraFocusTargetRotationOffset = CenterPose.RotationOffset;
 		AttachmentsCameraFocusDelayElapsedSeconds = 0.0f;
 		AttachmentsCameraFocusBlendElapsedSeconds = 0.0f;
-		bAttachmentsCameraFocusWaitingForDelay = ObservedGroup != EAttachmentCameraFocusGroup::None
+		bAttachmentsCameraFocusWaitingForDelay = FocusGroup != EAttachmentCameraFocusGroup::None
 			&& CVarAttachmentsCameraFocusDelay.GetValueOnGameThread() > 0.0f;
 		bAttachmentsCameraFocusTransitionActive = true;
 
 		UE_LOG(
 			LogTMMenuViewerMeshTransition,
 			Display,
-			TEXT("[TMAttachmentsCameraFocus] Target=%s Delay=%.2f Duration=%.2f Loc=%s Rot=%s"),
+			TEXT("[TMAttachmentsCameraFocus] Active=%s Installed=%s Signature=%u Target=%s Delay=%.2f Duration=%.2f RandomPitch=%.1f RandomYaw=%.1f TargetLoc=%s TargetRot=%s"),
 			*DescribeAttachmentCameraFocusGroup(ObservedGroup),
+			bObservedInstalled ? TEXT("true") : TEXT("false"),
+			ObservedInstallSignature,
+			*DescribeAttachmentCameraFocusGroup(FocusGroup),
 			bAttachmentsCameraFocusWaitingForDelay ? FMath::Max(0.0f, CVarAttachmentsCameraFocusDelay.GetValueOnGameThread()) : 0.0f,
 			FMath::Max(0.01f, CVarAttachmentsCameraFocusDuration.GetValueOnGameThread()),
+			RandomPitch,
+			RandomYaw,
 			*AttachmentsCameraFocusTargetLocationOffset.ToString(),
 			*AttachmentsCameraFocusTargetRotationOffset.ToString());
 	}
@@ -2476,14 +2664,8 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
 	{
 		AttachmentsCameraFocusCurrentLocationOffset = AttachmentsCameraFocusTargetLocationOffset;
 		AttachmentsCameraFocusCurrentRotationOffset = AttachmentsCameraFocusTargetRotationOffset;
-		bAttachmentsCameraFocusTransitionActive = false;
 
-		if (AttachmentsCameraFocusTargetGroup == EAttachmentCameraFocusGroup::None
-			&& AttachmentsCameraFocusCurrentLocationOffset.IsNearlyZero(0.01f)
-			&& AttachmentsCameraFocusCurrentRotationOffset.IsNearlyZero(0.01f))
-		{
-			ResetAttachmentsCameraFocus();
-		}
+		bAttachmentsCameraFocusTransitionActive = false;
 	}
 }
 
@@ -2499,6 +2681,8 @@ void UTMMenuViewerMeshTransitionSubsystem::ResetAttachmentsCameraFocus()
 	AttachmentsCameraFocusBlendElapsedSeconds = 0.0f;
 	AttachmentsCameraFocusObservedGroup = EAttachmentCameraFocusGroup::None;
 	AttachmentsCameraFocusTargetGroup = EAttachmentCameraFocusGroup::None;
+	AttachmentsCameraFocusObservedInstallSignature = 0;
+	bAttachmentsCameraFocusObservedInstalled = false;
 	bAttachmentsCameraFocusWaitingForDelay = false;
 	bAttachmentsCameraFocusTransitionActive = false;
 }
@@ -2572,11 +2756,181 @@ UTMMenuViewerMeshTransitionSubsystem::ResolveActiveAttachmentCameraFocusGroup(UW
 	return EAttachmentCameraFocusGroup::None;
 }
 
+bool UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusInstallSignature(
+	UWorld* World,
+	const EAttachmentCameraFocusGroup Group,
+	uint32& OutSignature) const
+{
+	OutSignature = 0;
+	if (!World || Group == EAttachmentCameraFocusGroup::None)
+	{
+		return false;
+	}
+
+	bool bFoundInstalledAttachment = false;
+	const UCameraComponent* CameraComponent = ResolveActiveCameraComponent(World);
+	const FVector CameraLocation = CameraComponent ? CameraComponent->GetComponentLocation() : FVector::ZeroVector;
+	if (AActor* WeaponActor = ResolveAttachmentsPreviewWeaponActor(World, CameraLocation))
+	{
+		bFoundInstalledAttachment |= ReadAttachmentCameraFocusInstallSignatureFromObject(
+			WeaponActor,
+			Group,
+			OutSignature);
+	}
+
+	return bFoundInstalledAttachment && OutSignature != 0;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ReadAttachmentCameraFocusInstallSignatureFromObject(
+	const UObject* Object,
+	const EAttachmentCameraFocusGroup Group,
+	uint32& OutSignature) const
+{
+	if (!IsValid(Object) || Group == EAttachmentCameraFocusGroup::None)
+	{
+		return false;
+	}
+
+	bool bFoundInstalledAttachment = false;
+	for (TFieldIterator<FProperty> It(Object->GetClass()); It; ++It)
+	{
+		const FProperty* Property = *It;
+		if (!Property)
+		{
+			continue;
+		}
+
+		const FString PropertyName = Property->GetName();
+		if (IsCompatibleAttachmentListPropertyName(PropertyName)
+			|| !IsInstalledAttachmentPropertyName(PropertyName))
+		{
+			continue;
+		}
+
+		const FString NormalizedPropertyName = NormalizeAttachmentFocusToken(PropertyName);
+		const bool bActiveAttachmentArray =
+			NormalizedPropertyName.Contains(TEXT("ActiveAttachments"), ESearchCase::IgnoreCase);
+		const bool bGroupSpecificProperty =
+			(Group == EAttachmentCameraFocusGroup::Muzzle
+				&& NormalizedPropertyName.Contains(TEXT("Muzzle"), ESearchCase::IgnoreCase))
+			|| (Group == EAttachmentCameraFocusGroup::Optics
+				&& (NormalizedPropertyName.Contains(TEXT("Optic"), ESearchCase::IgnoreCase)
+					|| NormalizedPropertyName.Contains(TEXT("Sight"), ESearchCase::IgnoreCase)))
+			|| (Group == EAttachmentCameraFocusGroup::SideRail
+				&& NormalizedPropertyName.Contains(TEXT("SideRail"), ESearchCase::IgnoreCase))
+			|| (Group == EAttachmentCameraFocusGroup::Underbarrel
+				&& NormalizedPropertyName.Contains(TEXT("Underbarrel"), ESearchCase::IgnoreCase));
+
+		if (!bActiveAttachmentArray && !bGroupSpecificProperty)
+		{
+			continue;
+		}
+
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
+		TArray<FString> ValueTexts;
+		AppendAttachmentFocusValueTexts(Property, ValuePtr, ValueTexts);
+		for (const FString& ValueText : ValueTexts)
+		{
+			if (IsEmptyAttachmentFocusValue(ValueText))
+			{
+				continue;
+			}
+
+			const EAttachmentCameraFocusGroup ValueGroup = InferAttachmentCameraFocusGroupFromText(ValueText);
+			const bool bObjectValue = CastField<FObjectPropertyBase>(Property) != nullptr;
+			if (ValueGroup == Group || (bGroupSpecificProperty && !bObjectValue))
+			{
+				OutSignature = CombineAttachmentFocusSignature(
+					OutSignature,
+					FString::Printf(TEXT("%s:%s"), *PropertyName, *ValueText));
+				bFoundInstalledAttachment = true;
+			}
+		}
+	}
+
+	return bFoundInstalledAttachment;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusComponentInstallSignature(
+	UWorld* World,
+	const EAttachmentCameraFocusGroup Group,
+	uint32& OutSignature) const
+{
+	if (!World || Group == EAttachmentCameraFocusGroup::None)
+	{
+		return false;
+	}
+
+	const UCameraComponent* CameraComponent = ResolveActiveCameraComponent(World);
+	const FVector CameraLocation = CameraComponent ? CameraComponent->GetComponentLocation() : FVector::ZeroVector;
+	AActor* WeaponActor = ResolveAttachmentsPreviewWeaponActor(World, CameraLocation);
+	if (!IsValid(WeaponActor))
+	{
+		return false;
+	}
+
+	TArray<FName, TInlineAllocator<6>> CandidateSockets;
+	switch (Group)
+	{
+	case EAttachmentCameraFocusGroup::Optics:
+		CandidateSockets.Append({ TEXT("Optics"), TEXT("RearSight"), TEXT("AimTarget"), TEXT("ADS_Eye") });
+		break;
+	case EAttachmentCameraFocusGroup::SideRail:
+		CandidateSockets.Append({ TEXT("AT_Backup"), TEXT("SideRail"), TEXT("Canted"), TEXT("Backup") });
+		break;
+	case EAttachmentCameraFocusGroup::Underbarrel:
+		CandidateSockets.Append({ TEXT("Underbarrel"), TEXT("Foregrip") });
+		break;
+	case EAttachmentCameraFocusGroup::Muzzle:
+		CandidateSockets.Append({ TEXT("Muzzle"), TEXT("MuzzleSilencerco") });
+		break;
+	default:
+		break;
+	}
+
+	bool bFoundInstalledAttachment = false;
+	TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(WeaponActor);
+	for (const UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+	{
+		if (!IsValid(PrimitiveComponent)
+			|| !PrimitiveComponent->IsRegistered()
+			|| !PrimitiveComponent->IsVisible()
+			|| PrimitiveComponent->bHiddenInGame)
+		{
+			continue;
+		}
+
+		const FString AttachSocketName = PrimitiveComponent->GetAttachSocketName().ToString();
+		for (const FName CandidateSocket : CandidateSockets)
+		{
+			if (AttachSocketName.Equals(CandidateSocket.ToString(), ESearchCase::IgnoreCase)
+				|| AttachSocketName.Contains(CandidateSocket.ToString(), ESearchCase::IgnoreCase))
+			{
+				OutSignature = CombineAttachmentFocusSignature(
+					OutSignature,
+					FString::Printf(
+						TEXT("%s:%s"),
+						*PrimitiveComponent->GetPathName(),
+						*AttachSocketName));
+				bFoundInstalledAttachment = true;
+				break;
+			}
+		}
+	}
+
+	return bFoundInstalledAttachment;
+}
+
 UTMMenuViewerMeshTransitionSubsystem::FAttachmentCameraFocusPose
 UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusPose(
 	UWorld* World,
 	const UCameraComponent* CameraComponent,
-	const EAttachmentCameraFocusGroup Group) const
+	const EAttachmentCameraFocusGroup Group,
+	const float AdditionalPitch,
+	const float AdditionalYaw,
+	const float RequestedTargetScreenX,
+	const float RequestedTargetScreenY,
+	const float RequestedDepthScale) const
 {
 	float PanY = 0.0f;
 	float HeightZ = 0.0f;
@@ -2621,8 +2975,8 @@ UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusPose(
 		FMath::Clamp(PanY, -80.0f, 80.0f) * LocationScale,
 		FMath::Clamp(HeightZ, -40.0f, 40.0f) * LocationScale);
 	Pose.RotationOffset = FRotator(
-		FMath::Clamp(Pitch, -6.0f, 6.0f) * RotationScale,
-		FMath::Clamp(Yaw, -8.0f, 8.0f) * RotationScale,
+		FMath::Clamp(Pitch + AdditionalPitch, -35.0f, 35.0f) * RotationScale,
+		FMath::Clamp(Yaw + AdditionalYaw, -45.0f, 45.0f) * RotationScale,
 		0.0f);
 
 	FVector SocketWorldLocation = FVector::ZeroVector;
@@ -2657,14 +3011,15 @@ UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusPose(
 		5.0f,
 		170.0f);
 	const float AspectRatio = FMath::Clamp(ResolveViewportAspectRatio(World), 0.3f, 4.0f);
-	const float HalfHorizontalSize = FMath::Tan(FMath::DegreesToRadians(HorizontalFOV * 0.5f)) * SocketDepth;
+	const float TargetDepth = FMath::Clamp(SocketDepth * RequestedDepthScale, 25.0f, SocketDepth);
+	const float HalfHorizontalSize = FMath::Tan(FMath::DegreesToRadians(HorizontalFOV * 0.5f)) * TargetDepth;
 	const float HalfVerticalSize = HalfHorizontalSize / AspectRatio;
-	const float TargetScreenX = FMath::Clamp(CVarAttachmentsCameraFocusTargetScreenX.GetValueOnGameThread(), 0.1f, 0.9f);
-	const float TargetScreenY = FMath::Clamp(CVarAttachmentsCameraFocusTargetScreenY.GetValueOnGameThread(), 0.1f, 0.9f);
+	const float TargetScreenX = FMath::Clamp(RequestedTargetScreenX, 0.1f, 0.9f);
+	const float TargetScreenY = FMath::Clamp(RequestedTargetScreenY, 0.1f, 0.9f);
 	const float DesiredPlaneY = (TargetScreenX - 0.5f) * 2.0f * HalfHorizontalSize;
 	const float DesiredPlaneZ = (0.5f - TargetScreenY) * 2.0f * HalfVerticalSize;
 	const FVector TargetWorldLocation = SocketWorldLocation
-		- DesiredForward * SocketDepth
+		- DesiredForward * TargetDepth
 		- DesiredRight * DesiredPlaneY
 		- DesiredUp * DesiredPlaneZ;
 	const FVector TargetRelativeLocation = ParentComponent
@@ -2674,13 +3029,15 @@ UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentCameraFocusPose(
 	UE_LOG(
 		LogTMMenuViewerMeshTransition,
 		Display,
-		TEXT("[TMAttachmentsCameraFocus] Socket=%s Screen=%.2f,%.2f Depth=%.1f Aspect=%.2f Loc=%s"),
+		TEXT("[TMAttachmentsCameraFocus] Socket=%s Screen=%.2f,%.2f Depth=%.1f TargetDepth=%.1f Aspect=%.2f Loc=%s Rot=%s"),
 		*DescribeAttachmentCameraFocusGroup(Group),
 		TargetScreenX,
 		TargetScreenY,
 		SocketDepth,
+		TargetDepth,
 		AspectRatio,
-		*Pose.LocationOffset.ToString());
+		*Pose.LocationOffset.ToString(),
+		*Pose.RotationOffset.ToString());
 	return Pose;
 }
 
