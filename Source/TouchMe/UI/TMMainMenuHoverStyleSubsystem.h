@@ -28,14 +28,19 @@ private:
 		FSlateFontInfo NormalFont;
 		FWidgetTransform NormalTransform;
 		FVector2D NormalPivot = FVector2D::ZeroVector;
+		FSlateColor NormalColor;
 		bool bHovered = false;
 	};
 
 	void ApplyMainMenuHoverStyle();
+	void ApplyQuitConfirmationStyle(class UUserWidget* Widget, TSet<TWeakObjectPtr<UTextBlock>>& SeenLabels);
 	static bool IsMainMenuWidget(const class UUserWidget* Widget);
 	static bool IsMainMenuLargeLabel(const FString& Text);
 	static UTextBlock* FindLargeLabelText(class UWidget* RootWidget);
+	static UTextBlock* FindQuitOptionLabelText(class UWidget* RootWidget);
 	void SetLabelHovered(UTextBlock* TextBlock, bool bHovered);
+	void SetQuitOptionHovered(UTextBlock* TextBlock, bool bHovered);
 
 	TMap<TWeakObjectPtr<UTextBlock>, FTrackedLabelStyle> TrackedLabels;
+	TMap<TWeakObjectPtr<UTextBlock>, FTrackedLabelStyle> TrackedQuitOptionLabels;
 };
