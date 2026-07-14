@@ -2,6 +2,7 @@
 
 #include "TMMainMenuSoundtrackSubsystem.h"
 
+#include "Animation/WidgetAnimation.h"
 #include "Blueprint/UserWidget.h"
 #include "Components/AudioComponent.h"
 #include "Components/Widget.h"
@@ -9,6 +10,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
+#include "UObject/ConstructorHelpers.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
@@ -17,6 +19,10 @@ namespace
 	const TCHAR* DefaultMainMenuSoundtrackPath = TEXT("/Game/Sound/MainCulto.MainCulto");
 	const TCHAR* MainMenuSoundtrackAssetName = TEXT("MainCulto");
 	const TCHAR* DefaultLoadoutToggleSoundPath = TEXT("/Game/Battle_Royale_Game/Cues/Collects/Collect_Item_Point_Boost_Simple_Metallic_Beep_Zip_Bass_HIt_2_Deep_Cue.Collect_Item_Point_Boost_Simple_Metallic_Beep_Zip_Bass_HIt_2_Deep_Cue");
+	const TCHAR* IntroExitSoundPath = TEXT("/Game/Battle_Royale_Game/Cues/Open_Doors_Chests/Open_Weapon_Set_Trap_1_Glitch_Mechanical_Metal_Industrial_Buzz_Hiss_Unlock_Cue.Open_Weapon_Set_Trap_1_Glitch_Mechanical_Metal_Industrial_Buzz_Hiss_Unlock_Cue");
+	const FName IntroExitAnimationName(TEXT("Fade_Bars"));
+	constexpr float IntroExitShrinkStartTime = 5.0f;
+	constexpr float IntroExitSoundFadeOutTime = 0.3f;
 	const TCHAR* FirstUserCreatedSoundPaths[] =
 	{
 		TEXT("/Game/Battle_Royale_Game/Cues/Foley/Foley_Consume_Apple_Use_1_Fruit_Health_Wet_Slime_Goo_Crunch_Cue.Foley_Consume_Apple_Use_1_Fruit_Health_Wet_Slime_Goo_Crunch_Cue"),
@@ -54,17 +60,35 @@ namespace
 	}
 }
 
+UTMMainMenuSoundtrackSubsystem::UTMMainMenuSoundtrackSubsystem()
+{
+	static ConstructorHelpers::FObjectFinder<USoundBase> IntroExitSoundFinder(IntroExitSoundPath);
+	if (IntroExitSoundFinder.Succeeded())
+	{
+		IntroExitSound = IntroExitSoundFinder.Object;
+	}
+}
+
 void UTMMainMenuSoundtrackSubsystem::Deinitialize()
 {
 	StopActiveSoundtrack();
 	ActiveWorld.Reset();
 	TimeUntilNextScan = 0.0f;
+	IntroExitAnimationStartWorldTime = 0.0f;
+	IntroExitAnimationLastTime = 0.0f;
 	bStartedInCurrentWorld = false;
 	bPlayedFirstUserCreatedSound = false;
+	bIntroExitAnimationStarted = false;
+	bIntroExitAnimationWasPlaying = false;
+	bIntroWidgetWasInViewport = false;
+	bPlayedIntroExitSound = false;
+	bIntroExitSoundFadeRequested = false;
+	bMissingIntroExitSoundLogged = false;
 	bHasObservedLoadoutVisibility = false;
 	bLastLoadoutVisible = false;
 	bSoundtrackDuckingActive = false;
 	SoundtrackBaseVolumes.Reset();
+	IntroExitSoundComponent = nullptr;
 
 	Super::Deinitialize();
 }
@@ -94,6 +118,8 @@ void UTMMainMenuSoundtrackSubsystem::Tick(const float DeltaTime)
 	{
 		return;
 	}
+
+	TickIntroExitSound(World);
 
 	bool bLoadoutVisible = false;
 	for (TObjectIterator<UUserWidget> WidgetIt; WidgetIt; ++WidgetIt)
@@ -245,6 +271,53 @@ bool UTMMainMenuSoundtrackSubsystem::IsLoadoutWidgetReady(const UUserWidget* Wid
 	return DrawnSize.X > 16.0f && DrawnSize.Y > 16.0f;
 }
 
+bool UTMMainMenuSoundtrackSubsystem::IsIntroWidgetInViewport(const UUserWidget* Widget)
+{
+	if (!Widget || !Widget->GetClass()->GetName().Contains(TEXT("W_Intro")))
+	{
+		return false;
+	}
+
+	return Widget->IsInViewport();
+}
+
+bool UTMMainMenuSoundtrackSubsystem::GetIntroExitAnimationPlaybackTime(
+	const UUserWidget* Widget,
+	float& OutCurrentTime)
+{
+	if (!Widget || !Widget->GetClass()->GetName().Contains(TEXT("W_Intro")))
+	{
+		return false;
+	}
+
+	for (TFieldIterator<FObjectPropertyBase> PropertyIt(Widget->GetClass()); PropertyIt; ++PropertyIt)
+	{
+		const FObjectPropertyBase* ObjectProperty = *PropertyIt;
+		if (!ObjectProperty
+			|| !ObjectProperty->PropertyClass
+			|| !ObjectProperty->PropertyClass->IsChildOf(UWidgetAnimation::StaticClass()))
+		{
+			continue;
+		}
+
+		const FString PropertyName = ObjectProperty->GetName();
+		if (!PropertyName.Equals(IntroExitAnimationName.ToString(), ESearchCase::IgnoreCase)
+			&& !PropertyName.Contains(IntroExitAnimationName.ToString(), ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		const UWidgetAnimation* Animation = Cast<UWidgetAnimation>(ObjectProperty->GetObjectPropertyValue_InContainer(Widget));
+		if (Animation && Widget->IsAnimationPlaying(Animation))
+		{
+			OutCurrentTime = Widget->GetAnimationCurrentTime(Animation);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 USoundBase* UTMMainMenuSoundtrackSubsystem::ResolveMainMenuSoundtrack(const UUserWidget* Widget)
 {
 	static const FName SoundtrackPropertyNames[] =
@@ -302,11 +375,20 @@ void UTMMainMenuSoundtrackSubsystem::ResetForWorld(UWorld* World)
 	StopActiveSoundtrack();
 	ActiveWorld = World;
 	TimeUntilNextScan = 0.0f;
+	IntroExitAnimationStartWorldTime = 0.0f;
+	IntroExitAnimationLastTime = 0.0f;
 	bStartedInCurrentWorld = false;
 	bPlayedFirstUserCreatedSound = false;
+	bIntroExitAnimationStarted = false;
+	bIntroExitAnimationWasPlaying = false;
+	bIntroWidgetWasInViewport = false;
+	bPlayedIntroExitSound = false;
+	bIntroExitSoundFadeRequested = false;
+	bMissingIntroExitSoundLogged = false;
 	bHasObservedLoadoutVisibility = false;
 	bLastLoadoutVisible = false;
 	bSoundtrackDuckingActive = false;
+	IntroExitSoundComponent = nullptr;
 }
 
 void UTMMainMenuSoundtrackSubsystem::StopActiveSoundtrack()
@@ -347,6 +429,123 @@ void UTMMainMenuSoundtrackSubsystem::PlayFirstUserCreatedSound()
 		Display,
 		TEXT("[TMMainMenuSoundtrack] Played first-user-created sound: %s"),
 		*FirstUserCreatedSound->GetName());
+}
+
+void UTMMainMenuSoundtrackSubsystem::TickIntroExitSound(UWorld* World)
+{
+	if (!World || World->GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	bool bIntroExitAnimationPlaying = false;
+	bool bIntroWidgetInViewport = false;
+	bool bMainMenuVisible = false;
+	float IntroExitAnimationCurrentTime = 0.0f;
+	for (TObjectIterator<UUserWidget> WidgetIt; WidgetIt; ++WidgetIt)
+	{
+		const UUserWidget* Widget = *WidgetIt;
+		if (!IsValid(Widget) || Widget->GetWorld() != World)
+		{
+			continue;
+		}
+
+		bIntroWidgetInViewport = bIntroWidgetInViewport || IsIntroWidgetInViewport(Widget);
+
+		float WidgetAnimationTime = 0.0f;
+		if (GetIntroExitAnimationPlaybackTime(Widget, WidgetAnimationTime))
+		{
+			bIntroExitAnimationPlaying = true;
+			IntroExitAnimationCurrentTime = FMath::Max(IntroExitAnimationCurrentTime, WidgetAnimationTime);
+		}
+
+		bMainMenuVisible = bMainMenuVisible || IsMainMenuWidgetReady(Widget);
+		if (bIntroExitAnimationPlaying && bMainMenuVisible)
+		{
+			break;
+		}
+	}
+
+	const bool bIntroWidgetRemovedFromViewport = bIntroWidgetWasInViewport && !bIntroWidgetInViewport;
+	bIntroWidgetWasInViewport = bIntroWidgetWasInViewport || bIntroWidgetInViewport;
+
+	if (!bPlayedIntroExitSound && bIntroExitAnimationPlaying)
+	{
+		if (!bIntroExitAnimationStarted)
+		{
+			bIntroExitAnimationStarted = true;
+			IntroExitAnimationStartWorldTime = World->GetTimeSeconds() - IntroExitAnimationCurrentTime;
+		}
+
+		const float EstimatedAnimationTime = FMath::Max(
+			IntroExitAnimationCurrentTime,
+			World->GetTimeSeconds() - IntroExitAnimationStartWorldTime);
+
+		if (EstimatedAnimationTime >= IntroExitShrinkStartTime
+			&& (!bIntroExitAnimationWasPlaying || IntroExitAnimationLastTime < IntroExitShrinkStartTime))
+		{
+			PlayIntroExitSound(World);
+		}
+
+		IntroExitAnimationLastTime = EstimatedAnimationTime;
+	}
+	else if (!bPlayedIntroExitSound
+		&& bIntroExitAnimationStarted
+		&& IntroExitAnimationLastTime < IntroExitShrinkStartTime
+		&& bMainMenuVisible)
+	{
+		PlayIntroExitSound(World);
+	}
+
+	bIntroExitAnimationWasPlaying = bIntroExitAnimationPlaying;
+
+	if (bIntroWidgetRemovedFromViewport)
+	{
+		FadeOutIntroExitSound();
+	}
+}
+
+void UTMMainMenuSoundtrackSubsystem::PlayIntroExitSound(UWorld* World)
+{
+	if (bPlayedIntroExitSound || !World || World->GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	USoundBase* Sound = IntroExitSound ? IntroExitSound.Get() : LoadObject<USoundBase>(nullptr, IntroExitSoundPath);
+	if (!Sound)
+	{
+		if (!bMissingIntroExitSoundLogged)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMIntroExitSound] Missing intro exit sound: %s"), IntroExitSoundPath);
+			bMissingIntroExitSoundLogged = true;
+		}
+		return;
+	}
+
+	bPlayedIntroExitSound = true;
+	bIntroExitSoundFadeRequested = false;
+	IntroExitSoundComponent = UGameplayStatics::SpawnSound2D(World, Sound);
+	UE_LOG(LogTemp, Display, TEXT("[TMIntroExitSound] Played %s on Fade_Bars shrink."), *Sound->GetName());
+}
+
+void UTMMainMenuSoundtrackSubsystem::FadeOutIntroExitSound()
+{
+	if (bIntroExitSoundFadeRequested)
+	{
+		return;
+	}
+
+	bIntroExitSoundFadeRequested = true;
+	if (IsValid(IntroExitSoundComponent) && IntroExitSoundComponent->IsPlaying())
+	{
+		IntroExitSoundComponent->FadeOut(IntroExitSoundFadeOutTime, 0.0f);
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMIntroExitSound] Fading out intro transition over %.2fs."),
+			IntroExitSoundFadeOutTime);
+	}
 }
 
 void UTMMainMenuSoundtrackSubsystem::PlayLoadoutToggleSound()
