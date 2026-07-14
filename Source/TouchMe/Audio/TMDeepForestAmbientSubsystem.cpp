@@ -11,8 +11,8 @@
 namespace
 {
 	const TCHAR* DeepForestAmbientSoundPath = TEXT("/Game/Audio/Ambient/SFX_AmbientRainforest_Cue.SFX_AmbientRainforest_Cue");
-	constexpr float DeepForestAmbientScanInterval = 0.25f;
-	constexpr float DeepForestAmbientVolume = 0.42f;
+	constexpr float DeepForestAmbientEnsureInterval = 0.25f;
+	constexpr float DeepForestAmbientVolume = 0.75f;
 	constexpr float DeepForestAmbientFadeInSeconds = 3.0f;
 	constexpr float DeepForestAmbientFadeOutSeconds = 1.25f;
 }
@@ -26,12 +26,29 @@ UTMDeepForestAmbientSubsystem::UTMDeepForestAmbientSubsystem()
 	}
 }
 
+void UTMDeepForestAmbientSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+	Super::OnWorldBeginPlay(InWorld);
+
+	bDeepForestWorld = IsDeepForestWorld(&InWorld);
+	TimeUntilNextEnsure = 0.0f;
+	bMissingSoundLogged = false;
+	bCreateComponentFailedLogged = false;
+
+	if (bDeepForestWorld)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[TMDeepForestAmbient] DeepForest BeginPlay matched %s."), *InWorld.GetMapName());
+		StartAmbient(&InWorld);
+	}
+}
+
 void UTMDeepForestAmbientSubsystem::Deinitialize()
 {
 	StopAmbient(true);
-	ActiveWorld.Reset();
-	TimeUntilNextScan = 0.0f;
+	TimeUntilNextEnsure = 0.0f;
+	bDeepForestWorld = false;
 	bMissingSoundLogged = false;
+	bCreateComponentFailedLogged = false;
 
 	Super::Deinitialize();
 }
@@ -39,23 +56,18 @@ void UTMDeepForestAmbientSubsystem::Deinitialize()
 void UTMDeepForestAmbientSubsystem::Tick(const float DeltaTime)
 {
 	UWorld* World = GetWorld();
-	if (!World)
+	if (!bDeepForestWorld || !World)
 	{
 		return;
 	}
 
-	if (ActiveWorld.Get() != World)
-	{
-		ResetForWorld(World);
-	}
-
-	TimeUntilNextScan -= DeltaTime;
-	if (TimeUntilNextScan > 0.0f)
+	TimeUntilNextEnsure -= DeltaTime;
+	if (TimeUntilNextEnsure > 0.0f)
 	{
 		return;
 	}
 
-	TimeUntilNextScan = DeepForestAmbientScanInterval;
+	TimeUntilNextEnsure = DeepForestAmbientEnsureInterval;
 
 	if (!IsDeepForestWorld(World))
 	{
@@ -74,9 +86,14 @@ TStatId UTMDeepForestAmbientSubsystem::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UTMDeepForestAmbientSubsystem, STATGROUP_Tickables);
 }
 
+bool UTMDeepForestAmbientSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
+{
+	return WorldType == EWorldType::Game || WorldType == EWorldType::PIE || WorldType == EWorldType::GamePreview;
+}
+
 bool UTMDeepForestAmbientSubsystem::IsTickable() const
 {
-	return !HasAnyFlags(RF_ClassDefaultObject);
+	return !HasAnyFlags(RF_ClassDefaultObject | RF_BeginDestroyed) && bDeepForestWorld;
 }
 
 bool UTMDeepForestAmbientSubsystem::IsDeepForestWorld(const UWorld* World)
@@ -108,13 +125,6 @@ USoundBase* UTMDeepForestAmbientSubsystem::ResolveDeepForestAmbientSound() const
 	return LoadObject<USoundBase>(nullptr, DeepForestAmbientSoundPath);
 }
 
-void UTMDeepForestAmbientSubsystem::ResetForWorld(UWorld* World)
-{
-	StopAmbient(true);
-	ActiveWorld = World;
-	TimeUntilNextScan = 0.0f;
-}
-
 void UTMDeepForestAmbientSubsystem::StartAmbient(UWorld* World)
 {
 	if (!World || World->GetNetMode() == NM_DedicatedServer)
@@ -138,7 +148,7 @@ void UTMDeepForestAmbientSubsystem::StartAmbient(UWorld* World)
 	AmbientComponent = UGameplayStatics::CreateSound2D(
 		World,
 		AmbientSound,
-		DeepForestAmbientVolume,
+		1.0f,
 		1.0f,
 		0.0f,
 		nullptr,
@@ -147,12 +157,17 @@ void UTMDeepForestAmbientSubsystem::StartAmbient(UWorld* World)
 
 	if (!AmbientComponent)
 	{
+		if (!bCreateComponentFailedLogged)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMDeepForestAmbient] Could not create ambient audio component for %s."), *AmbientSound->GetName());
+			bCreateComponentFailedLogged = true;
+		}
 		return;
 	}
 
 	AmbientComponent->bIsUISound = false;
 	AmbientComponent->bStopWhenOwnerDestroyed = false;
-	AmbientComponent->FadeIn(DeepForestAmbientFadeInSeconds, 1.0f);
+	AmbientComponent->FadeIn(DeepForestAmbientFadeInSeconds, DeepForestAmbientVolume);
 
 	UE_LOG(
 		LogTemp,
