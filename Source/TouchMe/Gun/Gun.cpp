@@ -41,7 +41,7 @@ namespace
 	const TCHAR* AcogGlassMaterialPath = TEXT("/Game/NoDualRenderScope/Scope_Mat_Function/NewMaterials/M_Scope_Glass_Acog.M_Scope_Glass_Acog");
 	const TCHAR* AcogMaterialParameterCollectionPath = TEXT("/Game/Fps/Weapons/Camera/MPC_FP.MPC_FP");
 	const TCHAR* OpticsTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Optics.DT_Optics");
-	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/NiagaraExamples/FX_Sparks/NS_Spark_Burst.NS_Spark_Burst");
+	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/BallisticsVFX/Particles/Impacts/LegacyFX/Small-Medium-Large/Paper/NS_Paper_impact_small.NS_Paper_impact_small");
 	const TCHAR* AdditionalAttachmentSmokeFXPath = TEXT("/Game/Realistic_Starter_VFX_Pack_Vol2/Particles/Smoke/P_Smoke_F.P_Smoke_F");
 	const TCHAR* DefaultAttachmentFeedbackSoundPath = nullptr;
 	const TCHAR* DefaultWeaponSpawnFeedbackFXPath = TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Dust_Dark.P_Dust_Dark");
