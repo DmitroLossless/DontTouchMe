@@ -8,9 +8,31 @@
 
 class UAnimInstance;
 class UAnimMontage;
+class UMaterialInterface;
+class USkeletalMesh;
+class USkeletalMeshComponent;
 class USoundClass;
 class USoundMix;
 class AGun;
+class FLifetimeProperty;
+
+USTRUCT(BlueprintType)
+struct FTMCharacterSkinPreset
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Skin")
+	FName SkinId = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Skin")
+	TSoftObjectPtr<USkeletalMesh> MainMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Skin")
+	TSoftObjectPtr<USkeletalMesh> SecondaryMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Skin")
+	TSoftObjectPtr<UMaterialInterface> MainMaterial;
+};
 
 UCLASS(Blueprintable)
 class TOUCHME_API ATMCharacter : public ACharacter
@@ -26,6 +48,8 @@ public:
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void UnPossessed() override;
 	virtual void OnRep_Controller() override;
+	virtual void OnRep_PlayerState() override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void ProcessEvent(UFunction* Function, void* Parameters) override;
 
 	UFUNCTION(BlueprintPure, Category = "TouchMe|ADS")
@@ -39,6 +63,27 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "TouchMe|Combat")
 	void Shoot();
+
+	UFUNCTION(BlueprintCallable, Category = "TouchMe|Skin")
+	void ServerSetCharacterSkinId(FName SkinId);
+
+	UFUNCTION(BlueprintCallable, Category = "TouchMe|Skin")
+	bool ApplyCharacterSkinById(FName SkinId);
+
+	UFUNCTION(BlueprintCallable, Category = "TouchMe|Skin")
+	void ApplyCharacterSkinFromPlayerState();
+
+	UFUNCTION(BlueprintPure, Category = "TouchMe|Skin")
+	FName ResolveCharacterSkinId(FName RequestedSkinId) const;
+
+	UFUNCTION(BlueprintPure, Category = "TouchMe|Skin")
+	FName GetAppliedCharacterSkinId() const { return AppliedCharacterSkinId; }
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "TouchMe|Skin")
+	TArray<FTMCharacterSkinPreset> AvailableCharacterSkinPresets;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "TouchMe|Skin")
+	FName DefaultCharacterSkinId = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TouchMe|Combat", meta = (ClampMin = "0.0", UIMin = "0.0", Units = "m"))
 	float ShootTraceDistanceMeters = 100.f;
@@ -80,9 +125,25 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "TouchMe|Character")
 	bool bIsLocalPlayerControlled = false;
 
+	UPROPERTY(ReplicatedUsing = OnRep_AppliedCharacterSkinId, BlueprintReadOnly, Category = "TouchMe|Skin")
+	FName AppliedCharacterSkinId = NAME_None;
+
 	void UpdateLocalPlayerControlledFlag();
 
 private:
+	UFUNCTION(Server, Reliable)
+	void ServerSetCharacterSkinIdInternal(FName SkinId);
+
+	UFUNCTION()
+	void OnRep_AppliedCharacterSkinId(FName PreviousSkinId);
+
+	const FTMCharacterSkinPreset* FindCharacterSkinPreset(FName SkinId) const;
+	bool SetAppliedCharacterSkinId(FName SkinId);
+	void ApplyCharacterSkinPreset(const FTMCharacterSkinPreset& Preset);
+	USkeletalMeshComponent* ResolveSecondarySkinMeshComponent() const;
+	void HideRuntimeHelperComponents();
+	void UpdateLocalViewMeshVisibility();
+
 	UFUNCTION()
 	void OnRuntimeTraceMontageStarted(UAnimMontage* Montage);
 

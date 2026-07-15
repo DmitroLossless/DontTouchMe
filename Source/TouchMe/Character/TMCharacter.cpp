@@ -8,6 +8,7 @@
 #include "AudioDevice.h"
 #include "AudioThread.h"
 #include "Camera/CameraComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
@@ -35,9 +36,11 @@
 #include "Sound/SoundClass.h"
 #include "Sound/SoundMix.h"
 #include "Sound/SoundBase.h"
+#include "Net/UnrealNetwork.h"
 #include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
 #include "../Gun/Gun.h"
+#include "../Player/TMPlayerState.h"
 #include "../TMGameplayStatics.h"
 #include "../TouchMe.h"
 
@@ -89,6 +92,9 @@ namespace
 		TEXT("/Game/Battle_Royale_Game/Cues/Collects/Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_2_Cue.Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_2_Cue")
 	};
 	const FName TMMPCameraFPSocketName(TEXT("Camera_FP"));
+	const FName TMItemReleaseComponentName(TEXT("ItemRelease"));
+	const FString TMCameraProxyMeshComponentPrefix(TEXT("CameraProxyMeshComponent"));
+	const FString TMDrawFrustumComponentPrefix(TEXT("DrawFrustumComponent"));
 
 	static TAutoConsoleVariable<float> CVarTMViewmodelLowerCm(
 		TEXT("tm.ViewmodelLowerCm"),
@@ -4039,13 +4045,13 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		TEXT("tm.DebugLocalHandsScale"),
 		TEXT("tm.DebugLocalHandsScale [0|1] [Scale]. Runtime debug: scale local character forearm descendants and Weapon bone."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&TMConsoleDebugLocalHandsScale));
-
 }
 
 ATMCharacter::ATMCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
+	bReplicates = true;
 
 	AudioMuffleSoundClasses.Add(TSoftObjectPtr<USoundClass>(FSoftObjectPath(TMProjectMasterSoundClassPath)));
 	AudioMuffleSoundClasses.Add(TSoftObjectPtr<USoundClass>(FSoftObjectPath(TMEngineMasterSoundClassPath)));
@@ -4067,6 +4073,251 @@ void ATMCharacter::Shoot()
 			*TMObjectName(this),
 			*TMDescribeActiveWeaponState(this));
 	}
+}
+
+void ATMCharacter::ServerSetCharacterSkinId(FName SkinId)
+{
+	if (HasAuthority())
+	{
+		if (ATMPlayerState* TMPlayerState = GetPlayerState<ATMPlayerState>())
+		{
+			TMPlayerState->SetSelectedCharacterSkinIdFromServer(SkinId, true);
+		}
+		else
+		{
+			SetAppliedCharacterSkinId(SkinId);
+		}
+		return;
+	}
+
+	ServerSetCharacterSkinIdInternal(SkinId);
+}
+
+void ATMCharacter::ServerSetCharacterSkinIdInternal_Implementation(FName SkinId)
+{
+	ServerSetCharacterSkinId(SkinId);
+}
+
+bool ATMCharacter::ApplyCharacterSkinById(FName SkinId)
+{
+	const FName ResolvedSkinId = ResolveCharacterSkinId(SkinId);
+	const FTMCharacterSkinPreset* Preset = FindCharacterSkinPreset(ResolvedSkinId);
+	if (!Preset)
+	{
+		return false;
+	}
+
+	ApplyCharacterSkinPreset(*Preset);
+	return true;
+}
+
+void ATMCharacter::ApplyCharacterSkinFromPlayerState()
+{
+	FName RequestedSkinId = NAME_None;
+	ATMPlayerState* TMPlayerState = GetPlayerState<ATMPlayerState>();
+	if (TMPlayerState)
+	{
+		RequestedSkinId = TMPlayerState->GetSelectedCharacterSkinId();
+	}
+
+	const FName ResolvedSkinId = ResolveCharacterSkinId(RequestedSkinId);
+	if (HasAuthority())
+	{
+		if (TMPlayerState && TMPlayerState->GetSelectedCharacterSkinId() != ResolvedSkinId)
+		{
+			TMPlayerState->SetSelectedCharacterSkinIdFromServer(ResolvedSkinId, false);
+		}
+
+		SetAppliedCharacterSkinId(ResolvedSkinId);
+		return;
+	}
+
+	ApplyCharacterSkinById(AppliedCharacterSkinId.IsNone() ? ResolvedSkinId : AppliedCharacterSkinId);
+}
+
+FName ATMCharacter::ResolveCharacterSkinId(FName RequestedSkinId) const
+{
+	if (AvailableCharacterSkinPresets.IsEmpty())
+	{
+		return NAME_None;
+	}
+
+	if (!RequestedSkinId.IsNone() && FindCharacterSkinPreset(RequestedSkinId))
+	{
+		return RequestedSkinId;
+	}
+
+	if (!DefaultCharacterSkinId.IsNone() && FindCharacterSkinPreset(DefaultCharacterSkinId))
+	{
+		return DefaultCharacterSkinId;
+	}
+
+	return AvailableCharacterSkinPresets[0].SkinId;
+}
+
+const FTMCharacterSkinPreset* ATMCharacter::FindCharacterSkinPreset(FName SkinId) const
+{
+	if (SkinId.IsNone())
+	{
+		return nullptr;
+	}
+
+	return AvailableCharacterSkinPresets.FindByPredicate([SkinId](const FTMCharacterSkinPreset& Preset)
+	{
+		return Preset.SkinId == SkinId;
+	});
+}
+
+bool ATMCharacter::SetAppliedCharacterSkinId(FName SkinId)
+{
+	const FName ResolvedSkinId = ResolveCharacterSkinId(SkinId);
+	if (ResolvedSkinId.IsNone())
+	{
+		return false;
+	}
+
+	const bool bChanged = AppliedCharacterSkinId != ResolvedSkinId;
+	AppliedCharacterSkinId = ResolvedSkinId;
+	ApplyCharacterSkinById(AppliedCharacterSkinId);
+
+	if (bChanged)
+	{
+		ForceNetUpdate();
+	}
+
+	return true;
+}
+
+void ATMCharacter::OnRep_AppliedCharacterSkinId(FName PreviousSkinId)
+{
+	if (AppliedCharacterSkinId != PreviousSkinId)
+	{
+		ApplyCharacterSkinById(AppliedCharacterSkinId);
+	}
+}
+
+void ATMCharacter::ApplyCharacterSkinPreset(const FTMCharacterSkinPreset& Preset)
+{
+	USkeletalMeshComponent* MainMeshComponent = GetMesh();
+	if (!MainMeshComponent)
+	{
+		return;
+	}
+
+	if (USkeletalMesh* MainMesh = Preset.MainMesh.LoadSynchronous())
+	{
+		if (MainMeshComponent->GetSkeletalMeshAsset() != MainMesh)
+		{
+			MainMeshComponent->SetSkeletalMeshAsset(MainMesh);
+		}
+	}
+
+	if (UMaterialInterface* MainMaterial = Preset.MainMaterial.LoadSynchronous())
+	{
+		MainMeshComponent->SetMaterial(0, MainMaterial);
+	}
+
+	USkeletalMeshComponent* SecondaryMeshComponent = ResolveSecondarySkinMeshComponent();
+	USkeletalMesh* SecondaryMesh = Preset.SecondaryMesh.LoadSynchronous();
+	if (SecondaryMeshComponent && SecondaryMesh)
+	{
+		if (SecondaryMeshComponent->GetSkeletalMeshAsset() != SecondaryMesh)
+		{
+			SecondaryMeshComponent->SetSkeletalMeshAsset(SecondaryMesh);
+		}
+
+		SecondaryMeshComponent->SetLeaderPoseComponent(MainMeshComponent, true);
+		SecondaryMeshComponent->SetHiddenInGame(false, true);
+		SecondaryMeshComponent->SetVisibility(true, true);
+		SecondaryMeshComponent->SetComponentTickEnabled(true);
+		SecondaryMeshComponent->MarkRenderStateDirty();
+	}
+
+	MainMeshComponent->SetHiddenInGame(false, true);
+	MainMeshComponent->SetVisibility(true, true);
+	MainMeshComponent->MarkRenderStateDirty();
+}
+
+USkeletalMeshComponent* ATMCharacter::ResolveSecondarySkinMeshComponent() const
+{
+	USkeletalMeshComponent* MainMeshComponent = GetMesh();
+	TInlineComponentArray<USkeletalMeshComponent*> MeshComponents(this);
+
+	for (USkeletalMeshComponent* MeshComponent : MeshComponents)
+	{
+		if (!MeshComponent || MeshComponent == MainMeshComponent)
+		{
+			continue;
+		}
+
+		if (MeshComponent->GetFName() == TEXT("SecondaryMesh")
+			|| MeshComponent->GetName().Contains(TEXT("Secondary"), ESearchCase::IgnoreCase))
+		{
+			return MeshComponent;
+		}
+	}
+
+	for (USkeletalMeshComponent* MeshComponent : MeshComponents)
+	{
+		if (MeshComponent && MeshComponent != MainMeshComponent && MeshComponent->LeaderPoseComponent.Get() == MainMeshComponent)
+		{
+			return MeshComponent;
+		}
+	}
+
+	for (USkeletalMeshComponent* MeshComponent : MeshComponents)
+	{
+		if (MeshComponent && MeshComponent != MainMeshComponent)
+		{
+			return MeshComponent;
+		}
+	}
+
+	return nullptr;
+}
+
+void ATMCharacter::HideRuntimeHelperComponents()
+{
+	TArray<UPrimitiveComponent*> PrimitiveComponents;
+	GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+
+	for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+	{
+		if (!PrimitiveComponent)
+		{
+			continue;
+		}
+
+		const FName ComponentName = PrimitiveComponent->GetFName();
+		const FString ComponentNameString = ComponentName.ToString();
+		const FString ComponentClassName = PrimitiveComponent->GetClass()->GetName();
+		const bool bIsRuntimeHelper =
+			ComponentName == TMItemReleaseComponentName
+			|| ComponentNameString.StartsWith(TMCameraProxyMeshComponentPrefix)
+			|| ComponentNameString.StartsWith(TMDrawFrustumComponentPrefix)
+			|| ComponentClassName == TMCameraProxyMeshComponentPrefix
+			|| ComponentClassName == TMDrawFrustumComponentPrefix;
+		if (!bIsRuntimeHelper)
+		{
+			continue;
+		}
+
+		PrimitiveComponent->SetHiddenInGame(true, true);
+		PrimitiveComponent->SetVisibility(false, true);
+		PrimitiveComponent->MarkRenderStateDirty();
+	}
+}
+
+void ATMCharacter::UpdateLocalViewMeshVisibility()
+{
+	USkeletalMeshComponent* MainMeshComponent = GetMesh();
+	if (!MainMeshComponent)
+	{
+		return;
+	}
+
+	MainMeshComponent->SetOwnerNoSee(bIsLocalPlayerControlled);
+	MainMeshComponent->MarkRenderStateDirty();
 }
 
 bool ATMCharacter::GetActiveWeaponADSSocketWorldTransform(FTransform& OutTransform) const
@@ -4102,6 +4353,9 @@ void ATMCharacter::BeginPlay()
 
 	TMEnsureMPCameraBoomAttachment(this);
 	UpdateLocalPlayerControlledFlag();
+	ApplyCharacterSkinFromPlayerState();
+	UpdateLocalViewMeshVisibility();
+	HideRuntimeHelperComponents();
 	if (IsTouchMeRuntimeTraceEnabled())
 	{
 		BindRuntimeTraceAnimDelegates();
@@ -4159,6 +4413,9 @@ void ATMCharacter::PossessedBy(AController* NewController)
 	Super::PossessedBy(NewController);
 
 	UpdateLocalPlayerControlledFlag();
+	ApplyCharacterSkinFromPlayerState();
+	UpdateLocalViewMeshVisibility();
+	HideRuntimeHelperComponents();
 }
 
 void ATMCharacter::UnPossessed()
@@ -4166,6 +4423,7 @@ void ATMCharacter::UnPossessed()
 	Super::UnPossessed();
 
 	UpdateLocalPlayerControlledFlag();
+	UpdateLocalViewMeshVisibility();
 }
 
 void ATMCharacter::OnRep_Controller()
@@ -4173,10 +4431,27 @@ void ATMCharacter::OnRep_Controller()
 	Super::OnRep_Controller();
 
 	UpdateLocalPlayerControlledFlag();
+	UpdateLocalViewMeshVisibility();
 	if (IsTouchMeRuntimeTraceEnabled())
 	{
 		BindRuntimeTraceAnimDelegates();
 	}
+}
+
+void ATMCharacter::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+
+	ApplyCharacterSkinFromPlayerState();
+	UpdateLocalViewMeshVisibility();
+	HideRuntimeHelperComponents();
+}
+
+void ATMCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ATMCharacter, AppliedCharacterSkinId);
 }
 
 void ATMCharacter::ProcessEvent(UFunction* Function, void* Parameters)
