@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Components/SlateWrapperTypes.h"
 #include "Engine/Scene.h"
 #include "Styling/SlateColor.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -8,11 +9,15 @@
 
 class AActor;
 class APlayerCameraManager;
+class UButton;
 class UCameraComponent;
+class UImage;
 class ULightComponent;
 class UMaterialInterface;
+class UOverlay;
 class UParticleSystemComponent;
 class UPrimitiveComponent;
+class UScaleBox;
 class USkeletalMesh;
 class USkeletalMeshComponent;
 class UTextBlock;
@@ -105,6 +110,18 @@ private:
 		FSlateColor OriginalColorAndOpacity;
 	};
 
+	struct FBlazeAttachmentIconStyle
+	{
+		TWeakObjectPtr<UButton> Button;
+		TWeakObjectPtr<UTextBlock> Label;
+		TWeakObjectPtr<UOverlay> Overlay;
+		TWeakObjectPtr<UScaleBox> IconScaleBox;
+		TWeakObjectPtr<UImage> IconImage;
+		TWeakObjectPtr<UImage> FrameImage;
+		ESlateVisibility OriginalLabelVisibility = ESlateVisibility::Visible;
+		float OriginalLabelRenderOpacity = 1.0f;
+	};
+
 	void TrackMenuViewer(AActor* Actor, float DeltaTime, bool bLoadoutPreviewVisible);
 	void NoteMeshChanged(const FMenuViewerState& State, USkeletalMeshComponent* VestComponent, USkeletalMesh* PreviousMesh) const;
 	void CaptureStableState(FMenuViewerState& State, USkeletalMeshComponent* VestComponent);
@@ -160,6 +177,9 @@ private:
 	void RestoreMainMenuCameraDrift();
 	void UpdateAttachmentSelectionHighlight(UWorld* World, bool bAttachmentsVisible);
 	void RestoreAttachmentSelectionHighlight();
+	void UpdateBlazeAttachmentIcon(UTextBlock* TextBlock, bool bSelected);
+	void RestoreBlazeAttachmentIconStyle(UTextBlock* TextBlock);
+	void RestoreBlazeAttachmentIconStyles();
 	void UpdateWeaponSelectionHighlight(UWorld* World, bool bLoadoutVisible);
 	void RestoreWeaponSelectionHighlight();
 	void UpdateAttachmentsCameraFocus(UWorld* World, bool bAttachmentsVisible, float DeltaTime, UCameraComponent* CameraComponent);
@@ -210,6 +230,7 @@ private:
 	TMap<TWeakObjectPtr<ULightComponent>, FBackGlowLightState> MainMenuBackGlowLightStates;
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> MainMenuBackGlowVisualStates;
 	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> AttachmentSelectionLabelStyles;
+	TMap<TWeakObjectPtr<UTextBlock>, FBlazeAttachmentIconStyle> BlazeAttachmentIconStyles;
 	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> WeaponSelectionLabelStyles;
 	TWeakObjectPtr<UCameraComponent> MainMenuCameraDriftCamera;
 	FPostProcessSettings SavedLoadoutPostProcessSettings;

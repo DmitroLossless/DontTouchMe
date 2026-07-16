@@ -10,6 +10,6 @@ public class TouchMeEditorTarget : TargetRules
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.V6;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_7;
-		ExtraModuleNames.Add("TouchMe");
+		ExtraModuleNames.AddRange(new string[] { "TouchMe", "TouchMeEditor" });
 	}
 }

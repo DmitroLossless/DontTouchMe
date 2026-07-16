@@ -4,12 +4,17 @@
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/ActorComponent.h"
+#include "Components/Button.h"
 #include "Components/ContentWidget.h"
+#include "Components/Image.h"
 #include "Components/LightComponent.h"
 #include "Components/LocalLightComponent.h"
+#include "Components/Overlay.h"
+#include "Components/OverlaySlot.h"
 #include "Components/PanelWidget.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/RectLightComponent.h"
+#include "Components/ScaleBox.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -18,6 +23,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Gun/Gun.h"
@@ -64,6 +70,7 @@ static TAutoConsoleVariable<int32> CVarMenuViewerMeshTransitionBeatSyncDownbeat(
 	1,
 	TEXT("When beat sync is enabled, use downbeats instead of every beat for menu body mesh changes."),
 	ECVF_Default);
+
 
 static TAutoConsoleVariable<float> CVarMenuViewerMeshTransitionBeatSyncWindow(
 	TEXT("tm.MenuViewerMeshTransition.BeatSyncWindow"),
@@ -548,6 +555,113 @@ const FLinearColor& AttachmentSelectionHighlightColor()
 	return Color;
 }
 
+const FLinearColor& BlazeAttachmentSelectionFrameColor()
+{
+	static const FLinearColor Color = FLinearColor::FromSRGBColor(FColor(255, 212, 32, 255));
+	return Color;
+}
+
+const FVector2D& BlazeAttachmentIconSize()
+{
+	static const FVector2D Size(512.0f, 128.0f);
+	return Size;
+}
+
+bool IsBlazeAttachmentSelectionText(const FString& Text)
+{
+	const FString Normalized = NormalizeAttachmentFocusToken(Text);
+	return Normalized.Equals(TEXT("Blaze"), ESearchCase::IgnoreCase)
+		|| Normalized.Equals(TEXT("OpticsBlaze"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("Blaze"), ESearchCase::IgnoreCase);
+}
+
+bool IsBlazeAttachmentToken(const FString& Token)
+{
+	const FString Normalized = NormalizeAttachmentFocusToken(Token);
+	return Normalized.Contains(TEXT("Blaze"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("HolographicSight"), ESearchCase::IgnoreCase)
+		|| Normalized.Contains(TEXT("SMHolographicSight"), ESearchCase::IgnoreCase);
+}
+
+UButton* FindOwningButton(UWidget* Widget)
+{
+	UWidget* Current = Widget;
+	for (int32 Depth = 0; Current && Depth < 8; ++Depth)
+	{
+		if (UButton* Button = Cast<UButton>(Current))
+		{
+			return Button;
+		}
+
+		if (UPanelWidget* Parent = Current->GetParent())
+		{
+			Current = Parent;
+			continue;
+		}
+
+		break;
+	}
+
+	return nullptr;
+}
+
+UTexture2D* LoadGeneratedBlazeAttachmentIcon()
+{
+	static TWeakObjectPtr<UTexture2D> CachedRealIcon;
+
+	if (!CachedRealIcon.IsValid())
+	{
+		CachedRealIcon = LoadObject<UTexture2D>(
+			nullptr,
+			TEXT("/Game/UI/Generated/Icons/T_SM_Holographic_Sight_Icon.T_SM_Holographic_Sight_Icon"));
+	}
+	return CachedRealIcon.Get();
+}
+
+float BlazeAttachmentHoverScale(const bool bHovered)
+{
+	return bHovered ? 1.07f : 1.0f;
+}
+
+UTexture2D* LoadSlateWhiteSquareTexture()
+{
+	static TWeakObjectPtr<UTexture2D> CachedTexture;
+	if (!CachedTexture.IsValid())
+	{
+		CachedTexture = LoadObject<UTexture2D>(
+			nullptr,
+			TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
+	}
+	return CachedTexture.Get();
+}
+
+FSlateBrush MakeBlazeAttachmentIconBrush(UTexture2D* Texture)
+{
+	FSlateBrush Brush;
+	Brush.DrawAs = Texture ? ESlateBrushDrawType::Image : ESlateBrushDrawType::NoDrawType;
+	Brush.ImageSize = BlazeAttachmentIconSize();
+	Brush.TintColor = FSlateColor(FLinearColor::White);
+	if (Texture)
+	{
+		Brush.SetResourceObject(Texture);
+	}
+	return Brush;
+}
+
+FSlateBrush MakeBlazeAttachmentFrameBrush(const bool bVisible)
+{
+	FSlateBrush Brush;
+	Brush.DrawAs = bVisible ? ESlateBrushDrawType::Border : ESlateBrushDrawType::NoDrawType;
+	Brush.ImageSize = BlazeAttachmentIconSize();
+	Brush.Margin = FMargin(0.004f, 0.016f);
+	Brush.TintColor = FSlateColor(bVisible ? BlazeAttachmentSelectionFrameColor() : FLinearColor::Transparent);
+	if (bVisible)
+	{
+		Brush.SetResourceObject(LoadSlateWhiteSquareTexture());
+	}
+	return Brush;
+}
+
 bool IsGenericAttachmentHighlightToken(const FString& NormalizedToken)
 {
 	if (NormalizedToken.Len() < 3)
@@ -678,6 +792,25 @@ int32 ScoreAttachmentSelectionTextAgainstTokens(const FString& Text, const TSet<
 	return IsAttachmentSelectionOptionText(Text)
 		? ScoreSelectionTextAgainstTokens(Text, Tokens)
 		: INDEX_NONE;
+}
+
+int32 ScoreAttachmentSelectionTextAgainstTokensWithBlazeAlias(const FString& Text, const TSet<FString>& Tokens)
+{
+	int32 Score = ScoreAttachmentSelectionTextAgainstTokens(Text, Tokens);
+	if (!IsBlazeAttachmentSelectionText(Text))
+	{
+		return Score;
+	}
+
+	for (const FString& Token : Tokens)
+	{
+		if (IsBlazeAttachmentToken(Token))
+		{
+			Score = FMath::Max(Score, 90000);
+		}
+	}
+
+	return Score;
 }
 
 bool IsInstalledAttachmentPropertyName(const FString& PropertyName)
@@ -996,6 +1129,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAutoCycle(
 	if (State.AutoCycleElapsedSeconds < GetAutoCycleInterval())
 	{
 		UpdateRhythmPulseMemory(State, BeatSync);
+
 		return;
 	}
 
@@ -1629,6 +1763,7 @@ bool UTMMenuViewerMeshTransitionSubsystem::ShouldUseDownbeat()
 	return CVarMenuViewerMeshTransitionBeatSyncDownbeat.GetValueOnGameThread() != 0;
 }
 
+
 float UTMMenuViewerMeshTransitionSubsystem::GetAutoCycleInterval()
 {
 	return FMath::Max(1.f, CVarMenuViewerMeshTransitionAutoCycleInterval.GetValueOnGameThread());
@@ -1643,6 +1778,7 @@ float UTMMenuViewerMeshTransitionSubsystem::GetBeatSyncPulseThreshold()
 {
 	return FMath::Max(0.01f, CVarMenuViewerMeshTransitionBeatSyncPulseThreshold.GetValueOnGameThread());
 }
+
 
 UTMMenuViewerMeshTransitionSubsystem::FBeatSyncSnapshot UTMMenuViewerMeshTransitionSubsystem::MakeBeatSyncSnapshot(
 	const UTMAudioEnvelopeFollower* Follower)
@@ -1661,6 +1797,7 @@ UTMMenuViewerMeshTransitionSubsystem::FBeatSyncSnapshot UTMMenuViewerMeshTransit
 	Snapshot.NormalizedEnvelopeValue = Follower->NormalizedEnvelopeValue;
 	return Snapshot;
 }
+
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutFOV(UWorld* World, const bool bLoadoutVisible)
 {
@@ -3014,7 +3151,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 					StoredStyle = &AttachmentSelectionLabelStyles.Add(TextBlock, NewStyle);
 				}
 
-				const int32 Score = ScoreAttachmentSelectionTextAgainstTokens(TextBlock->GetText().ToString(), HighlightTokens);
+				const int32 Score = ScoreAttachmentSelectionTextAgainstTokensWithBlazeAlias(TextBlock->GetText().ToString(), HighlightTokens);
 				if (Score > BestScore)
 				{
 					BestScore = Score;
@@ -3034,6 +3171,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 				TextBlock->SetColorAndOpacity(bHighlighted
 					? FSlateColor(AttachmentSelectionHighlightColor())
 					: StoredStyle->OriginalColorAndOpacity);
+				UpdateBlazeAttachmentIcon(TextBlock, bHighlighted);
 			}
 		}
 	}
@@ -3053,6 +3191,174 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 			It.RemoveCurrent();
 		}
 	}
+
+	TArray<UTextBlock*> BlazeLabelsToRestore;
+	for (auto It = BlazeAttachmentIconStyles.CreateIterator(); It; ++It)
+	{
+		UTextBlock* TextBlock = It.Key().Get();
+		if (!IsValid(TextBlock))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+
+		if (!SeenLabels.Contains(TextBlock))
+		{
+			BlazeLabelsToRestore.Add(TextBlock);
+		}
+	}
+
+	for (UTextBlock* TextBlock : BlazeLabelsToRestore)
+	{
+		RestoreBlazeAttachmentIconStyle(TextBlock);
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateBlazeAttachmentIcon(UTextBlock* TextBlock, const bool bSelected)
+{
+	if (!IsValid(TextBlock) || !IsBlazeAttachmentSelectionText(TextBlock->GetText().ToString()))
+	{
+		return;
+	}
+
+	UTexture2D* RealIcon = LoadGeneratedBlazeAttachmentIcon();
+	if (!RealIcon)
+	{
+		return;
+	}
+
+	FBlazeAttachmentIconStyle* StoredStyle = BlazeAttachmentIconStyles.Find(TextBlock);
+	if (!StoredStyle)
+	{
+		UButton* Button = FindOwningButton(TextBlock);
+		if (!IsValid(Button))
+		{
+			return;
+		}
+
+		UOverlay* Overlay = NewObject<UOverlay>(Button);
+		UScaleBox* IconScaleBox = NewObject<UScaleBox>(Overlay);
+		UImage* IconImage = NewObject<UImage>(IconScaleBox);
+		UImage* FrameImage = NewObject<UImage>(Overlay);
+		if (!Overlay || !IconScaleBox || !IconImage || !FrameImage)
+		{
+			return;
+		}
+
+		Overlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+		Overlay->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
+		IconScaleBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		IconScaleBox->SetStretch(EStretch::ScaleToFit);
+		IconScaleBox->SetStretchDirection(EStretchDirection::Both);
+		IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+		IconImage->SetDesiredSizeOverride(BlazeAttachmentIconSize());
+		FrameImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+
+		StoredStyle = &BlazeAttachmentIconStyles.Add(TextBlock);
+		StoredStyle->Button = Button;
+		StoredStyle->Label = TextBlock;
+		StoredStyle->Overlay = Overlay;
+		StoredStyle->IconScaleBox = IconScaleBox;
+		StoredStyle->IconImage = IconImage;
+		StoredStyle->FrameImage = FrameImage;
+		StoredStyle->OriginalLabelVisibility = TextBlock->GetVisibility();
+		StoredStyle->OriginalLabelRenderOpacity = TextBlock->GetRenderOpacity();
+
+		IconScaleBox->SetContent(IconImage);
+		if (UOverlaySlot* IconSlot = Overlay->AddChildToOverlay(IconScaleBox))
+		{
+			IconSlot->SetHorizontalAlignment(HAlign_Fill);
+			IconSlot->SetVerticalAlignment(VAlign_Fill);
+		}
+
+		if (UOverlaySlot* FrameSlot = Overlay->AddChildToOverlay(FrameImage))
+		{
+			FrameSlot->SetHorizontalAlignment(HAlign_Fill);
+			FrameSlot->SetVerticalAlignment(VAlign_Fill);
+		}
+
+		TextBlock->SetRenderOpacity(0.0f);
+		TextBlock->SetVisibility(ESlateVisibility::HitTestInvisible);
+		if (UOverlaySlot* LabelSlot = Overlay->AddChildToOverlay(TextBlock))
+		{
+			LabelSlot->SetHorizontalAlignment(HAlign_Center);
+			LabelSlot->SetVerticalAlignment(VAlign_Center);
+		}
+
+		Button->SetContent(Overlay);
+	}
+
+	UButton* Button = StoredStyle->Button.Get();
+	UImage* IconImage = StoredStyle->IconImage.Get();
+	UImage* FrameImage = StoredStyle->FrameImage.Get();
+	if (!IsValid(Button) || !IsValid(IconImage) || !IsValid(FrameImage))
+	{
+		RestoreBlazeAttachmentIconStyle(TextBlock);
+		return;
+	}
+
+	IconImage->SetBrush(MakeBlazeAttachmentIconBrush(RealIcon));
+	IconImage->SetColorAndOpacity(FLinearColor::White);
+	if (UOverlay* Overlay = StoredStyle->Overlay.Get())
+	{
+		const float HoverScale = BlazeAttachmentHoverScale(Button->IsHovered());
+		Overlay->SetRenderScale(FVector2D(HoverScale, HoverScale));
+	}
+	FrameImage->SetBrush(MakeBlazeAttachmentFrameBrush(bSelected));
+	FrameImage->SetColorAndOpacity(bSelected ? BlazeAttachmentSelectionFrameColor() : FLinearColor::Transparent);
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreBlazeAttachmentIconStyle(UTextBlock* TextBlock)
+{
+	if (!TextBlock)
+	{
+		return;
+	}
+
+	FBlazeAttachmentIconStyle* StoredStyle = BlazeAttachmentIconStyles.Find(TextBlock);
+	if (!StoredStyle)
+	{
+		return;
+	}
+
+	UTextBlock* Label = StoredStyle->Label.Get();
+	UButton* Button = StoredStyle->Button.Get();
+	UOverlay* Overlay = StoredStyle->Overlay.Get();
+	if (IsValid(Label))
+	{
+		Label->SetRenderOpacity(StoredStyle->OriginalLabelRenderOpacity);
+		Label->SetVisibility(StoredStyle->OriginalLabelVisibility);
+	}
+
+	if (IsValid(Button) && IsValid(Label))
+	{
+		if (IsValid(Overlay))
+		{
+			Overlay->RemoveChild(Label);
+		}
+		Button->SetContent(Label);
+	}
+
+	BlazeAttachmentIconStyles.Remove(TextBlock);
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreBlazeAttachmentIconStyles()
+{
+	TArray<UTextBlock*> LabelsToRestore;
+	for (auto It = BlazeAttachmentIconStyles.CreateIterator(); It; ++It)
+	{
+		if (UTextBlock* TextBlock = It.Key().Get())
+		{
+			LabelsToRestore.Add(TextBlock);
+		}
+	}
+
+	for (UTextBlock* TextBlock : LabelsToRestore)
+	{
+		RestoreBlazeAttachmentIconStyle(TextBlock);
+	}
+
+	BlazeAttachmentIconStyles.Empty();
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::RestoreAttachmentSelectionHighlight()
@@ -3066,6 +3372,8 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreAttachmentSelectionHighlight()
 		}
 		It.RemoveCurrent();
 	}
+
+	RestoreBlazeAttachmentIconStyles();
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld* World, const bool bLoadoutVisible)
