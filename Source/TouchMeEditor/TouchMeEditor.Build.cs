@@ -19,6 +19,7 @@ public class TouchMeEditor : ModuleRules
 		{
 			"AssetRegistry",
 			"ContentBrowser",
+			"RenderCore",
 			"Slate",
 			"SlateCore",
 			"UnrealEd"

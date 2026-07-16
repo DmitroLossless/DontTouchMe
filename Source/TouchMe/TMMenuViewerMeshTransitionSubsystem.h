@@ -110,7 +110,7 @@ private:
 		FSlateColor OriginalColorAndOpacity;
 	};
 
-	struct FBlazeAttachmentIconStyle
+	struct FGeneratedAttachmentIconStyle
 	{
 		TWeakObjectPtr<UButton> Button;
 		TWeakObjectPtr<UTextBlock> Label;
@@ -181,9 +181,9 @@ private:
 	void RestoreMainMenuCameraDrift();
 	void UpdateAttachmentSelectionHighlight(UWorld* World, bool bAttachmentsVisible);
 	void RestoreAttachmentSelectionHighlight();
-	void UpdateBlazeAttachmentIcon(UTextBlock* TextBlock, bool bSelected);
-	void RestoreBlazeAttachmentIconStyle(UTextBlock* TextBlock);
-	void RestoreBlazeAttachmentIconStyles();
+	void UpdateGeneratedAttachmentIcon(UTextBlock* TextBlock, bool bSelected);
+	void RestoreGeneratedAttachmentIconStyle(UTextBlock* TextBlock);
+	void RestoreGeneratedAttachmentIconStyles();
 	void UpdateWeaponSelectionHighlight(UWorld* World, bool bLoadoutVisible);
 	void RestoreWeaponSelectionHighlight();
 	void UpdateAttachmentsCameraFocus(UWorld* World, bool bAttachmentsVisible, float DeltaTime, UCameraComponent* CameraComponent);
@@ -234,7 +234,7 @@ private:
 	TMap<TWeakObjectPtr<ULightComponent>, FBackGlowLightState> MainMenuBackGlowLightStates;
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> MainMenuBackGlowVisualStates;
 	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> AttachmentSelectionLabelStyles;
-	TMap<TWeakObjectPtr<UTextBlock>, FBlazeAttachmentIconStyle> BlazeAttachmentIconStyles;
+	TMap<TWeakObjectPtr<UTextBlock>, FGeneratedAttachmentIconStyle> GeneratedAttachmentIconStyles;
 	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> WeaponSelectionLabelStyles;
 	TWeakObjectPtr<UCameraComponent> MainMenuCameraDriftCamera;
 	FPostProcessSettings SavedLoadoutPostProcessSettings;

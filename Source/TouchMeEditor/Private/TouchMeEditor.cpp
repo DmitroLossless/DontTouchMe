@@ -1,11 +1,15 @@
 #include "TouchMeEditor.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Components/StaticMeshComponent.h"
 #include "ContentBrowserModule.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture2D.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
@@ -21,6 +25,8 @@
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
 #include "ObjectTools.h"
+#include "PreviewScene.h"
+#include "StaticMeshResources.h"
 #include "Styling/AppStyle.h"
 #include "ThumbnailRendering/SceneThumbnailInfo.h"
 #include "UObject/SavePackage.h"
@@ -412,88 +418,397 @@ namespace
 		return OutPixels.Num() == TMIconWidth * TMIconHeight * 4;
 	}
 
-	uint8 TMQuantizeChannel(const float Value, const int32 Levels)
+	bool TMBuildButtonIconPixelsFromAlpha(const TArray<uint8>& SourcePixels, const int32 SourceWidth, const int32 SourceHeight, TArray<uint8>& OutPixels)
 	{
-		const float MaxLevel = static_cast<float>(FMath::Max(Levels - 1, 1));
-		const float Quantized = FMath::RoundToFloat(FMath::Clamp(Value, 0.0f, 1.0f) * MaxLevel) / MaxLevel;
-		return static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Quantized * 255.0f), 0, 255));
+		if (SourceWidth <= 0 || SourceHeight <= 0 || SourcePixels.Num() != SourceWidth * SourceHeight * 4)
+		{
+			return false;
+		}
+
+		TArray<uint8> SubjectMask;
+		SubjectMask.Init(0, SourceWidth * SourceHeight);
+		int32 VisiblePixelCount = 0;
+		for (int32 PixelIndex = 0; PixelIndex < SourceWidth * SourceHeight; ++PixelIndex)
+		{
+			const uint8 Alpha = SourcePixels[(PixelIndex * 4) + 3];
+			SubjectMask[PixelIndex] = Alpha;
+			if (Alpha > 8)
+			{
+				++VisiblePixelCount;
+			}
+		}
+
+		if (VisiblePixelCount <= 0 || VisiblePixelCount >= (SourceWidth * SourceHeight * 95) / 100)
+		{
+			return false;
+		}
+
+		TMFitSubjectToIconCanvas(SourcePixels, SubjectMask, SourceWidth, SourceHeight, OutPixels);
+		return OutPixels.Num() == TMIconWidth * TMIconHeight * 4;
 	}
 
-	void TMApplyComicButtonStyle(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	bool TMIconHasReadableColor(const TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return false;
+		}
+
+		int32 VisiblePixelCount = 0;
+		int32 LitPixelCount = 0;
+		double LuminanceSum = 0.0;
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
+		{
+			const int32 DataIndex = PixelIndex * 4;
+			const uint8 Alpha = PixelData[DataIndex + 3];
+			if (Alpha <= 8)
+			{
+				continue;
+			}
+
+			++VisiblePixelCount;
+			const uint8 Blue = PixelData[DataIndex];
+			const uint8 Green = PixelData[DataIndex + 1];
+			const uint8 Red = PixelData[DataIndex + 2];
+			const uint8 MaxChannel = FMath::Max3(Red, Green, Blue);
+			if (MaxChannel > 32)
+			{
+				++LitPixelCount;
+			}
+			LuminanceSum += (static_cast<double>(Red) * 0.2126)
+				+ (static_cast<double>(Green) * 0.7152)
+				+ (static_cast<double>(Blue) * 0.0722);
+		}
+
+		if (VisiblePixelCount <= 0)
+		{
+			return false;
+		}
+
+		const double AverageLuminance = LuminanceSum / static_cast<double>(VisiblePixelCount);
+		return AverageLuminance > 12.0 || LitPixelCount > VisiblePixelCount / 20;
+	}
+
+	void TMApplyReadableTint(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
 	{
 		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
 		{
 			return;
 		}
 
-		const TArray<uint8> SourcePixels = PixelData;
-		TArray<float> EdgeMask;
-		EdgeMask.Init(0.0f, Width * Height);
-
-		for (int32 Y = 0; Y < Height; ++Y)
+		TArray<uint8> AlphaMask;
+		AlphaMask.Init(0, Width * Height);
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
 		{
-			for (int32 X = 0; X < Width; ++X)
-			{
-				const int32 PixelIndex = ((Y * Width) + X) * 4;
-				const float Alpha = static_cast<float>(SourcePixels[PixelIndex + 3]) / 255.0f;
-				if (Alpha <= 0.02f)
-				{
-					continue;
-				}
-
-				const float AlphaX = FMath::Abs(TMGetPixelAlpha(SourcePixels, Width, Height, X - 1, Y)
-					- TMGetPixelAlpha(SourcePixels, Width, Height, X + 1, Y));
-				const float AlphaY = FMath::Abs(TMGetPixelAlpha(SourcePixels, Width, Height, X, Y - 1)
-					- TMGetPixelAlpha(SourcePixels, Width, Height, X, Y + 1));
-				const float LumaX = FMath::Abs(TMGetPixelLuminance(SourcePixels, Width, Height, X - 1, Y)
-					- TMGetPixelLuminance(SourcePixels, Width, Height, X + 1, Y));
-				const float LumaY = FMath::Abs(TMGetPixelLuminance(SourcePixels, Width, Height, X, Y - 1)
-					- TMGetPixelLuminance(SourcePixels, Width, Height, X, Y + 1));
-				const float LumaEdge = FMath::Clamp(((LumaX + LumaY) - 0.16f) / 0.22f, 0.0f, 1.0f);
-
-				EdgeMask[(Y * Width) + X] = FMath::Clamp(
-					((AlphaX + AlphaY) * 2.25f) + (LumaEdge * Alpha * 0.22f),
-					0.0f,
-					1.0f);
-			}
+			AlphaMask[PixelIndex] = PixelData[(PixelIndex * 4) + 3];
 		}
 
-		PixelData.Init(0, Width * Height * 4);
-		for (int32 Y = 0; Y < Height; ++Y)
+		FTMSubjectBounds Bounds = TMFindMaskBounds(AlphaMask, Width, Height);
+		if (!Bounds.IsValid())
 		{
-			for (int32 X = 0; X < Width; ++X)
-			{
-				float PaintStrength = 0.0f;
-				for (int32 OffsetY = -3; OffsetY <= 3; ++OffsetY)
-				{
-					const int32 SourceY = FMath::Clamp(Y + OffsetY, 0, Height - 1);
-					for (int32 OffsetX = -3; OffsetX <= 3; ++OffsetX)
-					{
-						const int32 SourceX = FMath::Clamp(X + OffsetX, 0, Width - 1);
-						const float Distance = FMath::Sqrt(static_cast<float>((OffsetX * OffsetX) + (OffsetY * OffsetY)));
-						const float Falloff = FMath::Clamp(1.0f - (Distance / 3.75f), 0.0f, 1.0f);
-						PaintStrength = FMath::Max(PaintStrength, EdgeMask[(SourceY * Width) + SourceX] * Falloff);
-					}
-				}
+			return;
+		}
 
-				if (PaintStrength <= 0.06f)
+		const float BoundsWidth = static_cast<float>(FMath::Max(Bounds.Width(), 1));
+		const float BoundsHeight = static_cast<float>(FMath::Max(Bounds.Height(), 1));
+		for (int32 Y = Bounds.MinY; Y <= Bounds.MaxY; ++Y)
+		{
+			for (int32 X = Bounds.MinX; X <= Bounds.MaxX; ++X)
+			{
+				const int32 PixelIndex = ((Y * Width) + X) * 4;
+				const uint8 Alpha = PixelData[PixelIndex + 3];
+				if (Alpha <= 8)
 				{
 					continue;
 				}
 
+				const float LocalX = static_cast<float>(X - Bounds.MinX) / BoundsWidth;
+				const float LocalY = static_cast<float>(Y - Bounds.MinY) / BoundsHeight;
+				const float TopLight = FMath::Clamp(1.0f - LocalY, 0.0f, 1.0f);
+				const float SideLight = FMath::Clamp(1.0f - FMath::Abs(LocalX - 0.35f) / 0.65f, 0.0f, 1.0f);
 				const float Noise = TMHashToUnitFloat(
-					(static_cast<uint32>(X) * 1973u)
-					^ (static_cast<uint32>(Y) * 9277u)
-					^ 0x8F15C3u);
-				const float DryBrush = Noise < 0.11f ? 0.42f : (0.74f + Noise * 0.26f);
-				const float StrokeAlpha = FMath::Clamp(PaintStrength * DryBrush * 1.45f, 0.0f, 1.0f);
-				const int32 PixelIndex = ((Y * Width) + X) * 4;
-				PixelData[PixelIndex] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(228.0f + Noise * 20.0f), 0, 255));
-				PixelData[PixelIndex + 1] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(238.0f + Noise * 14.0f), 0, 255));
-				PixelData[PixelIndex + 2] = 255;
-				PixelData[PixelIndex + 3] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(StrokeAlpha * 255.0f), 0, 255));
+					(static_cast<uint32>(X) * 1103515245u)
+					^ (static_cast<uint32>(Y) * 12345u));
+				const float Shade = FMath::Clamp(0.44f + TopLight * 0.34f + SideLight * 0.16f + Noise * 0.05f, 0.38f, 0.92f);
+
+				PixelData[PixelIndex] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(178.0f * Shade), 0, 255));
+				PixelData[PixelIndex + 1] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(188.0f * Shade), 0, 255));
+				PixelData[PixelIndex + 2] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(198.0f * Shade), 0, 255));
 			}
 		}
+	}
+
+	void TMNormalizeSceneCaptureIconExposure(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return;
+		}
+
+		int32 VisiblePixelCount = 0;
+		double LuminanceSum = 0.0;
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
+		{
+			const int32 DataIndex = PixelIndex * 4;
+			if (PixelData[DataIndex + 3] <= 8)
+			{
+				continue;
+			}
+
+			++VisiblePixelCount;
+			LuminanceSum += (static_cast<double>(PixelData[DataIndex + 2]) * 0.2126)
+				+ (static_cast<double>(PixelData[DataIndex + 1]) * 0.7152)
+				+ (static_cast<double>(PixelData[DataIndex]) * 0.0722);
+		}
+
+		if (VisiblePixelCount <= 0)
+		{
+			return;
+		}
+
+		constexpr double TargetAverageLuminance = 30.0;
+		const double AverageLuminance = LuminanceSum / static_cast<double>(VisiblePixelCount);
+		const float Gain = static_cast<float>(FMath::Clamp(TargetAverageLuminance / FMath::Max(AverageLuminance, 1.0), 1.0, 2.75));
+		if (Gain <= 1.01f)
+		{
+			return;
+		}
+
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
+		{
+			const int32 DataIndex = PixelIndex * 4;
+			if (PixelData[DataIndex + 3] <= 8)
+			{
+				continue;
+			}
+
+			PixelData[DataIndex] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(static_cast<float>(PixelData[DataIndex]) * Gain), 0, 255));
+			PixelData[DataIndex + 1] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(static_cast<float>(PixelData[DataIndex + 1]) * Gain), 0, 255));
+			PixelData[DataIndex + 2] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(static_cast<float>(PixelData[DataIndex + 2]) * Gain), 0, 255));
+		}
+	}
+
+	float TMTriangleEdge(const FVector2D& A, const FVector2D& B, const FVector2D& Point)
+	{
+		return ((Point.X - A.X) * (B.Y - A.Y)) - ((Point.Y - A.Y) * (B.X - A.X));
+	}
+
+	void TMRasterizeProjectedTriangle(
+		TArray<uint8>& Mask,
+		const int32 Width,
+		const int32 Height,
+		const FVector2D& A,
+		const FVector2D& B,
+		const FVector2D& C)
+	{
+		const float Area = TMTriangleEdge(A, B, C);
+		if (FMath::IsNearlyZero(Area, 0.01f))
+		{
+			return;
+		}
+
+		const float Sign = Area >= 0.0f ? 1.0f : -1.0f;
+		const int32 MinX = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.X, B.X, C.X)), 0, Width - 1);
+		const int32 MaxX = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.X, B.X, C.X)), 0, Width - 1);
+		const int32 MinY = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.Y, B.Y, C.Y)), 0, Height - 1);
+		const int32 MaxY = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.Y, B.Y, C.Y)), 0, Height - 1);
+
+		for (int32 Y = MinY; Y <= MaxY; ++Y)
+		{
+			for (int32 X = MinX; X <= MaxX; ++X)
+			{
+				const FVector2D Sample(static_cast<float>(X) + 0.5f, static_cast<float>(Y) + 0.5f);
+				const float Edge0 = TMTriangleEdge(B, C, Sample) * Sign;
+				const float Edge1 = TMTriangleEdge(C, A, Sample) * Sign;
+				const float Edge2 = TMTriangleEdge(A, B, Sample) * Sign;
+				if (Edge0 >= -0.001f && Edge1 >= -0.001f && Edge2 >= -0.001f)
+				{
+					Mask[(Y * Width) + X] = 255;
+				}
+			}
+		}
+	}
+
+	void TMRasterizeLitProjectedTriangle(
+		TArray<uint8>& Pixels,
+		TArray<float>& DepthBuffer,
+		const int32 Width,
+		const int32 Height,
+		const FVector2D& A,
+		const FVector2D& B,
+		const FVector2D& C,
+		const float DepthA,
+		const float DepthB,
+		const float DepthC,
+		const FColor& Color)
+	{
+		const float Area = TMTriangleEdge(A, B, C);
+		if (FMath::IsNearlyZero(Area, 0.01f))
+		{
+			return;
+		}
+
+		const float Sign = Area >= 0.0f ? 1.0f : -1.0f;
+		const float AbsArea = FMath::Abs(Area);
+		const int32 MinX = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.X, B.X, C.X)), 0, Width - 1);
+		const int32 MaxX = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.X, B.X, C.X)), 0, Width - 1);
+		const int32 MinY = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.Y, B.Y, C.Y)), 0, Height - 1);
+		const int32 MaxY = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.Y, B.Y, C.Y)), 0, Height - 1);
+
+		for (int32 Y = MinY; Y <= MaxY; ++Y)
+		{
+			for (int32 X = MinX; X <= MaxX; ++X)
+			{
+				const FVector2D Sample(static_cast<float>(X) + 0.5f, static_cast<float>(Y) + 0.5f);
+				const float Edge0 = TMTriangleEdge(B, C, Sample) * Sign;
+				const float Edge1 = TMTriangleEdge(C, A, Sample) * Sign;
+				const float Edge2 = TMTriangleEdge(A, B, Sample) * Sign;
+				if (Edge0 < -0.001f || Edge1 < -0.001f || Edge2 < -0.001f)
+				{
+					continue;
+				}
+
+				const float WeightA = Edge0 / AbsArea;
+				const float WeightB = Edge1 / AbsArea;
+				const float WeightC = Edge2 / AbsArea;
+				const float Depth = (DepthA * WeightA) + (DepthB * WeightB) + (DepthC * WeightC);
+				const int32 PixelIndex = (Y * Width) + X;
+				if (Depth < DepthBuffer[PixelIndex])
+				{
+					continue;
+				}
+
+				DepthBuffer[PixelIndex] = Depth;
+				const int32 DataIndex = PixelIndex * 4;
+				Pixels[DataIndex] = Color.B;
+				Pixels[DataIndex + 1] = Color.G;
+				Pixels[DataIndex + 2] = Color.R;
+				Pixels[DataIndex + 3] = Color.A;
+			}
+		}
+	}
+
+	bool TMBuildStaticMeshProjectedIconPixels(UStaticMesh* StaticMesh, TArray<uint8>& OutPixels)
+	{
+		OutPixels.Reset();
+		if (!StaticMesh || !StaticMesh->GetRenderData() || StaticMesh->GetRenderData()->LODResources.IsEmpty())
+		{
+			return false;
+		}
+
+		const FStaticMeshLODResources& LODResources = StaticMesh->GetRenderData()->LODResources[0];
+		const FPositionVertexBuffer& PositionBuffer = LODResources.VertexBuffers.PositionVertexBuffer;
+		const int32 VertexCount = static_cast<int32>(PositionBuffer.GetNumVertices());
+		if (VertexCount <= 0)
+		{
+			return false;
+		}
+
+		const FBoxSphereBounds MeshBounds = StaticMesh->GetBounds();
+		const FVector Center = MeshBounds.Origin;
+		const FRotationMatrix ViewRotationMatrix(FRotator(-18.0f, -38.0f, 0.0f));
+		const FVector ViewForward = ViewRotationMatrix.GetScaledAxis(EAxis::X);
+		const FVector ViewRight = ViewRotationMatrix.GetScaledAxis(EAxis::Y);
+		const FVector ViewUp = ViewRotationMatrix.GetScaledAxis(EAxis::Z);
+		const FVector LightDirection = (ViewForward * 0.35f + ViewRight * -0.25f + ViewUp * 0.85f).GetSafeNormal();
+
+		TArray<FVector> CenteredVertices;
+		CenteredVertices.SetNum(VertexCount);
+		TArray<FVector2D> ProjectedVertices;
+		ProjectedVertices.SetNum(VertexCount);
+		TArray<float> ProjectedDepths;
+		ProjectedDepths.SetNum(VertexCount);
+		FBox2D ProjectedBounds(ForceInit);
+		for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
+		{
+			const FVector3f VertexPosition = PositionBuffer.VertexPosition(VertexIndex);
+			const FVector LocalPosition(VertexPosition);
+			const FVector Offset = LocalPosition - Center;
+			CenteredVertices[VertexIndex] = Offset;
+			const FVector2D ProjectedPosition(
+				FVector::DotProduct(Offset, ViewRight),
+				-FVector::DotProduct(Offset, ViewUp));
+			ProjectedVertices[VertexIndex] = ProjectedPosition;
+			ProjectedDepths[VertexIndex] = static_cast<float>(FVector::DotProduct(Offset, ViewForward));
+			ProjectedBounds += ProjectedPosition;
+		}
+
+		if (!ProjectedBounds.bIsValid)
+		{
+			return false;
+		}
+
+		const FVector2D ProjectedSize = ProjectedBounds.GetSize();
+		if (ProjectedSize.X <= UE_SMALL_NUMBER || ProjectedSize.Y <= UE_SMALL_NUMBER)
+		{
+			return false;
+		}
+
+		const float Scale = FMath::Min(
+			(static_cast<float>(TMIconWidth) * 0.90f) / ProjectedSize.X,
+			(static_cast<float>(TMIconHeight) * 0.90f) / ProjectedSize.Y);
+		const FVector2D ProjectedCenter = ProjectedBounds.GetCenter();
+		const FVector2D IconCenter(static_cast<float>(TMIconWidth) * 0.5f, static_cast<float>(TMIconHeight) * 0.5f);
+
+		for (FVector2D& ProjectedVertex : ProjectedVertices)
+		{
+			ProjectedVertex = ((ProjectedVertex - ProjectedCenter) * Scale) + IconCenter;
+		}
+
+		OutPixels.Init(0, TMIconWidth * TMIconHeight * 4);
+		TArray<float> DepthBuffer;
+		DepthBuffer.Init(-FLT_MAX, TMIconWidth * TMIconHeight);
+		const FIndexArrayView Indices = LODResources.IndexBuffer.GetArrayView();
+		for (int32 Index = 0; Index + 2 < Indices.Num(); Index += 3)
+		{
+			const int32 IndexA = static_cast<int32>(Indices[Index]);
+			const int32 IndexB = static_cast<int32>(Indices[Index + 1]);
+			const int32 IndexC = static_cast<int32>(Indices[Index + 2]);
+			if (!ProjectedVertices.IsValidIndex(IndexA)
+				|| !ProjectedVertices.IsValidIndex(IndexB)
+				|| !ProjectedVertices.IsValidIndex(IndexC))
+			{
+				continue;
+			}
+
+			const FVector TriangleNormal = FVector::CrossProduct(
+				CenteredVertices[IndexB] - CenteredVertices[IndexA],
+				CenteredVertices[IndexC] - CenteredVertices[IndexA]).GetSafeNormal();
+			const float Light = FMath::Abs(FVector::DotProduct(TriangleNormal, LightDirection));
+			const float Facing = FMath::Abs(FVector::DotProduct(TriangleNormal, ViewForward));
+			const float Shade = FMath::Clamp(0.24f + Light * 0.32f + Facing * 0.10f, 0.22f, 0.68f);
+			const FColor TriangleColor(
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(145.0f * Shade), 0, 255)),
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(149.0f * Shade), 0, 255)),
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(156.0f * Shade), 0, 255)),
+				255);
+
+			TMRasterizeLitProjectedTriangle(
+				OutPixels,
+				DepthBuffer,
+				TMIconWidth,
+				TMIconHeight,
+				ProjectedVertices[IndexA],
+				ProjectedVertices[IndexB],
+				ProjectedVertices[IndexC],
+				ProjectedDepths[IndexA],
+				ProjectedDepths[IndexB],
+				ProjectedDepths[IndexC],
+				TriangleColor);
+		}
+
+		TArray<uint8> Mask;
+		Mask.Init(0, TMIconWidth * TMIconHeight);
+		for (int32 PixelIndex = 0; PixelIndex < TMIconWidth * TMIconHeight; ++PixelIndex)
+		{
+			Mask[PixelIndex] = OutPixels[(PixelIndex * 4) + 3];
+		}
+		if (!TMFindMaskBounds(Mask, TMIconWidth, TMIconHeight).IsValid())
+		{
+			return false;
+		}
+
+		return TMIconHasReadableColor(OutPixels, TMIconWidth, TMIconHeight);
 	}
 
 	void TMShowNotification(const FText& Message, const SNotificationItem::ECompletionState State)
@@ -604,7 +919,9 @@ namespace
 		UMaterialInstanceDynamic* ReadableMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, GetTransientPackage());
 		if (ReadableMaterial)
 		{
+			ReadableMaterial->SetVectorParameterValue(TEXT("EmissiveColor"), FLinearColor(0.86f, 0.88f, 0.90f, 1.0f));
 			ReadableMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.86f, 0.88f, 0.90f, 1.0f));
+			ReadableMaterial->SetVectorParameterValue(TEXT("BaseColor"), FLinearColor(0.86f, 0.88f, 0.90f, 1.0f));
 			ReadableMaterial->AddToRoot();
 			CachedReadableMaterial = ReadableMaterial;
 			return ReadableMaterial;
@@ -723,17 +1040,260 @@ namespace
 		return OutWidth > 0 && OutHeight > 0 && OutPixels.Num() == OutWidth * OutHeight * 4;
 	}
 
+	bool TMRenderStaticMeshSceneCapturePixels(
+		UStaticMesh* StaticMesh,
+		TArray<uint8>& OutPixels,
+		int32& OutWidth,
+		int32& OutHeight)
+	{
+		OutPixels.Reset();
+		OutWidth = 0;
+		OutHeight = 0;
+		if (!StaticMesh)
+		{
+			return false;
+		}
+
+		FPreviewScene PreviewScene(FPreviewScene::ConstructionValues()
+			.SetCreateDefaultLighting(true)
+			.SetLightRotation(FRotator(-48.0f, -42.0f, 0.0f))
+			.SetLightBrightness(8.0f)
+			.SetSkyBrightness(0.8f)
+			.AllowAudioPlayback(false)
+			.SetCreatePhysicsScene(false)
+			.ShouldSimulatePhysics(false)
+			.SetTransactional(false)
+			.SetEditor(true));
+		UWorld* PreviewWorld = PreviewScene.GetWorld();
+		if (!PreviewWorld)
+		{
+			return false;
+		}
+
+		const FBoxSphereBounds MeshBounds = StaticMesh->GetBounds();
+		UStaticMeshComponent* MeshComponent = NewObject<UStaticMeshComponent>(GetTransientPackage(), TEXT("TMIconPreviewMesh"));
+		if (!MeshComponent)
+		{
+			return false;
+		}
+
+		FRotator MeshRotation = FRotator::ZeroRotator;
+		const FString StaticMeshName = StaticMesh->GetName();
+
+		MeshComponent->SetStaticMesh(StaticMesh);
+		MeshComponent->SetForcedLodModel(1);
+		MeshComponent->SetMobility(EComponentMobility::Movable);
+		MeshComponent->SetVisibility(true);
+		MeshComponent->SetHiddenInGame(false);
+		MeshComponent->SetCastShadow(false);
+		PreviewScene.AddComponent(
+			MeshComponent,
+			FTransform(MeshRotation, -MeshRotation.RotateVector(MeshBounds.Origin)));
+
+		UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>(GetTransientPackage(), TEXT("TMIconPreviewRenderTarget"));
+		if (!RenderTarget)
+		{
+			return false;
+		}
+
+		RenderTarget->ClearColor = FLinearColor::Transparent;
+		RenderTarget->InitCustomFormat(TMThumbnailRenderSize, TMThumbnailRenderSize, PF_B8G8R8A8, true);
+		RenderTarget->UpdateResourceImmediate(true);
+
+		USceneCaptureComponent2D* CaptureComponent = NewObject<USceneCaptureComponent2D>(
+			GetTransientPackage(),
+			TEXT("TMIconPreviewCapture"));
+		if (!CaptureComponent)
+		{
+			return false;
+		}
+
+		constexpr float FieldOfViewDegrees = 26.0f;
+		const bool bForeGrip = StaticMeshName.Equals(TEXT("ForeGrip"), ESearchCase::IgnoreCase);
+		const FRotator ViewRotation = bForeGrip
+			? FRotator(-6.0f, -92.0f, 0.0f)
+			: FRotator(-18.0f, -38.0f, 0.0f);
+		const FVector ViewForward = ViewRotation.Vector();
+		const float ViewDistance = FMath::Max(
+			MeshBounds.SphereRadius / FMath::Tan(FMath::DegreesToRadians(FieldOfViewDegrees * 0.5f)) * (bForeGrip ? 1.45f : 1.30f),
+			20.0f);
+
+		CaptureComponent->TextureTarget = RenderTarget;
+		CaptureComponent->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+		CaptureComponent->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
+		CaptureComponent->FOVAngle = FieldOfViewDegrees;
+		CaptureComponent->bCaptureEveryFrame = false;
+		CaptureComponent->bCaptureOnMovement = false;
+		CaptureComponent->ShowFlags.SetLighting(true);
+		CaptureComponent->ShowFlags.SetMaterials(true);
+		CaptureComponent->ShowFlags.SetPostProcessing(true);
+		CaptureComponent->ShowFlags.SetAntiAliasing(false);
+		CaptureComponent->PostProcessSettings.bOverride_AutoExposureMethod = true;
+		CaptureComponent->PostProcessSettings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
+		CaptureComponent->PostProcessSettings.bOverride_AutoExposureBias = true;
+		CaptureComponent->PostProcessSettings.AutoExposureBias = bForeGrip ? 1.6f : 1.0f;
+		CaptureComponent->PostProcessSettings.bOverride_BloomIntensity = true;
+		CaptureComponent->PostProcessSettings.BloomIntensity = 0.0f;
+		CaptureComponent->PostProcessBlendWeight = 1.0f;
+		PreviewScene.AddComponent(
+			CaptureComponent,
+			FTransform(ViewRotation, -ViewForward * ViewDistance));
+
+		PreviewWorld->UpdateWorldComponents(true, false);
+		MeshComponent->MarkRenderStateDirty();
+		CaptureComponent->MarkRenderStateDirty();
+		PreviewWorld->Tick(LEVELTICK_All, 0.0f);
+		CaptureComponent->CaptureScene();
+		FlushRenderingCommands();
+
+		FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
+		if (!RenderTargetResource)
+		{
+			return false;
+		}
+
+		TArray<FColor> SurfacePixels;
+		FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
+		ReadFlags.SetLinearToGamma(true);
+		if (!RenderTargetResource->ReadPixels(SurfacePixels, ReadFlags)
+			|| SurfacePixels.Num() != TMThumbnailRenderSize * TMThumbnailRenderSize)
+		{
+			return false;
+		}
+
+		OutWidth = TMThumbnailRenderSize;
+		OutHeight = TMThumbnailRenderSize;
+		OutPixels.Init(0, OutWidth * OutHeight * 4);
+		for (int32 PixelIndex = 0; PixelIndex < SurfacePixels.Num(); ++PixelIndex)
+		{
+			const FColor& Color = SurfacePixels[PixelIndex];
+			const int32 DestIndex = PixelIndex * 4;
+			OutPixels[DestIndex] = Color.B;
+			OutPixels[DestIndex + 1] = Color.G;
+			OutPixels[DestIndex + 2] = Color.R;
+			OutPixels[DestIndex + 3] = Color.A;
+		}
+
+		return OutPixels.Num() == OutWidth * OutHeight * 4;
+	}
+
 	UTexture2D* TMFindPreferredSourceIconTexture(const FAssetData& SourceAsset)
 	{
 		const FString SourceAssetName = SourceAsset.AssetName.ToString();
-		if (SourceAssetName.Contains(TEXT("Holographic"), ESearchCase::IgnoreCase))
+		struct FTMPreferredSourceIcon
 		{
-			return LoadObject<UTexture2D>(
-				nullptr,
-				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_Holographic_Icon.T_Holographic_Icon"));
+			const TCHAR* MeshNameToken = nullptr;
+			const TCHAR* TexturePath = nullptr;
+			bool bExactMatch = false;
+		};
+
+		static const FTMPreferredSourceIcon PreferredSourceIcons[] =
+		{
+			{
+				TEXT("Silencer"),
+				TEXT("/Game/Weapons/Textures/UI/T_Silencer_Barrel_HUD.T_Silencer_Barrel_HUD"),
+				true
+			},
+			{
+				TEXT("Compensator"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_Compensator_Icon.T_Compensator_Icon"),
+				true
+			},
+			{
+				TEXT("ForeGrip"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_GripA_Icon.T_GripA_Icon"),
+				true
+			},
+			{
+				TEXT("SM_Holographic_Sight"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_Holographic_Icon.T_Holographic_Icon"),
+				true
+			},
+			{
+				TEXT("SM_Holographic_Scope"),
+				TEXT("/Game/Weapons/Textures/UI/T_Holographic_Sight_HUD.T_Holographic_Sight_HUD"),
+				true
+			},
+			{
+				TEXT("RearSight"),
+				TEXT("/Game/Weapons/Textures/UI/T_IronSight_Sight_HUD.T_IronSight_Sight_HUD"),
+				true
+			},
+			{
+				TEXT("FrontSight"),
+				TEXT("/Game/Weapons/Textures/UI/T_IronSight_Sight_HUD.T_IronSight_Sight_HUD"),
+				true
+			},
+			{
+				TEXT("MiniSight"),
+				TEXT("/Game/Weapons/Textures/UI/T_Reflex_Sight_HUD.T_Reflex_Sight_HUD"),
+				true
+			},
+			{
+				TEXT("SciFi_Scope"),
+				TEXT("/Game/Weapons/Textures/UI/T_SVS16X_Sight_HUD.T_SVS16X_Sight_HUD"),
+				true
+			},
+			{
+				TEXT("SM_ACOG_Scope"),
+				TEXT("/Game/Weapons/Textures/UI/T_ACOG_Sight_HUD.T_ACOG_Sight_HUD"),
+				true
+			},
+			{
+				TEXT("SM_RedDot_Sight"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_RedDot_Icon.T_RedDot_Icon"),
+				true
+			},
+			{
+				TEXT("SM_Reflex_Sight"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_Reflex_Icon.T_Reflex_Icon"),
+				true
+			},
+			{
+				TEXT("SM_Specter_Sight"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_Specter2X_Icon.T_Specter2X_Icon"),
+				true
+			},
+			{
+				TEXT("SM_UTC_Sight"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_UTC8X_Icon.T_UTC8X_Icon"),
+				true
+			},
+			{
+				TEXT("SM_DotSight"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_RedDot_Icon.T_RedDot_Icon"),
+				true
+			},
+			{
+				TEXT("SM_DemoOptic"),
+				TEXT("/Game/Fps/Textures/Widgets/GunCustomization/T_ThumbDemoOptics.T_ThumbDemoOptics"),
+				true
+			}
+		};
+
+		for (const FTMPreferredSourceIcon& PreferredSourceIcon : PreferredSourceIcons)
+		{
+			const bool bMatches = PreferredSourceIcon.bExactMatch
+				? SourceAssetName.Equals(PreferredSourceIcon.MeshNameToken, ESearchCase::IgnoreCase)
+				: SourceAssetName.Contains(PreferredSourceIcon.MeshNameToken, ESearchCase::IgnoreCase);
+			if (bMatches)
+			{
+				return LoadObject<UTexture2D>(nullptr, PreferredSourceIcon.TexturePath);
+			}
 		}
 
 		return nullptr;
+	}
+
+	bool TMShouldUseSceneCaptureMeshRender(const FAssetData& SourceAsset)
+	{
+		const FString AssetName = SourceAsset.AssetName.ToString();
+		return AssetName.Equals(TEXT("RDS"), ESearchCase::IgnoreCase)
+			|| AssetName.Equals(TEXT("SM_Laser"), ESearchCase::IgnoreCase)
+			|| AssetName.Equals(TEXT("ForeGrip"), ESearchCase::IgnoreCase)
+			|| AssetName.Equals(TEXT("V_Grip"), ESearchCase::IgnoreCase)
+			|| AssetName.Equals(TEXT("Silencer"), ESearchCase::IgnoreCase)
+			|| AssetName.Equals(TEXT("Compensator"), ESearchCase::IgnoreCase);
 	}
 
 	bool TMReadTextureSourceBgra8(UTexture2D* Texture, TArray<uint8>& OutPixels, int32& OutWidth, int32& OutHeight)
@@ -1045,7 +1605,7 @@ void FTouchMeEditorModule::BuildAssetSelectionMenu(
 		LOCTEXT("GenerateUIIcon", "Generate UI Button Icons"),
 		LOCTEXT(
 			"GenerateUIIconTooltip",
-			"Render selected Static Mesh and Skeletal Mesh assets into transparent normal and white paint contour 512x128 Texture2D UI button icons under /Game/UI/Generated/Icons."),
+			"Render selected Static Mesh and Skeletal Mesh assets into transparent 512x128 Texture2D UI button icons under /Game/UI/Generated/Icons."),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("ClassIcon.Texture2D")),
 		FUIAction(FExecuteAction::CreateRaw(
 			this,
@@ -1089,60 +1649,122 @@ void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAss
 			continue;
 		}
 
-		TArray<uint8> RenderPixels;
-		int32 RenderWidth = 0;
-		int32 RenderHeight = 0;
+		TArray<uint8> NormalPixels;
+		bool bBuiltNormalPixels = false;
+		bool bUsedPreferredSourceIcon = false;
 		if (UTexture2D* PreferredSourceIcon = TMFindPreferredSourceIconTexture(AssetData))
 		{
+			TArray<uint8> RenderPixels;
+			int32 RenderWidth = 0;
+			int32 RenderHeight = 0;
 			if (TMReadTextureSourceBgra8(PreferredSourceIcon, RenderPixels, RenderWidth, RenderHeight))
 			{
+				bUsedPreferredSourceIcon = true;
 				UE_LOG(
 					LogTemp,
 					Display,
 					TEXT("[TMIconGenerator] Using source UI texture %s for %s."),
 					*PreferredSourceIcon->GetPathName(),
 					*AssetData.GetObjectPathString());
+				bBuiltNormalPixels = TMBuildButtonIconPixels(RenderPixels, RenderWidth, RenderHeight, NormalPixels);
 			}
 			else
 			{
 				UE_LOG(
 					LogTemp,
 					Warning,
-					TEXT("[TMIconGenerator] Failed to read source UI texture %s for %s; falling back to mesh thumbnail."),
+					TEXT("[TMIconGenerator] Failed to read source UI texture %s for %s; using mesh thumbnail path."),
 					*PreferredSourceIcon->GetPathName(),
 					*AssetData.GetObjectPathString());
 			}
 		}
 
-		if (RenderPixels.IsEmpty()
-			&& !TMRenderMeshThumbnailPixels(SourceObject, RenderPixels, RenderWidth, RenderHeight, true))
+		if (!bBuiltNormalPixels && !bUsedPreferredSourceIcon)
 		{
-			UE_LOG(
-				LogTemp,
-				Warning,
-				TEXT("[TMIconGenerator] Invalid thumbnail data for %s. Size=%dx%d Bytes=%d"),
-				*AssetData.GetObjectPathString(),
-				RenderWidth,
-				RenderHeight,
-				RenderPixels.Num());
-			continue;
+			TArray<uint8> RenderPixels;
+			int32 RenderWidth = 0;
+			int32 RenderHeight = 0;
+			if (TMShouldUseSceneCaptureMeshRender(AssetData))
+			{
+				if (TMRenderStaticMeshSceneCapturePixels(Cast<UStaticMesh>(SourceObject), RenderPixels, RenderWidth, RenderHeight))
+				{
+					const bool bSceneFitted = TMBuildButtonIconPixelsFromAlpha(RenderPixels, RenderWidth, RenderHeight, NormalPixels)
+						|| TMBuildButtonIconPixels(RenderPixels, RenderWidth, RenderHeight, NormalPixels);
+					if (bSceneFitted)
+					{
+						TMNormalizeSceneCaptureIconExposure(NormalPixels, TMIconWidth, TMIconHeight);
+					}
+					const bool bSceneReadable = bSceneFitted && TMIconHasReadableColor(NormalPixels, TMIconWidth, TMIconHeight);
+					if (bSceneReadable)
+					{
+						bBuiltNormalPixels = true;
+						UE_LOG(
+							LogTemp,
+							Display,
+							TEXT("[TMIconGenerator] Using scene-captured mesh render for %s."),
+							*AssetData.GetObjectPathString());
+					}
+				}
+			}
 		}
 
-		TArray<uint8> NormalPixels;
-		if (!TMBuildButtonIconPixels(RenderPixels, RenderWidth, RenderHeight, NormalPixels))
+		if (!bBuiltNormalPixels && !bUsedPreferredSourceIcon)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[TMIconGenerator] Failed to fit icon pixels for %s."), *AssetData.GetObjectPathString());
+			TArray<uint8> RenderPixels;
+			int32 RenderWidth = 0;
+			int32 RenderHeight = 0;
+			if (TMRenderMeshThumbnailPixels(SourceObject, RenderPixels, RenderWidth, RenderHeight, false)
+				&& TMBuildButtonIconPixels(RenderPixels, RenderWidth, RenderHeight, NormalPixels)
+				&& TMIconHasReadableColor(NormalPixels, TMIconWidth, TMIconHeight))
+			{
+				bBuiltNormalPixels = true;
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMIconGenerator] Using original mesh thumbnail for %s."),
+					*AssetData.GetObjectPathString());
+			}
+		}
+
+		if (!bBuiltNormalPixels && !bUsedPreferredSourceIcon)
+		{
+			TArray<uint8> ProjectedMeshPixels;
+			if (TMBuildStaticMeshProjectedIconPixels(Cast<UStaticMesh>(SourceObject), ProjectedMeshPixels))
+			{
+				NormalPixels = MoveTemp(ProjectedMeshPixels);
+				bBuiltNormalPixels = true;
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMIconGenerator] Applied geometry projection pass for dark mesh thumbnail %s."),
+					*AssetData.GetObjectPathString());
+			}
+			else
+			{
+				TArray<uint8> RenderPixels;
+				int32 RenderWidth = 0;
+				int32 RenderHeight = 0;
+				if (TMRenderMeshThumbnailPixels(SourceObject, RenderPixels, RenderWidth, RenderHeight, true)
+					&& TMBuildButtonIconPixels(RenderPixels, RenderWidth, RenderHeight, NormalPixels))
+				{
+					TMApplyReadableTint(NormalPixels, TMIconWidth, TMIconHeight);
+					bBuiltNormalPixels = true;
+				}
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMIconGenerator] Applied readable tint pass for dark mesh thumbnail %s."),
+					*AssetData.GetObjectPathString());
+			}
+		}
+
+		if (!bBuiltNormalPixels)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMIconGenerator] Failed to build icon pixels for %s."), *AssetData.GetObjectPathString());
 			continue;
 		}
 
 		if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon"), NormalPixels, TMIconWidth, TMIconHeight))
-		{
-			++SavedCount;
-		}
-
-		TArray<uint8> ComicPixels = NormalPixels;
-		TMApplyComicButtonStyle(ComicPixels, TMIconWidth, TMIconHeight);
-		if (TMCreateOrUpdateIconTexture(AssetData, TEXT("ComicIcon"), ComicPixels, TMIconWidth, TMIconHeight))
 		{
 			++SavedCount;
 		}

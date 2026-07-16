@@ -20,6 +20,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextBlock.h"
 #include "Components/Widget.h"
+#include "Engine/DataTable.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
@@ -34,6 +35,7 @@
 #include "Particles/ParticleSystemComponent.h"
 #include "TMAudioEnvelopeFollower.h"
 #include "TouchMe.h"
+#include "UObject/SoftObjectPath.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
@@ -98,7 +100,7 @@ static TAutoConsoleVariable<float> CVarMenuViewerMeshTransitionBeatSyncWindow(
 static TAutoConsoleVariable<float> CVarMenuViewerMeshTransitionBeatSyncPulseThreshold(
 	TEXT("tm.MenuViewerMeshTransition.BeatSyncPulseThreshold"),
 	1.0f,
-	TEXT("Normalized envelope threshold used as a fallback rhythm pulse when beat events are sparse."),
+	TEXT("Normalized envelope threshold used as a secondary rhythm pulse when beat events are sparse."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarLoadoutFOV(
@@ -572,32 +574,278 @@ const FLinearColor& AttachmentSelectionHighlightColor()
 	return Color;
 }
 
-const FLinearColor& BlazeAttachmentSelectionFrameColor()
+const FLinearColor& GeneratedAttachmentIconSelectionFrameColor()
 {
 	static const FLinearColor Color = FLinearColor::FromSRGBColor(FColor(255, 212, 32, 255));
 	return Color;
 }
 
-const FVector2D& BlazeAttachmentIconSize()
+const FVector2D& GeneratedAttachmentIconSize()
 {
 	static const FVector2D Size(512.0f, 128.0f);
 	return Size;
 }
 
-bool IsBlazeAttachmentSelectionText(const FString& Text)
+struct FGeneratedAttachmentIconDefinition
 {
-	const FString Normalized = NormalizeAttachmentFocusToken(Text);
-	return Normalized.Equals(TEXT("Blaze"), ESearchCase::IgnoreCase)
-		|| Normalized.Equals(TEXT("OpticsBlaze"), ESearchCase::IgnoreCase)
-		|| Normalized.Contains(TEXT("Blaze"), ESearchCase::IgnoreCase);
+	FString IconObjectPath;
+	TSet<FString> Tokens;
+	mutable TWeakObjectPtr<UTexture2D> CachedIcon;
+};
+
+bool IsExcludedGeneratedAttachmentIconMesh(const UObject* Object)
+{
+	if (!Object)
+	{
+		return true;
+	}
+
+	const FString MeshName = Object->GetName();
+	return MeshName.EndsWith(TEXT("_NR"), ESearchCase::IgnoreCase)
+		|| MeshName.Contains(TEXT("NoRender"), ESearchCase::IgnoreCase)
+		|| MeshName.Contains(TEXT("No_Render"), ESearchCase::IgnoreCase);
 }
 
-bool IsBlazeAttachmentToken(const FString& Token)
+bool IsSupportedGeneratedAttachmentIconMesh(const UObject* Object)
+{
+	return Object
+		&& !IsExcludedGeneratedAttachmentIconMesh(Object)
+		&& (Object->IsA<UStaticMesh>() || Object->IsA<USkeletalMesh>());
+}
+
+void AddGeneratedAttachmentIconToken(TSet<FString>& Tokens, const FString& Token)
 {
 	const FString Normalized = NormalizeAttachmentFocusToken(Token);
-	return Normalized.Contains(TEXT("Blaze"), ESearchCase::IgnoreCase)
-		|| Normalized.Contains(TEXT("HolographicSight"), ESearchCase::IgnoreCase)
-		|| Normalized.Contains(TEXT("SMHolographicSight"), ESearchCase::IgnoreCase);
+	if (!Normalized.IsEmpty())
+	{
+		Tokens.Add(Normalized);
+	}
+}
+
+void CollectGeneratedAttachmentIconMeshesFromProperty(const FProperty* Property, const void* ValuePtr, TArray<UObject*>& OutMeshes)
+{
+	if (!Property || !ValuePtr)
+	{
+		return;
+	}
+
+	if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+	{
+		UObject* Object = ObjectProperty->GetObjectPropertyValue(ValuePtr);
+		if (IsSupportedGeneratedAttachmentIconMesh(Object))
+		{
+			OutMeshes.AddUnique(Object);
+		}
+		return;
+	}
+
+	if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+	{
+		const FSoftObjectPtr SoftObject = SoftObjectProperty->GetPropertyValue(ValuePtr);
+		UObject* Object = SoftObject.LoadSynchronous();
+		if (IsSupportedGeneratedAttachmentIconMesh(Object))
+		{
+			OutMeshes.AddUnique(Object);
+		}
+		return;
+	}
+
+	if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+		{
+			CollectGeneratedAttachmentIconMeshesFromProperty(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), OutMeshes);
+		}
+	}
+}
+
+void CollectGeneratedAttachmentIconTokensFromProperty(const FProperty* Property, const void* ValuePtr, TSet<FString>& OutTokens)
+{
+	if (!Property || !ValuePtr)
+	{
+		return;
+	}
+
+	if (const FNameProperty* NameProperty = CastField<FNameProperty>(Property))
+	{
+		AddGeneratedAttachmentIconToken(OutTokens, NameProperty->GetPropertyValue(ValuePtr).ToString());
+		return;
+	}
+
+	if (const FStrProperty* StringProperty = CastField<FStrProperty>(Property))
+	{
+		AddGeneratedAttachmentIconToken(OutTokens, StringProperty->GetPropertyValue(ValuePtr));
+		return;
+	}
+
+	if (const FTextProperty* TextProperty = CastField<FTextProperty>(Property))
+	{
+		AddGeneratedAttachmentIconToken(OutTokens, TextProperty->GetPropertyValue(ValuePtr).ToString());
+		return;
+	}
+
+	if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+	{
+		const int64 Value = EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
+		if (const UEnum* Enum = EnumProperty->GetEnum())
+		{
+			AddGeneratedAttachmentIconToken(OutTokens, Enum->GetNameStringByValue(Value));
+		}
+		return;
+	}
+
+	if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+	{
+		if (const UEnum* Enum = ByteProperty->Enum)
+		{
+			AddGeneratedAttachmentIconToken(OutTokens, Enum->GetNameStringByValue(ByteProperty->GetPropertyValue(ValuePtr)));
+		}
+		return;
+	}
+
+	if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+	{
+		if (const UObject* Object = ObjectProperty->GetObjectPropertyValue(ValuePtr))
+		{
+			AddGeneratedAttachmentIconToken(OutTokens, Object->GetName());
+			AddGeneratedAttachmentIconToken(OutTokens, Object->GetPathName());
+		}
+		return;
+	}
+
+	if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+	{
+		const FSoftObjectPath SoftObjectPath = SoftObjectProperty->GetPropertyValue(ValuePtr).ToSoftObjectPath();
+		if (SoftObjectPath.IsValid())
+		{
+			AddGeneratedAttachmentIconToken(OutTokens, SoftObjectPath.GetAssetName());
+			AddGeneratedAttachmentIconToken(OutTokens, SoftObjectPath.ToString());
+		}
+		return;
+	}
+
+	if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+		{
+			CollectGeneratedAttachmentIconTokensFromProperty(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), OutTokens);
+		}
+	}
+}
+
+FString MakeGeneratedAttachmentIconObjectPath(const UObject* Mesh)
+{
+	if (!Mesh)
+	{
+		return FString();
+	}
+
+	const FString IconAssetName = FString::Printf(TEXT("T_%s_Icon"), *Mesh->GetName());
+	return FString::Printf(TEXT("/Game/UI/Generated/Icons/%s.%s"), *IconAssetName, *IconAssetName);
+}
+
+TArray<FGeneratedAttachmentIconDefinition>& GeneratedAttachmentIconDefinitions()
+{
+	static bool bBuiltDefinitions = false;
+	static TArray<FGeneratedAttachmentIconDefinition> Definitions;
+
+	if (bBuiltDefinitions)
+	{
+		return Definitions;
+	}
+	bBuiltDefinitions = true;
+
+	static const TCHAR* AttachmentDataTablePaths[] =
+	{
+		TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Optics.DT_Optics"),
+		TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_SideRail.DT_SideRail"),
+		TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Underbarrel.DT_Underbarrel"),
+		TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Muzzle.DT_Muzzle")
+	};
+
+	for (const TCHAR* DataTablePath : AttachmentDataTablePaths)
+	{
+		UDataTable* AttachmentTable = LoadObject<UDataTable>(nullptr, DataTablePath);
+		if (!AttachmentTable || !AttachmentTable->GetRowStruct())
+		{
+			continue;
+		}
+
+		const UScriptStruct* RowStruct = AttachmentTable->GetRowStruct();
+		for (const TPair<FName, uint8*>& RowPair : AttachmentTable->GetRowMap())
+		{
+			TSet<FString> RowTokens;
+			AddGeneratedAttachmentIconToken(RowTokens, RowPair.Key.ToString());
+
+			TArray<UObject*> RowMeshes;
+			for (TFieldIterator<FProperty> PropertyIt(RowStruct); PropertyIt; ++PropertyIt)
+			{
+				const FProperty* Property = *PropertyIt;
+				const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(RowPair.Value);
+				CollectGeneratedAttachmentIconTokensFromProperty(Property, ValuePtr, RowTokens);
+				CollectGeneratedAttachmentIconMeshesFromProperty(Property, ValuePtr, RowMeshes);
+			}
+
+			for (UObject* Mesh : RowMeshes)
+			{
+				FGeneratedAttachmentIconDefinition Definition;
+				Definition.Tokens = RowTokens;
+				AddGeneratedAttachmentIconToken(Definition.Tokens, Mesh->GetName());
+				AddGeneratedAttachmentIconToken(Definition.Tokens, Mesh->GetPathName());
+				Definition.IconObjectPath = MakeGeneratedAttachmentIconObjectPath(Mesh);
+				if (!Definition.IconObjectPath.IsEmpty())
+				{
+					Definitions.Add(MoveTemp(Definition));
+				}
+			}
+		}
+	}
+
+	return Definitions;
+}
+
+bool DoesGeneratedAttachmentIconDefinitionMatchToken(
+	const FGeneratedAttachmentIconDefinition& Definition,
+	const FString& Token)
+{
+	const FString NormalizedToken = NormalizeAttachmentFocusToken(Token);
+	if (NormalizedToken.Len() < 3)
+	{
+		return false;
+	}
+
+	for (const FString& DefinitionToken : Definition.Tokens)
+	{
+		if (DefinitionToken.Equals(NormalizedToken, ESearchCase::IgnoreCase)
+			|| (NormalizedToken.Len() >= 4 && DefinitionToken.Contains(NormalizedToken, ESearchCase::IgnoreCase))
+			|| (DefinitionToken.Len() >= 4 && NormalizedToken.Contains(DefinitionToken, ESearchCase::IgnoreCase)))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+const FGeneratedAttachmentIconDefinition* FindGeneratedAttachmentIconDefinitionForText(const FString& Text)
+{
+	const FString NormalizedText = NormalizeAttachmentFocusToken(Text);
+	if (NormalizedText.Len() < 3)
+	{
+		return nullptr;
+	}
+
+	for (const FGeneratedAttachmentIconDefinition& Definition : GeneratedAttachmentIconDefinitions())
+	{
+		if (DoesGeneratedAttachmentIconDefinitionMatchToken(Definition, NormalizedText))
+		{
+			return &Definition;
+		}
+	}
+
+	return nullptr;
 }
 
 UButton* FindOwningButton(UWidget* Widget)
@@ -622,20 +870,16 @@ UButton* FindOwningButton(UWidget* Widget)
 	return nullptr;
 }
 
-UTexture2D* LoadGeneratedBlazeAttachmentIcon()
+UTexture2D* LoadGeneratedAttachmentIcon(const FGeneratedAttachmentIconDefinition& Definition)
 {
-	static TWeakObjectPtr<UTexture2D> CachedRealIcon;
-
-	if (!CachedRealIcon.IsValid())
+	if (!Definition.CachedIcon.IsValid() && !Definition.IconObjectPath.IsEmpty())
 	{
-		CachedRealIcon = LoadObject<UTexture2D>(
-			nullptr,
-			TEXT("/Game/UI/Generated/Icons/T_SM_Holographic_Sight_Icon.T_SM_Holographic_Sight_Icon"));
+		Definition.CachedIcon = LoadObject<UTexture2D>(nullptr, *Definition.IconObjectPath);
 	}
-	return CachedRealIcon.Get();
+	return Definition.CachedIcon.Get();
 }
 
-float BlazeAttachmentHoverScale(const bool bHovered)
+float GeneratedAttachmentHoverScale(const bool bHovered)
 {
 	return bHovered ? 1.07f : 1.0f;
 }
@@ -652,11 +896,11 @@ UTexture2D* LoadSlateWhiteSquareTexture()
 	return CachedTexture.Get();
 }
 
-FSlateBrush MakeBlazeAttachmentIconBrush(UTexture2D* Texture)
+FSlateBrush MakeGeneratedAttachmentIconBrush(UTexture2D* Texture)
 {
 	FSlateBrush Brush;
 	Brush.DrawAs = Texture ? ESlateBrushDrawType::Image : ESlateBrushDrawType::NoDrawType;
-	Brush.ImageSize = BlazeAttachmentIconSize();
+	Brush.ImageSize = GeneratedAttachmentIconSize();
 	Brush.TintColor = FSlateColor(FLinearColor::White);
 	if (Texture)
 	{
@@ -665,13 +909,13 @@ FSlateBrush MakeBlazeAttachmentIconBrush(UTexture2D* Texture)
 	return Brush;
 }
 
-FSlateBrush MakeBlazeAttachmentFrameBrush(const bool bVisible)
+FSlateBrush MakeGeneratedAttachmentFrameBrush(const bool bVisible)
 {
 	FSlateBrush Brush;
 	Brush.DrawAs = bVisible ? ESlateBrushDrawType::Border : ESlateBrushDrawType::NoDrawType;
-	Brush.ImageSize = BlazeAttachmentIconSize();
+	Brush.ImageSize = GeneratedAttachmentIconSize();
 	Brush.Margin = FMargin(0.004f, 0.016f);
-	Brush.TintColor = FSlateColor(bVisible ? BlazeAttachmentSelectionFrameColor() : FLinearColor::Transparent);
+	Brush.TintColor = FSlateColor(bVisible ? GeneratedAttachmentIconSelectionFrameColor() : FLinearColor::Transparent);
 	if (bVisible)
 	{
 		Brush.SetResourceObject(LoadSlateWhiteSquareTexture());
@@ -811,17 +1055,18 @@ int32 ScoreAttachmentSelectionTextAgainstTokens(const FString& Text, const TSet<
 		: INDEX_NONE;
 }
 
-int32 ScoreAttachmentSelectionTextAgainstTokensWithBlazeAlias(const FString& Text, const TSet<FString>& Tokens)
+int32 ScoreAttachmentSelectionTextAgainstTokensWithGeneratedIconAlias(const FString& Text, const TSet<FString>& Tokens)
 {
 	int32 Score = ScoreAttachmentSelectionTextAgainstTokens(Text, Tokens);
-	if (!IsBlazeAttachmentSelectionText(Text))
+	const FGeneratedAttachmentIconDefinition* Definition = FindGeneratedAttachmentIconDefinitionForText(Text);
+	if (!Definition)
 	{
 		return Score;
 	}
 
 	for (const FString& Token : Tokens)
 	{
-		if (IsBlazeAttachmentToken(Token))
+		if (DoesGeneratedAttachmentIconDefinitionMatchToken(*Definition, Token))
 		{
 			Score = FMath::Max(Score, 90000);
 		}
@@ -3202,7 +3447,9 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 					StoredStyle = &AttachmentSelectionLabelStyles.Add(TextBlock, NewStyle);
 				}
 
-				const int32 Score = ScoreAttachmentSelectionTextAgainstTokensWithBlazeAlias(TextBlock->GetText().ToString(), HighlightTokens);
+				const int32 Score = ScoreAttachmentSelectionTextAgainstTokensWithGeneratedIconAlias(
+					TextBlock->GetText().ToString(),
+					HighlightTokens);
 				if (Score > BestScore)
 				{
 					BestScore = Score;
@@ -3222,7 +3469,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 				TextBlock->SetColorAndOpacity(bHighlighted
 					? FSlateColor(AttachmentSelectionHighlightColor())
 					: StoredStyle->OriginalColorAndOpacity);
-				UpdateBlazeAttachmentIcon(TextBlock, bHighlighted);
+				UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted);
 			}
 		}
 	}
@@ -3243,8 +3490,8 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 		}
 	}
 
-	TArray<UTextBlock*> BlazeLabelsToRestore;
-	for (auto It = BlazeAttachmentIconStyles.CreateIterator(); It; ++It)
+	TArray<UTextBlock*> GeneratedIconLabelsToRestore;
+	for (auto It = GeneratedAttachmentIconStyles.CreateIterator(); It; ++It)
 	{
 		UTextBlock* TextBlock = It.Key().Get();
 		if (!IsValid(TextBlock))
@@ -3255,30 +3502,37 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 
 		if (!SeenLabels.Contains(TextBlock))
 		{
-			BlazeLabelsToRestore.Add(TextBlock);
+			GeneratedIconLabelsToRestore.Add(TextBlock);
 		}
 	}
 
-	for (UTextBlock* TextBlock : BlazeLabelsToRestore)
+	for (UTextBlock* TextBlock : GeneratedIconLabelsToRestore)
 	{
-		RestoreBlazeAttachmentIconStyle(TextBlock);
+		RestoreGeneratedAttachmentIconStyle(TextBlock);
 	}
 }
 
-void UTMMenuViewerMeshTransitionSubsystem::UpdateBlazeAttachmentIcon(UTextBlock* TextBlock, const bool bSelected)
+void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(UTextBlock* TextBlock, const bool bSelected)
 {
-	if (!IsValid(TextBlock) || !IsBlazeAttachmentSelectionText(TextBlock->GetText().ToString()))
+	if (!IsValid(TextBlock))
 	{
 		return;
 	}
 
-	UTexture2D* RealIcon = LoadGeneratedBlazeAttachmentIcon();
+	const FGeneratedAttachmentIconDefinition* Definition =
+		FindGeneratedAttachmentIconDefinitionForText(TextBlock->GetText().ToString());
+	if (!Definition)
+	{
+		return;
+	}
+
+	UTexture2D* RealIcon = LoadGeneratedAttachmentIcon(*Definition);
 	if (!RealIcon)
 	{
 		return;
 	}
 
-	FBlazeAttachmentIconStyle* StoredStyle = BlazeAttachmentIconStyles.Find(TextBlock);
+	FGeneratedAttachmentIconStyle* StoredStyle = GeneratedAttachmentIconStyles.Find(TextBlock);
 	if (!StoredStyle)
 	{
 		UButton* Button = FindOwningButton(TextBlock);
@@ -3302,10 +3556,10 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateBlazeAttachmentIcon(UTextBlock*
 		IconScaleBox->SetStretch(EStretch::ScaleToFit);
 		IconScaleBox->SetStretchDirection(EStretchDirection::Both);
 		IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
-		IconImage->SetDesiredSizeOverride(BlazeAttachmentIconSize());
+		IconImage->SetDesiredSizeOverride(GeneratedAttachmentIconSize());
 		FrameImage->SetVisibility(ESlateVisibility::HitTestInvisible);
 
-		StoredStyle = &BlazeAttachmentIconStyles.Add(TextBlock);
+		StoredStyle = &GeneratedAttachmentIconStyles.Add(TextBlock);
 		StoredStyle->Button = Button;
 		StoredStyle->Label = TextBlock;
 		StoredStyle->Overlay = Overlay;
@@ -3344,29 +3598,29 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateBlazeAttachmentIcon(UTextBlock*
 	UImage* FrameImage = StoredStyle->FrameImage.Get();
 	if (!IsValid(Button) || !IsValid(IconImage) || !IsValid(FrameImage))
 	{
-		RestoreBlazeAttachmentIconStyle(TextBlock);
+		RestoreGeneratedAttachmentIconStyle(TextBlock);
 		return;
 	}
 
-	IconImage->SetBrush(MakeBlazeAttachmentIconBrush(RealIcon));
+	IconImage->SetBrush(MakeGeneratedAttachmentIconBrush(RealIcon));
 	IconImage->SetColorAndOpacity(FLinearColor::White);
 	if (UOverlay* Overlay = StoredStyle->Overlay.Get())
 	{
-		const float HoverScale = BlazeAttachmentHoverScale(Button->IsHovered());
+		const float HoverScale = GeneratedAttachmentHoverScale(Button->IsHovered());
 		Overlay->SetRenderScale(FVector2D(HoverScale, HoverScale));
 	}
-	FrameImage->SetBrush(MakeBlazeAttachmentFrameBrush(bSelected));
-	FrameImage->SetColorAndOpacity(bSelected ? BlazeAttachmentSelectionFrameColor() : FLinearColor::Transparent);
+	FrameImage->SetBrush(MakeGeneratedAttachmentFrameBrush(bSelected));
+	FrameImage->SetColorAndOpacity(bSelected ? GeneratedAttachmentIconSelectionFrameColor() : FLinearColor::Transparent);
 }
 
-void UTMMenuViewerMeshTransitionSubsystem::RestoreBlazeAttachmentIconStyle(UTextBlock* TextBlock)
+void UTMMenuViewerMeshTransitionSubsystem::RestoreGeneratedAttachmentIconStyle(UTextBlock* TextBlock)
 {
 	if (!TextBlock)
 	{
 		return;
 	}
 
-	FBlazeAttachmentIconStyle* StoredStyle = BlazeAttachmentIconStyles.Find(TextBlock);
+	FGeneratedAttachmentIconStyle* StoredStyle = GeneratedAttachmentIconStyles.Find(TextBlock);
 	if (!StoredStyle)
 	{
 		return;
@@ -3390,13 +3644,13 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreBlazeAttachmentIconStyle(UText
 		Button->SetContent(Label);
 	}
 
-	BlazeAttachmentIconStyles.Remove(TextBlock);
+	GeneratedAttachmentIconStyles.Remove(TextBlock);
 }
 
-void UTMMenuViewerMeshTransitionSubsystem::RestoreBlazeAttachmentIconStyles()
+void UTMMenuViewerMeshTransitionSubsystem::RestoreGeneratedAttachmentIconStyles()
 {
 	TArray<UTextBlock*> LabelsToRestore;
-	for (auto It = BlazeAttachmentIconStyles.CreateIterator(); It; ++It)
+	for (auto It = GeneratedAttachmentIconStyles.CreateIterator(); It; ++It)
 	{
 		if (UTextBlock* TextBlock = It.Key().Get())
 		{
@@ -3406,10 +3660,10 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreBlazeAttachmentIconStyles()
 
 	for (UTextBlock* TextBlock : LabelsToRestore)
 	{
-		RestoreBlazeAttachmentIconStyle(TextBlock);
+		RestoreGeneratedAttachmentIconStyle(TextBlock);
 	}
 
-	BlazeAttachmentIconStyles.Empty();
+	GeneratedAttachmentIconStyles.Empty();
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::RestoreAttachmentSelectionHighlight()
@@ -3424,7 +3678,7 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreAttachmentSelectionHighlight()
 		It.RemoveCurrent();
 	}
 
-	RestoreBlazeAttachmentIconStyles();
+	RestoreGeneratedAttachmentIconStyles();
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld* World, const bool bLoadoutVisible)
