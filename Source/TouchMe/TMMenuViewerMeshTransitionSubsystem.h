@@ -151,10 +151,14 @@ private:
 	static bool IsAutoCycleEnabled();
 	static bool IsBeatSyncEnabled();
 	static bool ShouldUseDownbeat();
+	static bool ShouldUsePhraseEnd();
+	static bool ShouldUsePhraseStart();
 	static float GetAutoCycleInterval();
 	static float GetBeatSyncWindow();
 	static float GetBeatSyncPulseThreshold();
+	static int32 GetBeatSyncPhraseBars();
 	static FBeatSyncSnapshot MakeBeatSyncSnapshot(const UTMAudioEnvelopeFollower* Follower);
+	static bool IsBeatSyncCycleBeat(const FBeatSyncSnapshot& BeatSync);
 	static EAttachmentCameraFocusGroup InferAttachmentCameraFocusGroupFromText(const FString& Text);
 	static FString DescribeAttachmentCameraFocusGroup(EAttachmentCameraFocusGroup Group);
 

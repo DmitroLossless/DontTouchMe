@@ -115,7 +115,14 @@ protected:
 	void ResetAnalysisState();
 	void RegisterAudioComponent(UAudioComponent* InAudioComponent);
 	void UnregisterAudioComponent();
+	void EnsureSyntheticBeatAnimationTimer();
+	void BroadcastSyntheticBeatAnimation();
+	void HandleAudioPlaybackPercent(const UAudioComponent* InAudioComponent, const USoundWave* PlayingSoundWave, float PlaybackPercent);
+	void SchedulePairedOnBeat(int32 InBeatIndex, float Strength);
+	void BroadcastPairedOnBeat();
 	float GetCurrentTimeSeconds() const;
+	bool ShouldBroadcastOnBeat(int32 InBeatIndex, float CurrentTimeSeconds) const;
+	void MarkOnBeatBroadcast(float CurrentTimeSeconds);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> AudioComponent;
@@ -132,7 +139,16 @@ protected:
 	float CurrentPlaybackTimeSeconds = 0.0f;
 	float LastBeatTimeSeconds = -1.0f;
 	float LastBeatStrength = 0.0f;
+	float NextOnBeatBroadcastTimeSeconds = -1.0f;
+	float PlaybackPercentTimeSeconds = 0.0f;
+	float PendingPairedOnBeatStrength = 0.0f;
+	bool bHasPlaybackPercentTime = false;
 	bool bAboveThreshold = false;
 	int32 BeatCounter = 0;
 	int32 BarCounter = 0;
+	int32 SyntheticBeatAnimationCounter = 0;
+	int32 PendingPairedOnBeatIndex = 0;
+	FDelegateHandle AudioPlaybackPercentHandle;
+	FTimerHandle PairedOnBeatTimerHandle;
+	FTimerHandle SyntheticBeatAnimationTimerHandle;
 };

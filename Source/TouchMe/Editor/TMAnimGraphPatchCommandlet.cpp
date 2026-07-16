@@ -9585,6 +9585,21 @@ namespace
 			TEXT("CreateSound2D"),
 			TEXT("PlaySound2D"),
 			TEXT("AnalyzeAudioComponent"),
+			TEXT("EnvelopeFollower"),
+			TEXT("OnBeat"),
+			TEXT("On Beat"),
+			TEXT("OnDownbeat"),
+			TEXT("On Downbeat"),
+			TEXT("Assign"),
+			TEXT("Bind Event"),
+			TEXT("Add Event"),
+			TEXT("Custom Event"),
+			TEXT("PlayAnimation"),
+			TEXT("Play Animation"),
+			TEXT("Animation"),
+			TEXT("Delay"),
+			TEXT("Timer"),
+			TEXT("K2_SetTimerDelegate"),
 			TEXT("MoveToMainMenu"),
 			TEXT("Construct"),
 			TEXT("LowPass"),
@@ -10508,6 +10523,299 @@ namespace
 		return TMSavePackageForAsset(Blueprint, LogPrefix);
 	}
 
+	bool TMInsertMainMenuBeatAnimationDelay()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBeatDelay] Failed to load W_MainMenu."));
+			return false;
+		}
+
+		UEdGraph* EventGraph = TMFindGraphByName(Blueprint, TEXT("EventGraph"));
+		const UEdGraphSchema_K2* Schema = EventGraph ? Cast<UEdGraphSchema_K2>(EventGraph->GetSchema()) : nullptr;
+		if (!EventGraph || !Schema)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBeatDelay] Missing EventGraph or schema."));
+			return false;
+		}
+
+		UFunction* DelayFunction = UKismetSystemLibrary::StaticClass()->FindFunctionByName(
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, Delay));
+		if (!DelayFunction)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBeatDelay] UKismetSystemLibrary::Delay was not found."));
+			return false;
+		}
+
+		auto IsPlayAnimationNode = [](const UK2Node_CallFunction* Node)
+		{
+			return Node
+				&& Node->FunctionReference.GetMemberName() == GET_FUNCTION_NAME_CHECKED(UUserWidget, PlayAnimation);
+		};
+
+		auto IsDelayNode = [](const UK2Node_CallFunction* Node)
+		{
+			return Node
+				&& Node->FunctionReference.GetMemberName() == GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, Delay);
+		};
+
+		auto FindPlayAnimationAfterThen = [&](UK2Node_CallFunction* Node, UK2Node_CallFunction*& OutDelayNode)
+		{
+			OutDelayNode = nullptr;
+			UEdGraphPin* ThenPin = TMFindPinByName(Node, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+			if (!ThenPin)
+			{
+				return static_cast<UK2Node_CallFunction*>(nullptr);
+			}
+
+			for (UEdGraphPin* LinkedThenPin : ThenPin->LinkedTo)
+			{
+				UK2Node_CallFunction* LinkedCallNode = Cast<UK2Node_CallFunction>(
+					LinkedThenPin ? LinkedThenPin->GetOwningNode() : nullptr);
+				if (IsPlayAnimationNode(LinkedCallNode))
+				{
+					return LinkedCallNode;
+				}
+
+				if (!IsDelayNode(LinkedCallNode))
+				{
+					continue;
+				}
+
+				UEdGraphPin* DelayThenPin = TMFindPinByName(LinkedCallNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+				if (!DelayThenPin)
+				{
+					continue;
+				}
+
+				for (UEdGraphPin* LinkedDelayThenPin : DelayThenPin->LinkedTo)
+				{
+					UK2Node_CallFunction* PlayNode = Cast<UK2Node_CallFunction>(
+						LinkedDelayThenPin ? LinkedDelayThenPin->GetOwningNode() : nullptr);
+					if (IsPlayAnimationNode(PlayNode))
+					{
+						OutDelayNode = LinkedCallNode;
+						return PlayNode;
+					}
+				}
+			}
+
+			return static_cast<UK2Node_CallFunction*>(nullptr);
+		};
+
+		auto IsAnimIndexDrivenPlayAnimation = [&](UK2Node_CallFunction* Node)
+		{
+			UEdGraphPin* ExecutePin = TMFindPinByName(Node, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+			return ExecutePin
+				&& ExecutePin->LinkedTo.ContainsByPredicate([](const UEdGraphPin* LinkedPin)
+				{
+					const UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(
+						LinkedPin ? LinkedPin->GetOwningNode() : nullptr);
+					return SetNode && SetNode->VariableReference.GetMemberName() == TEXT("AnimIndex");
+				});
+		};
+
+		auto IsMainAnimPlayAnimation = [&](UK2Node_CallFunction* Node)
+		{
+			if (!IsPlayAnimationNode(Node))
+			{
+				return false;
+			}
+
+			UEdGraphPin* AnimationPin = TMFindPinByName(Node, TEXT("InAnimation"), EGPD_Input);
+			return AnimationPin
+				&& AnimationPin->LinkedTo.ContainsByPredicate([](const UEdGraphPin* LinkedPin)
+				{
+					const UK2Node_VariableGet* GetNode = Cast<UK2Node_VariableGet>(
+						LinkedPin ? LinkedPin->GetOwningNode() : nullptr);
+					return GetNode && GetNode->VariableReference.GetMemberName() == TEXT("MainAnim");
+				});
+		};
+
+		auto SetDelayDuration = [&](UK2Node_CallFunction* DelayNode)
+		{
+			UEdGraphPin* DurationPin = TMFindPinByName(DelayNode, TEXT("Duration"), EGPD_Input);
+			if (!DurationPin)
+			{
+				return false;
+			}
+
+			if (DurationPin->DefaultValue != TEXT("0.250000"))
+			{
+				DurationPin->Modify();
+				DurationPin->DefaultValue = TEXT("0.250000");
+			}
+
+			return true;
+		};
+
+		auto CreateEighthDelayNode = [&](UK2Node_CallFunction* SourceNode, const int32 OffsetX, const int32 OffsetY)
+		{
+			FGraphNodeCreator<UK2Node_CallFunction> DelayCreator(*EventGraph);
+			UK2Node_CallFunction* DelayNode = DelayCreator.CreateNode();
+			DelayNode->SetFromFunction(DelayFunction);
+			DelayNode->NodePosX = SourceNode ? SourceNode->NodePosX + OffsetX : 0;
+			DelayNode->NodePosY = SourceNode ? SourceNode->NodePosY + OffsetY : 0;
+			DelayNode->NodeComment = TEXT("TM: eighth-note gap between main menu beat animation hits");
+			DelayCreator.Finalize();
+			DelayNode->ReconstructNode();
+
+			UEdGraphPin* DelayExecPin = TMFindPinByName(DelayNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+			UEdGraphPin* DelayThenPin = TMFindPinByName(DelayNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+			if (!DelayExecPin || !DelayThenPin || !SetDelayDuration(DelayNode))
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBeatDelay] Failed to create a valid Delay node."));
+				EventGraph->RemoveNode(DelayNode);
+				return static_cast<UK2Node_CallFunction*>(nullptr);
+			}
+
+			return DelayNode;
+		};
+
+		auto EnsureDelayBetween = [&](UK2Node_CallFunction* FromNode, UK2Node_CallFunction* ToNode, const int32 OffsetX, const int32 OffsetY, bool& bOutChanged)
+		{
+			UEdGraphPin* FromThenPin = TMFindPinByName(FromNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+			UEdGraphPin* ToExecPin = TMFindPinByName(ToNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+			if (!FromThenPin || !ToExecPin)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBeatDelay] Missing exec pins between %s and %s."),
+					*GetNameSafe(FromNode),
+					*GetNameSafe(ToNode));
+				return false;
+			}
+
+			for (UEdGraphPin* LinkedThenPin : FromThenPin->LinkedTo)
+			{
+				UK2Node_CallFunction* ExistingDelay = Cast<UK2Node_CallFunction>(
+					LinkedThenPin ? LinkedThenPin->GetOwningNode() : nullptr);
+				if (!IsDelayNode(ExistingDelay))
+				{
+					continue;
+				}
+
+				UEdGraphPin* ExistingDelayThenPin = TMFindPinByName(ExistingDelay, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+				if (ExistingDelayThenPin && ExistingDelayThenPin->LinkedTo.Contains(ToExecPin))
+				{
+					return SetDelayDuration(ExistingDelay);
+				}
+			}
+
+			UK2Node_CallFunction* DelayNode = CreateEighthDelayNode(FromNode, OffsetX, OffsetY);
+			if (!DelayNode)
+			{
+				return false;
+			}
+
+			UEdGraphPin* DelayExecPin = TMFindPinByName(DelayNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+			UEdGraphPin* DelayThenPin = TMFindPinByName(DelayNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+			FromThenPin->Modify();
+			ToExecPin->Modify();
+			FromThenPin->BreakLinkTo(ToExecPin);
+
+			bool bConnected = true;
+			bConnected &= Schema->TryCreateConnection(FromThenPin, DelayExecPin);
+			bConnected &= Schema->TryCreateConnection(DelayThenPin, ToExecPin);
+			if (!bConnected)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBeatDelay] Failed to connect Delay between %s and %s."),
+					*GetNameSafe(FromNode),
+					*GetNameSafe(ToNode));
+				return false;
+			}
+
+			bOutChanged = true;
+			UE_LOG(LogTemp, Display, TEXT("[TMMainMenuBeatDelay] Inserted 0.25s Delay between %s and %s."),
+				*GetNameSafe(FromNode),
+				*GetNameSafe(ToNode));
+			return true;
+		};
+
+		UK2Node_CallFunction* FirstPlayNode = nullptr;
+		UK2Node_CallFunction* SecondPlayNode = nullptr;
+		UK2Node_CallFunction* ExistingFirstDelayNode = nullptr;
+		for (UEdGraphNode* Node : EventGraph->Nodes)
+		{
+			UK2Node_CallFunction* Candidate = Cast<UK2Node_CallFunction>(Node);
+			if (!IsPlayAnimationNode(Candidate) || !IsAnimIndexDrivenPlayAnimation(Candidate))
+			{
+				continue;
+			}
+
+			UK2Node_CallFunction* DelayNode = nullptr;
+			if (UK2Node_CallFunction* LinkedPlayNode = FindPlayAnimationAfterThen(Candidate, DelayNode))
+			{
+				FirstPlayNode = Candidate;
+				SecondPlayNode = LinkedPlayNode;
+				ExistingFirstDelayNode = DelayNode;
+				break;
+			}
+		}
+
+		if (!FirstPlayNode || !SecondPlayNode)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[TMMainMenuBeatDelay] Did not find the OnBeat PlayAnimation pair to patch."));
+			return true;
+		}
+
+		UK2Node_CallFunction* ExistingSecondDelayNode = nullptr;
+		UK2Node_CallFunction* ThirdPlayNode = FindPlayAnimationAfterThen(SecondPlayNode, ExistingSecondDelayNode);
+		if (!ThirdPlayNode)
+		{
+			for (UEdGraphNode* Node : EventGraph->Nodes)
+			{
+				UK2Node_CallFunction* Candidate = Cast<UK2Node_CallFunction>(Node);
+				if (Candidate != FirstPlayNode
+					&& Candidate != SecondPlayNode
+					&& IsMainAnimPlayAnimation(Candidate))
+				{
+					ThirdPlayNode = Candidate;
+					break;
+				}
+			}
+		}
+
+		if (!ThirdPlayNode)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMMainMenuBeatDelay] Did not find a MainAnim PlayAnimation node for the third hit."));
+			return false;
+		}
+
+		EventGraph->Modify();
+		bool bChanged = false;
+		if (ExistingFirstDelayNode)
+		{
+			if (!SetDelayDuration(ExistingFirstDelayNode))
+			{
+				return false;
+			}
+		}
+		else if (!EnsureDelayBetween(FirstPlayNode, SecondPlayNode, 340, 40, bChanged))
+		{
+			return false;
+		}
+
+		if (ExistingSecondDelayNode)
+		{
+			if (!SetDelayDuration(ExistingSecondDelayNode))
+			{
+				return false;
+			}
+		}
+		else if (!EnsureDelayBetween(SecondPlayNode, ThirdPlayNode, 340, 120, bChanged))
+		{
+			return false;
+		}
+
+		UE_LOG(LogTemp, Display, TEXT("[TMMainMenuBeatDelay] Ensured three-hit eighth-note animation chain: %s -> %s -> %s."),
+			*GetNameSafe(FirstPlayNode),
+			*GetNameSafe(SecondPlayNode),
+			*GetNameSafe(ThirdPlayNode));
+		return TMCompileAndSaveBlueprintIfChanged(Blueprint, bChanged, TEXT("TMMainMenuBeatDelay"));
+	}
+
 	bool TMPatchMenuSoundtrackStartToMain()
 	{
 		USoundBase* MainMenuSoundtrack = LoadObject<USoundBase>(nullptr, TMMainMenuSoundtrackPath);
@@ -11049,6 +11357,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("DumpMenuSoundGraph"), ESearchCase::IgnoreCase))
 	{
 		return TMDumpMenuSoundGraph() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchMainMenuBeatAnimationDelay"), ESearchCase::IgnoreCase))
+	{
+		return TMInsertMainMenuBeatAnimationDelay() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("DumpIntroMainFlow"), ESearchCase::IgnoreCase))

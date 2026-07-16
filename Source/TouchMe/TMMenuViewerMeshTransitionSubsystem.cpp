@@ -55,7 +55,7 @@ static TAutoConsoleVariable<int32> CVarMenuViewerMeshTransitionAutoCycle(
 
 static TAutoConsoleVariable<float> CVarMenuViewerMeshTransitionAutoCycleInterval(
 	TEXT("tm.MenuViewerMeshTransition.AutoCycleInterval"),
-	10.0f,
+	15.0f,
 	TEXT("Minimum seconds between automatic BP_MenuViewer body mesh changes."),
 	ECVF_Default);
 
@@ -71,6 +71,23 @@ static TAutoConsoleVariable<int32> CVarMenuViewerMeshTransitionBeatSyncDownbeat(
 	TEXT("When beat sync is enabled, use downbeats instead of every beat for menu body mesh changes."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarMenuViewerMeshTransitionBeatSyncPhraseEnd(
+	TEXT("tm.MenuViewerMeshTransition.BeatSyncPhraseEnd"),
+	0,
+	TEXT("When beat sync is enabled, wait for the last beat of a musical phrase before menu body mesh changes."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarMenuViewerMeshTransitionBeatSyncPhraseStart(
+	TEXT("tm.MenuViewerMeshTransition.BeatSyncPhraseStart"),
+	1,
+	TEXT("When beat sync is enabled, wait for the first beat of a musical phrase before menu body mesh changes."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarMenuViewerMeshTransitionBeatSyncPhraseBars(
+	TEXT("tm.MenuViewerMeshTransition.BeatSyncPhraseBars"),
+	4,
+	TEXT("Bars per menu beat-sync phrase when tm.MenuViewerMeshTransition.BeatSyncPhraseEnd is enabled."),
+	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarMenuViewerMeshTransitionBeatSyncWindow(
 	TEXT("tm.MenuViewerMeshTransition.BeatSyncWindow"),
@@ -1129,7 +1146,10 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAutoCycle(
 	if (State.AutoCycleElapsedSeconds < GetAutoCycleInterval())
 	{
 		UpdateRhythmPulseMemory(State, BeatSync);
-
+		if (BeatSync.BeatIndex > State.LastObservedBeatIndex)
+		{
+			State.LastObservedBeatIndex = BeatSync.BeatIndex;
+		}
 		return;
 	}
 
@@ -1158,10 +1178,11 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAutoCycle(
 	UE_LOG(
 		LogTMMenuViewerMeshTransition,
 		Display,
-		TEXT("Auto-cycled menu mesh: %s -> %s Beat=%d Strength=%.2f Env=%.2f"),
+		TEXT("Auto-cycled menu mesh: %s -> %s Beat=%d PhraseBars=%d Strength=%.2f Env=%.2f"),
 		*GetNameSafe(PreviousMesh),
 		*GetNameSafe(NextMesh),
 		BeatSync.BeatIndex,
+		GetBeatSyncPhraseBars(),
 		BeatSync.LastBeatStrength,
 		BeatSync.NormalizedEnvelopeValue);
 }
@@ -1763,6 +1784,15 @@ bool UTMMenuViewerMeshTransitionSubsystem::ShouldUseDownbeat()
 	return CVarMenuViewerMeshTransitionBeatSyncDownbeat.GetValueOnGameThread() != 0;
 }
 
+bool UTMMenuViewerMeshTransitionSubsystem::ShouldUsePhraseEnd()
+{
+	return CVarMenuViewerMeshTransitionBeatSyncPhraseEnd.GetValueOnGameThread() != 0;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::ShouldUsePhraseStart()
+{
+	return CVarMenuViewerMeshTransitionBeatSyncPhraseStart.GetValueOnGameThread() != 0;
+}
 
 float UTMMenuViewerMeshTransitionSubsystem::GetAutoCycleInterval()
 {
@@ -1779,6 +1809,10 @@ float UTMMenuViewerMeshTransitionSubsystem::GetBeatSyncPulseThreshold()
 	return FMath::Max(0.01f, CVarMenuViewerMeshTransitionBeatSyncPulseThreshold.GetValueOnGameThread());
 }
 
+int32 UTMMenuViewerMeshTransitionSubsystem::GetBeatSyncPhraseBars()
+{
+	return FMath::Max(1, CVarMenuViewerMeshTransitionBeatSyncPhraseBars.GetValueOnGameThread());
+}
 
 UTMMenuViewerMeshTransitionSubsystem::FBeatSyncSnapshot UTMMenuViewerMeshTransitionSubsystem::MakeBeatSyncSnapshot(
 	const UTMAudioEnvelopeFollower* Follower)
@@ -1798,6 +1832,23 @@ UTMMenuViewerMeshTransitionSubsystem::FBeatSyncSnapshot UTMMenuViewerMeshTransit
 	return Snapshot;
 }
 
+bool UTMMenuViewerMeshTransitionSubsystem::IsBeatSyncCycleBeat(const FBeatSyncSnapshot& BeatSync)
+{
+	const int32 BeatsPerBar = FMath::Max(1, BeatSync.BeatsPerBar);
+	if (ShouldUsePhraseStart())
+	{
+		const int32 BeatsPerPhrase = BeatsPerBar * GetBeatSyncPhraseBars();
+		return BeatsPerPhrase > 0 && BeatSync.BeatIndex > 0 && ((BeatSync.BeatIndex - 1) % BeatsPerPhrase) == 0;
+	}
+
+	if (ShouldUsePhraseEnd())
+	{
+		const int32 BeatsPerPhrase = BeatsPerBar * GetBeatSyncPhraseBars();
+		return BeatsPerPhrase > 0 && BeatSync.BeatIndex > 0 && (BeatSync.BeatIndex % BeatsPerPhrase) == 0;
+	}
+
+	return !ShouldUseDownbeat() || ((BeatSync.BeatIndex - 1) % BeatsPerBar) == 0;
+}
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutFOV(UWorld* World, const bool bLoadoutVisible)
 {
@@ -4725,8 +4776,7 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsReadyForBeatSyncedCycle(
 	}
 
 	const bool bBeatInWindow = WorldTimeSeconds - BeatSync.LastBeatTimeSeconds <= GetBeatSyncWindow();
-	const bool bValidBarBeat = !ShouldUseDownbeat() || ((BeatSync.BeatIndex - 1) % BeatSync.BeatsPerBar) == 0;
-	if (bNewBeat && bBeatInWindow && bValidBarBeat)
+	if (bNewBeat && bBeatInWindow && IsBeatSyncCycleBeat(BeatSync))
 	{
 		return true;
 	}
