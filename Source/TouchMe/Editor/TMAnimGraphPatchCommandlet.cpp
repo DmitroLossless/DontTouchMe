@@ -7916,6 +7916,97 @@ namespace
 		return bSuccess;
 	}
 
+	bool TMIsIntroSkipTextBlock(const UTextBlock* TextBlock)
+	{
+		if (!TextBlock)
+		{
+			return false;
+		}
+
+		const FString Text = TextBlock->GetText().ToString().TrimStartAndEnd();
+		const FString Name = TextBlock->GetName();
+		return Text.Equals(TEXT("Press [Space] to Skip"), ESearchCase::IgnoreCase)
+			|| (Text.Contains(TEXT("Space"), ESearchCase::IgnoreCase) && Text.Contains(TEXT("Skip"), ESearchCase::IgnoreCase))
+			|| Name.Contains(TEXT("Skip"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMSetIntroSkipTextStyle(UTextBlock* TextBlock)
+	{
+		if (!TMIsIntroSkipTextBlock(TextBlock))
+		{
+			return false;
+		}
+
+		const FLinearColor SkipYellow = FLinearColor::FromSRGBColor(FColor(255, 212, 32, 255));
+		FSlateFontInfo Font = TextBlock->GetFont();
+		Font.TypefaceFontName = TEXT("Light");
+		Font.OutlineSettings.OutlineSize = 0;
+
+		TextBlock->Modify();
+		TextBlock->SetColorAndOpacity(FSlateColor(SkipYellow));
+		TextBlock->SetFont(Font);
+		TextBlock->SetShadowOffset(FVector2D::ZeroVector);
+		TextBlock->SetShadowColorAndOpacity(FLinearColor::Transparent);
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMIntroSkipText] Styled %s Text='%s' FontSize=%.1f Typeface=%s"),
+			*TextBlock->GetName(),
+			*TextBlock->GetText().ToString(),
+			static_cast<double>(Font.Size),
+			*Font.TypefaceFontName.ToString());
+		return true;
+	}
+
+	bool TMPatchIntroSkipTextStyle()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Intro.W_Intro"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMIntroSkipText] Failed to load W_Intro."));
+			return false;
+		}
+
+		UWidgetTree* WidgetTree = TMFindWidgetTree(Blueprint);
+		if (!WidgetTree)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMIntroSkipText] Failed to find WidgetTree in W_Intro."));
+			return false;
+		}
+
+		int32 ChangedTextBlocks = 0;
+		WidgetTree->ForEachWidget([&](UWidget* Widget)
+		{
+			if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
+			{
+				if (TMSetIntroSkipTextStyle(TextBlock))
+				{
+					++ChangedTextBlocks;
+				}
+			}
+		});
+
+		if (ChangedTextBlocks <= 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMIntroSkipText] No Space/Skip TextBlock found in W_Intro."));
+			return false;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMIntroSkipText] Blueprint compile failed: %s"), *Blueprint->GetPathName());
+			return false;
+		}
+
+		UE_LOG(LogTemp, Display, TEXT("[TMIntroSkipText] Styled %d W_Intro skip text block(s)."), ChangedTextBlocks);
+		return TMSavePackageForAsset(Blueprint, TEXT("TMIntroSkipText"));
+	}
+
 	bool TMIsColorRelatedPin(const UEdGraphPin* Pin)
 	{
 		if (!Pin)
@@ -9060,6 +9151,472 @@ namespace
 		}
 
 		return TMSavePackageForAsset(Blueprint, TEXT("TMLoadoutWeaponFeedback"));
+	}
+
+	bool TMIsLoadoutWeaponLayerIconPatchGraph(const UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return false;
+		}
+
+		const FString GraphName = Graph->GetName();
+		return GraphName.Equals(TEXT("GetDefault"), ESearchCase::IgnoreCase)
+			|| GraphName.Equals(TEXT("Highlight"), ESearchCase::IgnoreCase)
+			|| GraphName.Equals(TEXT("ReferenceLoadout"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMGraphAlreadyCallsLoadoutWeaponLayerIcon(const UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return false;
+		}
+
+		for (const UEdGraphNode* Node : Graph->Nodes)
+		{
+			const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+			if (CallNode
+				&& CallNode->FunctionReference.GetMemberName()
+					== GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, ApplyLoadoutWeaponLayerIcon))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMIsApplyLoadoutWeaponLayerIconCall(const UEdGraphNode* Node)
+	{
+		const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+		return CallNode
+			&& CallNode->FunctionReference.GetMemberName() == GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, ApplyLoadoutWeaponLayerIcon);
+	}
+
+	TArray<UEdGraphPin*> TMGetTerminalExecOutputPins(UEdGraph* Graph)
+	{
+		TArray<UEdGraphPin*> TerminalPins;
+		if (!Graph)
+		{
+			return TerminalPins;
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node)
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin
+					&& Pin->Direction == EGPD_Output
+					&& TMIsExecPin(Pin)
+					&& Pin->LinkedTo.IsEmpty())
+				{
+					TerminalPins.Add(Pin);
+				}
+			}
+		}
+
+		return TerminalPins;
+	}
+
+	bool TMInsertLoadoutWeaponLayerIconCallAfterExecPin(
+		UEdGraph* Graph,
+		UEdGraphPin* SourceThenPin,
+		const int32 NodeIndex)
+	{
+		if (!Graph || !SourceThenPin)
+		{
+			return false;
+		}
+
+		const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
+		UEdGraphNode* SourceNode = SourceThenPin->GetOwningNode();
+		if (!Schema || !SourceNode)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutWeaponIcon] Missing schema/source node for graph %s."),
+				*GetNameSafe(Graph));
+			return false;
+		}
+
+		FGraphNodeCreator<UK2Node_CallFunction> IconCreator(*Graph);
+		UK2Node_CallFunction* IconNode = IconCreator.CreateNode();
+		IconNode->FunctionReference.SetExternalMember(
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, ApplyLoadoutWeaponLayerIcon),
+			UTMGameplayStatics::StaticClass());
+		IconNode->NodePosX = SourceNode->NodePosX + 300;
+		IconNode->NodePosY = SourceNode->NodePosY + (NodeIndex * 120);
+		IconNode->NodeComment = TEXT("TM: apply generated weapon icon to loadout row");
+		IconCreator.Finalize();
+
+		FGraphNodeCreator<UK2Node_Self> SelfCreator(*Graph);
+		UK2Node_Self* SelfNode = SelfCreator.CreateNode();
+		SelfNode->NodePosX = IconNode->NodePosX - 220;
+		SelfNode->NodePosY = IconNode->NodePosY + 130;
+		SelfCreator.Finalize();
+
+		UEdGraphPin* IconExecPin = TMFindPinByName(IconNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* WidgetPin = TMFindPinByName(IconNode, TEXT("WeaponLayerWidget"), EGPD_Input);
+		if (!WidgetPin)
+		{
+			WidgetPin = TMFindFirstDataPin(IconNode, EGPD_Input);
+		}
+
+		UEdGraphPin* SelfOutputPin = TMFindPinByName(SelfNode, UEdGraphSchema_K2::PN_Self, EGPD_Output);
+		if (!SelfOutputPin)
+		{
+			SelfOutputPin = TMFindFirstDataPin(SelfNode, EGPD_Output);
+		}
+
+		if (!IconExecPin || !WidgetPin || !SelfOutputPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutWeaponIcon] Failed to create helper pins in graph %s Exec=%d Widget=%d Self=%d"),
+				*Graph->GetName(),
+				IconExecPin ? 1 : 0,
+				WidgetPin ? 1 : 0,
+				SelfOutputPin ? 1 : 0);
+			Graph->RemoveNode(IconNode);
+			Graph->RemoveNode(SelfNode);
+			return false;
+		}
+
+		SourceThenPin->Modify();
+		bool bSuccess = true;
+		bSuccess &= Schema->TryCreateConnection(SourceThenPin, IconExecPin);
+		bSuccess &= Schema->TryCreateConnection(SelfOutputPin, WidgetPin);
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutWeaponIcon] Inserted icon helper in graph %s after %s.%s Success=%d"),
+			*Graph->GetName(),
+			*GetNameSafe(SourceNode),
+			*SourceThenPin->PinName.ToString(),
+			bSuccess ? 1 : 0);
+		return bSuccess;
+	}
+
+	bool TMInsertLoadoutWeaponLayerIconCalls(UEdGraph* Graph)
+	{
+		if (!Graph || !TMIsLoadoutWeaponLayerIconPatchGraph(Graph))
+		{
+			return false;
+		}
+
+		if (TMGraphAlreadyCallsLoadoutWeaponLayerIcon(Graph))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMLoadoutWeaponIcon] Graph already patched: %s"),
+				*Graph->GetName());
+			return false;
+		}
+
+		TArray<UEdGraphPin*> TerminalPins = TMGetTerminalExecOutputPins(Graph);
+		if (TerminalPins.IsEmpty())
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutWeaponIcon] No terminal exec pins found in graph %s."),
+				*Graph->GetName());
+			return false;
+		}
+
+		bool bChanged = false;
+		for (int32 Index = 0; Index < TerminalPins.Num(); ++Index)
+		{
+			if (TMInsertLoadoutWeaponLayerIconCallAfterExecPin(Graph, TerminalPins[Index], Index))
+			{
+				bChanged = true;
+			}
+		}
+
+		return bChanged;
+	}
+
+	bool TMPatchLoadoutWeaponLayerIcons()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Weapon_Layer.W_Weapon_Layer"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponIcon] Failed to load W_Weapon_Layer."));
+			return false;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+
+		bool bChanged = false;
+		int32 CandidateGraphCount = 0;
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (!TMIsLoadoutWeaponLayerIconPatchGraph(Graph))
+			{
+				continue;
+			}
+
+			++CandidateGraphCount;
+			if (TMInsertLoadoutWeaponLayerIconCalls(Graph))
+			{
+				bChanged = true;
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutWeaponIcon] Summary: CandidateGraphs=%d Changed=%d"),
+			CandidateGraphCount,
+			bChanged ? 1 : 0);
+
+		if (CandidateGraphCount == 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponIcon] Did not find GetDefault/Highlight/ReferenceLoadout graphs."));
+			return false;
+		}
+
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponIcon] W_Weapon_Layer failed to compile after patch."));
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMLoadoutWeaponIcon"));
+	}
+
+	bool TMIsLoadoutWeaponLayerCreateWidgetNode(UEdGraphNode* Node)
+	{
+		if (!Node || !Node->GetClass()->GetName().Equals(TEXT("K2Node_CreateWidget"), ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+
+		UEdGraphPin* ReturnPin = TMFindPinByName(Node, UEdGraphSchema_K2::PN_ReturnValue, EGPD_Output);
+		const UObject* ReturnType = ReturnPin ? ReturnPin->PinType.PinSubCategoryObject.Get() : nullptr;
+		return ReturnType && GetNameSafe(ReturnType).Contains(TEXT("W_Weapon_Layer"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMLoadoutCreateWidgetAlreadyAppliesWeaponLayerIcon(UEdGraphNode* CreateWidgetNode)
+	{
+		if (!CreateWidgetNode)
+		{
+			return false;
+		}
+
+		if (UEdGraphPin* ReturnPin = TMFindPinByName(CreateWidgetNode, UEdGraphSchema_K2::PN_ReturnValue, EGPD_Output))
+		{
+			for (UEdGraphPin* LinkedPin : ReturnPin->LinkedTo)
+			{
+				if (LinkedPin && TMIsApplyLoadoutWeaponLayerIconCall(LinkedPin->GetOwningNode()))
+				{
+					return true;
+				}
+			}
+		}
+
+		if (UEdGraphPin* ThenPin = TMFindPinByName(CreateWidgetNode, UEdGraphSchema_K2::PN_Then, EGPD_Output))
+		{
+			for (UEdGraphPin* LinkedPin : ThenPin->LinkedTo)
+			{
+				if (LinkedPin && TMIsApplyLoadoutWeaponLayerIconCall(LinkedPin->GetOwningNode()))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	bool TMInsertLoadoutWeaponLayerIconCallAfterCreateWidget(UEdGraph* Graph, UEdGraphNode* CreateWidgetNode)
+	{
+		if (!Graph || !CreateWidgetNode)
+		{
+			return false;
+		}
+
+		if (TMLoadoutCreateWidgetAlreadyAppliesWeaponLayerIcon(CreateWidgetNode))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMLoadoutWeaponIcon] W_Loadout create widget already patched: Graph=%s Node=%s"),
+				*GetNameSafe(Graph),
+				*GetNameSafe(CreateWidgetNode));
+			return false;
+		}
+
+		const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
+		UEdGraphPin* CreateThenPin = TMFindPinByName(CreateWidgetNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* CreateReturnPin = TMFindPinByName(CreateWidgetNode, UEdGraphSchema_K2::PN_ReturnValue, EGPD_Output);
+		if (!Schema || !CreateThenPin || !CreateReturnPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutWeaponIcon] W_Loadout create widget missing pins: Graph=%s Node=%s Then=%d Return=%d"),
+				*GetNameSafe(Graph),
+				*GetNameSafe(CreateWidgetNode),
+				CreateThenPin ? 1 : 0,
+				CreateReturnPin ? 1 : 0);
+			return false;
+		}
+
+		TArray<UEdGraphPin*> PreviousThenTargets = CreateThenPin->LinkedTo;
+		if (PreviousThenTargets.IsEmpty())
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutWeaponIcon] W_Loadout create widget has no outgoing exec link: Graph=%s Node=%s"),
+				*GetNameSafe(Graph),
+				*GetNameSafe(CreateWidgetNode));
+			return false;
+		}
+
+		FGraphNodeCreator<UK2Node_CallFunction> IconCreator(*Graph);
+		UK2Node_CallFunction* IconNode = IconCreator.CreateNode();
+		IconNode->FunctionReference.SetExternalMember(
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, ApplyLoadoutWeaponLayerIcon),
+			UTMGameplayStatics::StaticClass());
+		IconNode->NodePosX = CreateWidgetNode->NodePosX + 320;
+		IconNode->NodePosY = CreateWidgetNode->NodePosY + 80;
+		IconNode->NodeComment = TEXT("TM: apply generated weapon icon to created loadout row");
+		IconCreator.Finalize();
+
+		UEdGraphPin* IconExecPin = TMFindPinByName(IconNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* IconThenPin = TMFindPinByName(IconNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* WidgetPin = TMFindPinByName(IconNode, TEXT("WeaponLayerWidget"), EGPD_Input);
+		if (!WidgetPin)
+		{
+			WidgetPin = TMFindFirstDataPin(IconNode, EGPD_Input);
+		}
+
+		if (!IconExecPin || !IconThenPin || !WidgetPin)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutWeaponIcon] Failed to create W_Loadout helper pins: Exec=%d Then=%d Widget=%d"),
+				IconExecPin ? 1 : 0,
+				IconThenPin ? 1 : 0,
+				WidgetPin ? 1 : 0);
+			Graph->RemoveNode(IconNode);
+			return false;
+		}
+
+		CreateThenPin->Modify();
+		CreateThenPin->BreakAllPinLinks(false);
+
+		bool bSuccess = true;
+		bSuccess &= Schema->TryCreateConnection(CreateThenPin, IconExecPin);
+		bSuccess &= Schema->TryCreateConnection(CreateReturnPin, WidgetPin);
+		for (UEdGraphPin* PreviousThenTarget : PreviousThenTargets)
+		{
+			if (PreviousThenTarget)
+			{
+				bSuccess &= Schema->TryCreateConnection(IconThenPin, PreviousThenTarget);
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutWeaponIcon] Inserted W_Loadout icon helper after %s in graph %s. OldThenTargets=%d Success=%d"),
+			*GetNameSafe(CreateWidgetNode),
+			*GetNameSafe(Graph),
+			PreviousThenTargets.Num(),
+			bSuccess ? 1 : 0);
+		return bSuccess;
+	}
+
+	bool TMPatchLoadoutCreatedWeaponLayerIcons()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponIcon] Failed to load W_Loadout."));
+			return false;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+
+		int32 CreateWidgetCount = 0;
+		bool bChanged = false;
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			TArray<UEdGraphNode*> Nodes = Graph->Nodes;
+			for (UEdGraphNode* Node : Nodes)
+			{
+				if (!TMIsLoadoutWeaponLayerCreateWidgetNode(Node))
+				{
+					continue;
+				}
+
+				++CreateWidgetCount;
+				if (TMInsertLoadoutWeaponLayerIconCallAfterCreateWidget(Graph, Node))
+				{
+					bChanged = true;
+				}
+			}
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutWeaponIcon] W_Loadout summary: CreateWeaponLayerWidgets=%d Changed=%d"),
+			CreateWidgetCount,
+			bChanged ? 1 : 0);
+
+		if (CreateWidgetCount == 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponIcon] Did not find W_Loadout Create W Weapon Layer Widget nodes."));
+			return false;
+		}
+
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutWeaponIcon] W_Loadout failed to compile after patch."));
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMLoadoutWeaponIcon"));
 	}
 
 	bool TMIsMainMenuLoadoutCleanupTargetComponent(const FString& ComponentName)
@@ -11324,6 +11881,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 		return TMTintYellowUI() ? 0 : 1;
 	}
 
+	if (Params.Contains(TEXT("PatchIntroSkipText"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchIntroSkipTextStyle() ? 0 : 1;
+	}
+
 	if (Params.Contains(TEXT("DumpYellowUIGraphColors"), ESearchCase::IgnoreCase))
 	{
 		return TMDumpYellowUIGraphColors() ? 0 : 1;
@@ -11377,6 +11939,13 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("PatchLoadoutWeaponSelectionFeedback"), ESearchCase::IgnoreCase))
 	{
 		return TMPatchLoadoutWeaponSelectionFeedback() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchLoadoutWeaponLayerIcons"), ESearchCase::IgnoreCase))
+	{
+		const bool bLayerPatched = TMPatchLoadoutWeaponLayerIcons();
+		const bool bLoadoutPatched = TMPatchLoadoutCreatedWeaponLayerIcons();
+		return (bLayerPatched && bLoadoutPatched) ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("PatchMainMenuLoadoutPreviewCleanup"), ESearchCase::IgnoreCase))

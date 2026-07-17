@@ -18,9 +18,11 @@ class UOverlay;
 class UParticleSystemComponent;
 class UPrimitiveComponent;
 class UScaleBox;
+class USizeBox;
 class USkeletalMesh;
 class USkeletalMeshComponent;
 class UTextBlock;
+class UWidget;
 class UTMAudioEnvelopeFollower;
 
 UCLASS()
@@ -114,10 +116,12 @@ private:
 	{
 		TWeakObjectPtr<UButton> Button;
 		TWeakObjectPtr<UTextBlock> Label;
+		TWeakObjectPtr<USizeBox> RootSizeBox;
 		TWeakObjectPtr<UOverlay> Overlay;
 		TWeakObjectPtr<UScaleBox> IconScaleBox;
 		TWeakObjectPtr<UImage> IconImage;
 		TWeakObjectPtr<UImage> FrameImage;
+		TWeakObjectPtr<UWidget> OriginalButtonContent;
 		ESlateVisibility OriginalLabelVisibility = ESlateVisibility::Visible;
 		float OriginalLabelRenderOpacity = 1.0f;
 	};
@@ -181,7 +185,11 @@ private:
 	void RestoreMainMenuCameraDrift();
 	void UpdateAttachmentSelectionHighlight(UWorld* World, bool bAttachmentsVisible);
 	void RestoreAttachmentSelectionHighlight();
-	void UpdateGeneratedAttachmentIcon(UTextBlock* TextBlock, bool bSelected);
+	void UpdateGeneratedAttachmentIcon(
+		UTextBlock* TextBlock,
+		bool bSelected,
+		bool bUseWeaponDefinitions = false,
+		UButton* ButtonOverride = nullptr);
 	void RestoreGeneratedAttachmentIconStyle(UTextBlock* TextBlock);
 	void RestoreGeneratedAttachmentIconStyles();
 	void UpdateWeaponSelectionHighlight(UWorld* World, bool bLoadoutVisible);

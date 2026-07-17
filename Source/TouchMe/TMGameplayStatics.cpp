@@ -26,10 +26,20 @@
 #include "SceneView.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
+#include "Components/Button.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/ContentWidget.h"
+#include "Components/HorizontalBoxSlot.h"
+#include "Components/Image.h"
+#include "Components/SizeBox.h"
+#include "Containers/Ticker.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/TextBlock.h"
+#include "Components/VerticalBoxSlot.h"
 #include "Components/Widget.h"
 #include "Math/InverseRotationMatrix.h"
 #include "UObject/Package.h"
+#include "Engine/Texture2D.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/DataTable.h"
 #include "ParticleHelper.h"
@@ -97,6 +107,94 @@
 
 namespace TMGameplayStatics
 {
+	constexpr float LoadoutWeaponLayerIconWidth = 288.0f;
+	constexpr float LoadoutWeaponLayerIconHeight = 72.0f;
+	constexpr float LoadoutWeaponLayerIconHoverScale = 1.07f;
+
+	struct FLoadoutWeaponLayerIconHoverState
+	{
+		TWeakObjectPtr<UButton> Button;
+		TWeakObjectPtr<UImage> IconImage;
+		bool bHovered = false;
+	};
+
+	TArray<FLoadoutWeaponLayerIconHoverState> LoadoutWeaponLayerIconHoverStates;
+	FTSTicker::FDelegateHandle LoadoutWeaponLayerIconHoverTickerHandle;
+
+	void ApplyLoadoutWeaponLayerIconHoverVisual(UImage* IconImage, const bool bHovered)
+	{
+		if (!IconImage)
+		{
+			return;
+		}
+
+		IconImage->SetRenderTransformPivot(FVector2D(0.0f, 0.5f));
+		IconImage->SetRenderScale(bHovered
+			? FVector2D(LoadoutWeaponLayerIconHoverScale, LoadoutWeaponLayerIconHoverScale)
+			: FVector2D(1.0f, 1.0f));
+	}
+
+	bool TickLoadoutWeaponLayerIconHover(const float DeltaTime)
+	{
+		for (int32 Index = LoadoutWeaponLayerIconHoverStates.Num() - 1; Index >= 0; --Index)
+		{
+			FLoadoutWeaponLayerIconHoverState& State = LoadoutWeaponLayerIconHoverStates[Index];
+			UButton* Button = State.Button.Get();
+			UImage* IconImage = State.IconImage.Get();
+			if (!Button || !IconImage)
+			{
+				LoadoutWeaponLayerIconHoverStates.RemoveAtSwap(Index);
+				continue;
+			}
+
+			const bool bHovered = Button->IsHovered();
+			if (State.bHovered != bHovered)
+			{
+				State.bHovered = bHovered;
+				ApplyLoadoutWeaponLayerIconHoverVisual(IconImage, bHovered);
+			}
+		}
+
+		if (LoadoutWeaponLayerIconHoverStates.Num() == 0)
+		{
+			LoadoutWeaponLayerIconHoverTickerHandle.Reset();
+			return false;
+		}
+
+		return true;
+	}
+
+	void RegisterLoadoutWeaponLayerIconHover(UButton* Button, UImage* IconImage)
+	{
+		if (!Button || !IconImage)
+		{
+			return;
+		}
+
+		for (FLoadoutWeaponLayerIconHoverState& State : LoadoutWeaponLayerIconHoverStates)
+		{
+			if (State.Button.Get() == Button)
+			{
+				State.IconImage = IconImage;
+				State.bHovered = Button->IsHovered();
+				ApplyLoadoutWeaponLayerIconHoverVisual(IconImage, State.bHovered);
+				return;
+			}
+		}
+
+		FLoadoutWeaponLayerIconHoverState& State = LoadoutWeaponLayerIconHoverStates.AddDefaulted_GetRef();
+		State.Button = Button;
+		State.IconImage = IconImage;
+		State.bHovered = Button->IsHovered();
+		ApplyLoadoutWeaponLayerIconHoverVisual(IconImage, State.bHovered);
+
+		if (!LoadoutWeaponLayerIconHoverTickerHandle.IsValid())
+		{
+			LoadoutWeaponLayerIconHoverTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateStatic(&TickLoadoutWeaponLayerIconHover));
+		}
+	}
+
 	struct FALSTurnInPlaceBridgeState
 	{
 		bool bHasSourceYaw = false;
@@ -251,6 +349,247 @@ namespace TMGameplayStatics
 			|| NormalizedName.StartsWith(TEXT("jaw_"))
 			|| NormalizedName.StartsWith(TEXT("eye_"))
 			|| NormalizedName.StartsWith(TEXT("eyeball_"));
+	}
+
+	bool IsLoadoutWeaponLayerName(const UUserWidget* WeaponLayerWidget, const TCHAR* WeaponName)
+	{
+		if (!WeaponLayerWidget || !WeaponName)
+		{
+			return false;
+		}
+
+		const FString WidgetName = WeaponLayerWidget->GetName();
+		return WidgetName.Equals(WeaponName, ESearchCase::IgnoreCase)
+			|| WidgetName.StartsWith(FString::Printf(TEXT("%s_"), WeaponName), ESearchCase::IgnoreCase);
+	}
+
+	FString GetLoadoutWeaponLayerDisplayText(const UUserWidget* WeaponLayerWidget)
+	{
+		if (!WeaponLayerWidget)
+		{
+			return FString();
+		}
+
+		const UTextBlock* NameText = Cast<UTextBlock>(WeaponLayerWidget->GetWidgetFromName(TEXT("NameText")));
+		if (NameText)
+		{
+			const FString Text = NameText->GetText().ToString().TrimStartAndEnd();
+			if (!Text.IsEmpty())
+			{
+				return Text;
+			}
+		}
+
+		FString FirstText;
+		if (WeaponLayerWidget->WidgetTree)
+		{
+			WeaponLayerWidget->WidgetTree->ForEachWidget(
+				[&FirstText](UWidget* Widget)
+				{
+					if (!FirstText.IsEmpty())
+					{
+						return;
+					}
+
+					const UTextBlock* TextBlock = Cast<UTextBlock>(Widget);
+					if (!TextBlock)
+					{
+						return;
+					}
+
+					FirstText = TextBlock->GetText().ToString().TrimStartAndEnd();
+				});
+		}
+
+		return FirstText;
+	}
+
+	FString GetLoadoutWeaponLayerIdentifier(const UUserWidget* WeaponLayerWidget)
+	{
+		if (!WeaponLayerWidget)
+		{
+			return FString();
+		}
+
+		static const FName IdentifierPropertyNames[] =
+		{
+			TEXT("WeaponIdentifier"),
+			TEXT("Weapon Identifier"),
+			TEXT("WeaponID")
+		};
+
+		for (const FName& IdentifierPropertyName : IdentifierPropertyNames)
+		{
+			if (const FNameProperty* IdentifierNameProperty =
+				FindFProperty<FNameProperty>(WeaponLayerWidget->GetClass(), IdentifierPropertyName))
+			{
+				return IdentifierNameProperty->GetPropertyValue_InContainer(WeaponLayerWidget).ToString();
+			}
+		}
+
+		return FString();
+	}
+
+	bool IsLoadoutWeaponLayerIdentity(const UUserWidget* WeaponLayerWidget, const TCHAR* WeaponName, const TCHAR* DisplayAlias = nullptr)
+	{
+		if (IsLoadoutWeaponLayerName(WeaponLayerWidget, WeaponName))
+		{
+			return true;
+		}
+
+		const FString WeaponIdentifier = GetLoadoutWeaponLayerIdentifier(WeaponLayerWidget);
+		if (WeaponIdentifier.Equals(WeaponName, ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+
+		const FString DisplayText = GetLoadoutWeaponLayerDisplayText(WeaponLayerWidget);
+		return DisplayText.Equals(WeaponName, ESearchCase::IgnoreCase)
+			|| (DisplayAlias && DisplayText.Equals(DisplayAlias, ESearchCase::IgnoreCase));
+	}
+
+	bool ShouldHideLoadoutWeaponLayer(const UUserWidget* WeaponLayerWidget)
+	{
+		return IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("Sniper"), TEXT("BP_Sniper"));
+	}
+
+	UTexture2D* GetLoadoutWeaponLayerIconTexture(const UUserWidget* WeaponLayerWidget)
+	{
+		static TWeakObjectPtr<UTexture2D> CachedShotgunIcon;
+		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("Shotgun"), TEXT("Rem 870"))
+			|| IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("Rem 870")))
+		{
+			if (CachedShotgunIcon.IsValid())
+			{
+				return CachedShotgunIcon.Get();
+			}
+
+			UTexture2D* ShotgunIcon = LoadObject<UTexture2D>(
+				nullptr,
+				TEXT("/Game/UI/Generated/Icons/T_Shotgun_Icon.T_Shotgun_Icon"));
+			CachedShotgunIcon = ShotgunIcon;
+			return ShotgunIcon;
+		}
+
+		static TWeakObjectPtr<UTexture2D> CachedKrissIcon;
+		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("Kriss")))
+		{
+			if (CachedKrissIcon.IsValid())
+			{
+				return CachedKrissIcon.Get();
+			}
+
+			UTexture2D* KrissIcon = LoadObject<UTexture2D>(
+				nullptr,
+				TEXT("/Game/UI/Generated/Icons/T_SMG_Kriss_Icon.T_SMG_Kriss_Icon"));
+			CachedKrissIcon = KrissIcon;
+			return KrissIcon;
+		}
+
+		static TWeakObjectPtr<UTexture2D> CachedTarIcon;
+		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("TAR")))
+		{
+			if (CachedTarIcon.IsValid())
+			{
+				return CachedTarIcon.Get();
+			}
+
+			UTexture2D* TarIcon = LoadObject<UTexture2D>(
+				nullptr,
+				TEXT("/Game/UI/Generated/Icons/T_SMG_TAR_Icon.T_SMG_TAR_Icon"));
+			CachedTarIcon = TarIcon;
+			return TarIcon;
+		}
+
+		static TWeakObjectPtr<UTexture2D> CachedM4Icon;
+		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("M4"), TEXT("SCAR")))
+		{
+			if (CachedM4Icon.IsValid())
+			{
+				return CachedM4Icon.Get();
+			}
+
+			UTexture2D* M4Icon = LoadObject<UTexture2D>(
+				nullptr,
+				TEXT("/Game/UI/Generated/Icons/T_SMG_M4_Icon.T_SMG_M4_Icon"));
+			CachedM4Icon = M4Icon;
+			return M4Icon;
+		}
+
+		static TWeakObjectPtr<UTexture2D> CachedAcwiIcon;
+		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("ACWI")))
+		{
+			if (CachedAcwiIcon.IsValid())
+			{
+				return CachedAcwiIcon.Get();
+			}
+
+			UTexture2D* AcwiIcon = LoadObject<UTexture2D>(
+				nullptr,
+				TEXT("/Game/UI/Generated/Icons/T_SMG_ACWI_Icon.T_SMG_ACWI_Icon"));
+			CachedAcwiIcon = AcwiIcon;
+			return AcwiIcon;
+		}
+
+		return nullptr;
+	}
+
+	FLinearColor GetLoadoutWeaponLayerIconTint(const UTextBlock* NameText)
+	{
+		if (!NameText)
+		{
+			return FLinearColor::White;
+		}
+
+		FLinearColor Tint = NameText->GetColorAndOpacity().GetSpecifiedColor();
+		if (Tint.A <= 0.01f)
+		{
+			Tint = FLinearColor::White;
+		}
+
+		Tint.A = 1.0f;
+		return Tint;
+	}
+
+	FSlateBrush MakeLoadoutWeaponLayerIconBrush(UTexture2D* IconTexture)
+	{
+		FSlateBrush Brush;
+		Brush.DrawAs = ESlateBrushDrawType::Image;
+		Brush.SetResourceObject(IconTexture);
+		Brush.SetImageSize(FVector2D(LoadoutWeaponLayerIconWidth, LoadoutWeaponLayerIconHeight));
+		return Brush;
+	}
+
+	void ApplyLoadoutWeaponLayerSlotSize(UWidget* Widget)
+	{
+		if (!Widget || !Widget->Slot)
+		{
+			return;
+		}
+
+		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Widget->Slot))
+		{
+			CanvasSlot->SetAutoSize(false);
+			CanvasSlot->SetSize(FVector2D(LoadoutWeaponLayerIconWidth, LoadoutWeaponLayerIconHeight));
+			return;
+		}
+
+		if (UVerticalBoxSlot* VerticalSlot = Cast<UVerticalBoxSlot>(Widget->Slot))
+		{
+			VerticalSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+			VerticalSlot->SetPadding(FMargin(0.0f));
+			VerticalSlot->SetHorizontalAlignment(HAlign_Left);
+			VerticalSlot->SetVerticalAlignment(VAlign_Center);
+			return;
+		}
+
+		if (UHorizontalBoxSlot* HorizontalSlot = Cast<UHorizontalBoxSlot>(Widget->Slot))
+		{
+			HorizontalSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+			HorizontalSlot->SetPadding(FMargin(0.0f));
+			HorizontalSlot->SetHorizontalAlignment(HAlign_Left);
+			HorizontalSlot->SetVerticalAlignment(VAlign_Center);
+		}
 	}
 
 #if WITH_EDITOR
@@ -2101,6 +2440,119 @@ void UTMGameplayStatics::CleanupLoadoutPreview(UUserWidget* OwnerWidget)
 	{
 		TMCleanupLoadoutPreviewWidget(LoadoutWidget);
 	}
+}
+
+bool UTMGameplayStatics::ApplyLoadoutWeaponLayerIcon(UUserWidget* WeaponLayerWidget)
+{
+	if (!WeaponLayerWidget)
+	{
+		return false;
+	}
+
+	if (TMGameplayStatics::ShouldHideLoadoutWeaponLayer(WeaponLayerWidget))
+	{
+		WeaponLayerWidget->SetVisibility(ESlateVisibility::Collapsed);
+		return true;
+	}
+
+	UTexture2D* IconTexture = TMGameplayStatics::GetLoadoutWeaponLayerIconTexture(WeaponLayerWidget);
+	if (!IconTexture)
+	{
+		return false;
+	}
+
+	UButton* WeaponButton = Cast<UButton>(WeaponLayerWidget->GetWidgetFromName(TEXT("B_Weapon")));
+	UTextBlock* NameText = Cast<UTextBlock>(WeaponLayerWidget->GetWidgetFromName(TEXT("NameText")));
+	if (!WeaponButton)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMLoadoutWeaponIcon] %s has no B_Weapon button."),
+			*WeaponLayerWidget->GetName());
+		return false;
+	}
+
+	UImage* IconImage = Cast<UImage>(WeaponLayerWidget->GetWidgetFromName(TEXT("TM_LoadoutWeaponIcon")));
+	if (!IconImage && WeaponLayerWidget->WidgetTree)
+	{
+		IconImage = WeaponLayerWidget->WidgetTree->ConstructWidget<UImage>(
+			UImage::StaticClass(),
+			TEXT("TM_LoadoutWeaponIcon"));
+	}
+
+	if (!IconImage)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMLoadoutWeaponIcon] Failed to create icon image for %s."),
+			*WeaponLayerWidget->GetName());
+		return false;
+	}
+
+	USizeBox* IconBox = Cast<USizeBox>(WeaponLayerWidget->GetWidgetFromName(TEXT("TM_LoadoutWeaponIconBox")));
+	if (!IconBox && WeaponLayerWidget->WidgetTree)
+	{
+		IconBox = WeaponLayerWidget->WidgetTree->ConstructWidget<USizeBox>(
+			USizeBox::StaticClass(),
+			TEXT("TM_LoadoutWeaponIconBox"));
+	}
+
+	if (!IconBox)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMLoadoutWeaponIcon] Failed to create icon size box for %s."),
+			*WeaponLayerWidget->GetName());
+		return false;
+	}
+
+	FSlateBrush IconBrush = TMGameplayStatics::MakeLoadoutWeaponLayerIconBrush(IconTexture);
+	IconImage->SetBrush(IconBrush);
+	IconImage->SetDesiredSizeOverride(FVector2D(
+		TMGameplayStatics::LoadoutWeaponLayerIconWidth,
+		TMGameplayStatics::LoadoutWeaponLayerIconHeight));
+	IconImage->SetColorAndOpacity(FLinearColor::White);
+	IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+
+	IconBox->SetWidthOverride(TMGameplayStatics::LoadoutWeaponLayerIconWidth);
+	IconBox->SetHeightOverride(TMGameplayStatics::LoadoutWeaponLayerIconHeight);
+	IconBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+	if (IconBox->GetContent() != IconImage)
+	{
+		IconBox->SetContent(IconImage);
+	}
+
+	TMGameplayStatics::ApplyLoadoutWeaponLayerSlotSize(WeaponLayerWidget);
+	TMGameplayStatics::ApplyLoadoutWeaponLayerSlotSize(WeaponButton);
+	TMGameplayStatics::ApplyLoadoutWeaponLayerSlotSize(IconBox);
+	TMGameplayStatics::RegisterLoadoutWeaponLayerIconHover(WeaponButton, IconImage);
+
+	if (WeaponButton->GetContent() != IconBox)
+	{
+		WeaponButton->SetContent(IconBox);
+	}
+
+	if (NameText)
+	{
+		NameText->SetVisibility(ESlateVisibility::Collapsed);
+	}
+
+	if (WeaponLayerWidget->WidgetTree)
+	{
+		WeaponLayerWidget->WidgetTree->ForEachWidget(
+			[](UWidget* Widget)
+			{
+				if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
+				{
+					TextBlock->SetVisibility(ESlateVisibility::Collapsed);
+				}
+			});
+	}
+
+	return true;
 }
 
 bool UTMGameplayStatics::AttachActiveLoadoutWeaponToTransformator(AActor* WeaponActor)

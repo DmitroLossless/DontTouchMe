@@ -16,6 +16,7 @@
 #include "Components/RectLightComponent.h"
 #include "Components/ScaleBox.h"
 #include "Components/SceneComponent.h"
+#include "Components/SizeBox.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextBlock.h"
@@ -586,6 +587,12 @@ const FVector2D& GeneratedAttachmentIconSize()
 	return Size;
 }
 
+const FVector2D& GeneratedWeaponSelectionIconWidgetSize()
+{
+	static const FVector2D Size(288.0f, 72.0f);
+	return Size;
+}
+
 struct FGeneratedAttachmentIconDefinition
 {
 	FString IconObjectPath;
@@ -656,6 +663,20 @@ void CollectGeneratedAttachmentIconMeshesFromProperty(const FProperty* Property,
 		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
 		{
 			CollectGeneratedAttachmentIconMeshesFromProperty(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), OutMeshes);
+		}
+		return;
+	}
+
+	if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (const UScriptStruct* Struct = StructProperty->Struct)
+		{
+			for (TFieldIterator<FProperty> PropertyIt(Struct); PropertyIt; ++PropertyIt)
+			{
+				const FProperty* ChildProperty = *PropertyIt;
+				const void* ChildValuePtr = ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr);
+				CollectGeneratedAttachmentIconMeshesFromProperty(ChildProperty, ChildValuePtr, OutMeshes);
+			}
 		}
 	}
 }
@@ -732,6 +753,20 @@ void CollectGeneratedAttachmentIconTokensFromProperty(const FProperty* Property,
 		{
 			CollectGeneratedAttachmentIconTokensFromProperty(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), OutTokens);
 		}
+		return;
+	}
+
+	if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (const UScriptStruct* Struct = StructProperty->Struct)
+		{
+			for (TFieldIterator<FProperty> PropertyIt(Struct); PropertyIt; ++PropertyIt)
+			{
+				const FProperty* ChildProperty = *PropertyIt;
+				const void* ChildValuePtr = ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr);
+				CollectGeneratedAttachmentIconTokensFromProperty(ChildProperty, ChildValuePtr, OutTokens);
+			}
+		}
 	}
 }
 
@@ -806,6 +841,86 @@ TArray<FGeneratedAttachmentIconDefinition>& GeneratedAttachmentIconDefinitions()
 	return Definitions;
 }
 
+void CollectGeneratedWeaponIconTokensFromProperty(const FProperty* Property, const void* ValuePtr, TSet<FString>& OutTokens)
+{
+	if (!Property || !ValuePtr)
+	{
+		return;
+	}
+
+	if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (const UScriptStruct* Struct = StructProperty->Struct)
+		{
+			for (TFieldIterator<FProperty> PropertyIt(Struct); PropertyIt; ++PropertyIt)
+			{
+				const FProperty* ChildProperty = *PropertyIt;
+				const void* ChildValuePtr = ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr);
+				CollectGeneratedWeaponIconTokensFromProperty(ChildProperty, ChildValuePtr, OutTokens);
+			}
+		}
+		return;
+	}
+
+	const FString NormalizedPropertyName = NormalizeAttachmentFocusToken(Property->GetName());
+	if (!NormalizedPropertyName.Contains(TEXT("DisplayName"), ESearchCase::IgnoreCase))
+	{
+		return;
+	}
+
+	CollectGeneratedAttachmentIconTokensFromProperty(Property, ValuePtr, OutTokens);
+}
+
+TArray<FGeneratedAttachmentIconDefinition>& GeneratedWeaponIconDefinitions()
+{
+	static bool bBuiltDefinitions = false;
+	static TArray<FGeneratedAttachmentIconDefinition> Definitions;
+
+	if (bBuiltDefinitions)
+	{
+		return Definitions;
+	}
+	bBuiltDefinitions = true;
+
+	UDataTable* WeaponTable = LoadObject<UDataTable>(
+		nullptr,
+		TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons"));
+	if (!WeaponTable || !WeaponTable->GetRowStruct())
+	{
+		return Definitions;
+	}
+
+	const UScriptStruct* RowStruct = WeaponTable->GetRowStruct();
+	for (const TPair<FName, uint8*>& RowPair : WeaponTable->GetRowMap())
+	{
+		TSet<FString> RowTokens;
+		AddGeneratedAttachmentIconToken(RowTokens, RowPair.Key.ToString());
+
+		TArray<UObject*> RowMeshes;
+		for (TFieldIterator<FProperty> PropertyIt(RowStruct); PropertyIt; ++PropertyIt)
+		{
+			const FProperty* Property = *PropertyIt;
+			const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(RowPair.Value);
+			CollectGeneratedWeaponIconTokensFromProperty(Property, ValuePtr, RowTokens);
+			CollectGeneratedAttachmentIconMeshesFromProperty(Property, ValuePtr, RowMeshes);
+		}
+
+		for (UObject* Mesh : RowMeshes)
+		{
+			FGeneratedAttachmentIconDefinition Definition;
+			Definition.Tokens = RowTokens;
+			AddGeneratedAttachmentIconToken(Definition.Tokens, Mesh->GetName());
+			Definition.IconObjectPath = MakeGeneratedAttachmentIconObjectPath(Mesh);
+			if (!Definition.IconObjectPath.IsEmpty())
+			{
+				Definitions.Add(MoveTemp(Definition));
+			}
+		}
+	}
+
+	return Definitions;
+}
+
 bool DoesGeneratedAttachmentIconDefinitionMatchToken(
 	const FGeneratedAttachmentIconDefinition& Definition,
 	const FString& Token)
@@ -821,6 +936,27 @@ bool DoesGeneratedAttachmentIconDefinitionMatchToken(
 		if (DefinitionToken.Equals(NormalizedToken, ESearchCase::IgnoreCase)
 			|| (NormalizedToken.Len() >= 4 && DefinitionToken.Contains(NormalizedToken, ESearchCase::IgnoreCase))
 			|| (DefinitionToken.Len() >= 4 && NormalizedToken.Contains(DefinitionToken, ESearchCase::IgnoreCase)))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool DoesGeneratedAttachmentIconDefinitionMatchExactToken(
+	const FGeneratedAttachmentIconDefinition& Definition,
+	const FString& Token)
+{
+	const FString NormalizedToken = NormalizeAttachmentFocusToken(Token);
+	if (NormalizedToken.Len() < 3)
+	{
+		return false;
+	}
+
+	for (const FString& DefinitionToken : Definition.Tokens)
+	{
+		if (DefinitionToken.Equals(NormalizedToken, ESearchCase::IgnoreCase))
 		{
 			return true;
 		}
@@ -848,10 +984,60 @@ const FGeneratedAttachmentIconDefinition* FindGeneratedAttachmentIconDefinitionF
 	return nullptr;
 }
 
+const FGeneratedAttachmentIconDefinition* FindGeneratedWeaponIconDefinitionForText(const FString& Text)
+{
+	const FString NormalizedText = NormalizeAttachmentFocusToken(Text);
+	if (NormalizedText.Len() < 3)
+	{
+		return nullptr;
+	}
+
+	for (const FGeneratedAttachmentIconDefinition& Definition : GeneratedWeaponIconDefinitions())
+	{
+		if (DoesGeneratedAttachmentIconDefinitionMatchExactToken(Definition, NormalizedText))
+		{
+			return &Definition;
+		}
+	}
+
+	if (NormalizedText.Equals(TEXT("SCAR"), ESearchCase::IgnoreCase))
+	{
+		for (const FGeneratedAttachmentIconDefinition& Definition : GeneratedWeaponIconDefinitions())
+		{
+			if (DoesGeneratedAttachmentIconDefinitionMatchExactToken(Definition, TEXT("M4"))
+				|| DoesGeneratedAttachmentIconDefinitionMatchExactToken(Definition, TEXT("SMG_M4")))
+			{
+				return &Definition;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+bool IsHiddenWeaponSelectionText(const FString& Text)
+{
+	const FString NormalizedText = NormalizeAttachmentFocusToken(Text);
+	return NormalizedText.Equals(TEXT("BP_Sniper"), ESearchCase::IgnoreCase)
+		|| NormalizedText.Equals(TEXT("Sniper"), ESearchCase::IgnoreCase);
+}
+
+bool IsLoadoutWeaponSelectionWidgetClass(const UClass* WidgetClass)
+{
+	if (!WidgetClass)
+	{
+		return false;
+	}
+
+	const FString WidgetClassPath = WidgetClass->GetPathName();
+	return WidgetClassPath.Contains(TEXT("W_Loadout"))
+		|| WidgetClassPath.Contains(TEXT("W_Weapon_Layer"));
+}
+
 UButton* FindOwningButton(UWidget* Widget)
 {
 	UWidget* Current = Widget;
-	for (int32 Depth = 0; Current && Depth < 8; ++Depth)
+	for (int32 Depth = 0; Current && Depth < 32; ++Depth)
 	{
 		if (UButton* Button = Cast<UButton>(Current))
 		{
@@ -868,6 +1054,62 @@ UButton* FindOwningButton(UWidget* Widget)
 	}
 
 	return nullptr;
+}
+
+UButton* FindWeaponSelectionButtonForTextBlock(UUserWidget* Widget, UTextBlock* TextBlock)
+{
+	if (UButton* OwningButton = FindOwningButton(TextBlock))
+	{
+		return OwningButton;
+	}
+
+	if (!IsValid(Widget))
+	{
+		return nullptr;
+	}
+
+	const UClass* WidgetClass = Widget->GetClass();
+	if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Weapon_Layer")))
+	{
+		return nullptr;
+	}
+
+	static const FName ButtonNames[] =
+	{
+		TEXT("SlotBox"),
+		TEXT("B_Weapon")
+	};
+
+	for (const FName ButtonName : ButtonNames)
+	{
+		if (UButton* Button = Cast<UButton>(Widget->GetWidgetFromName(ButtonName)))
+		{
+			return Button;
+		}
+	}
+
+	return nullptr;
+}
+
+void CollapseWeaponSelectionRow(UUserWidget* Widget, UTextBlock* TextBlock)
+{
+	if (IsValid(TextBlock))
+	{
+		TextBlock->SetRenderOpacity(0.0f);
+		TextBlock->SetVisibility(ESlateVisibility::Collapsed);
+	}
+
+	if (UButton* Button = FindWeaponSelectionButtonForTextBlock(Widget, TextBlock))
+	{
+		Button->SetVisibility(ESlateVisibility::Collapsed);
+	}
+
+	if (IsValid(Widget)
+		&& Widget->GetClass()
+		&& Widget->GetClass()->GetPathName().Contains(TEXT("W_Weapon_Layer")))
+	{
+		Widget->SetVisibility(ESlateVisibility::Collapsed);
+	}
 }
 
 UTexture2D* LoadGeneratedAttachmentIcon(const FGeneratedAttachmentIconDefinition& Definition)
@@ -3512,7 +3754,11 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 	}
 }
 
-void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(UTextBlock* TextBlock, const bool bSelected)
+void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(
+	UTextBlock* TextBlock,
+	const bool bSelected,
+	const bool bUseWeaponDefinitions,
+	UButton* ButtonOverride)
 {
 	if (!IsValid(TextBlock))
 	{
@@ -3520,36 +3766,48 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(UTextBl
 	}
 
 	const FGeneratedAttachmentIconDefinition* Definition =
-		FindGeneratedAttachmentIconDefinitionForText(TextBlock->GetText().ToString());
+		bUseWeaponDefinitions
+			? FindGeneratedWeaponIconDefinitionForText(TextBlock->GetText().ToString())
+			: FindGeneratedAttachmentIconDefinitionForText(TextBlock->GetText().ToString());
 	if (!Definition)
 	{
+		RestoreGeneratedAttachmentIconStyle(TextBlock);
 		return;
 	}
 
 	UTexture2D* RealIcon = LoadGeneratedAttachmentIcon(*Definition);
 	if (!RealIcon)
 	{
+		RestoreGeneratedAttachmentIconStyle(TextBlock);
 		return;
 	}
 
 	FGeneratedAttachmentIconStyle* StoredStyle = GeneratedAttachmentIconStyles.Find(TextBlock);
 	if (!StoredStyle)
 	{
-		UButton* Button = FindOwningButton(TextBlock);
+		UButton* Button = IsValid(ButtonOverride) ? ButtonOverride : FindOwningButton(TextBlock);
 		if (!IsValid(Button))
 		{
 			return;
 		}
 
-		UOverlay* Overlay = NewObject<UOverlay>(Button);
+		USizeBox* RootSizeBox = NewObject<USizeBox>(Button);
+		UOverlay* Overlay = NewObject<UOverlay>(RootSizeBox);
 		UScaleBox* IconScaleBox = NewObject<UScaleBox>(Overlay);
 		UImage* IconImage = NewObject<UImage>(IconScaleBox);
 		UImage* FrameImage = NewObject<UImage>(Overlay);
-		if (!Overlay || !IconScaleBox || !IconImage || !FrameImage)
+		if (!RootSizeBox || !Overlay || !IconScaleBox || !IconImage || !FrameImage)
 		{
 			return;
 		}
 
+		const FVector2D IconWidgetSize =
+			bUseWeaponDefinitions
+				? GeneratedWeaponSelectionIconWidgetSize()
+				: GeneratedAttachmentIconSize();
+		RootSizeBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		RootSizeBox->SetWidthOverride(IconWidgetSize.X);
+		RootSizeBox->SetHeightOverride(IconWidgetSize.Y);
 		Overlay->SetVisibility(ESlateVisibility::HitTestInvisible);
 		Overlay->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
 		IconScaleBox->SetVisibility(ESlateVisibility::HitTestInvisible);
@@ -3562,10 +3820,12 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(UTextBl
 		StoredStyle = &GeneratedAttachmentIconStyles.Add(TextBlock);
 		StoredStyle->Button = Button;
 		StoredStyle->Label = TextBlock;
+		StoredStyle->RootSizeBox = RootSizeBox;
 		StoredStyle->Overlay = Overlay;
 		StoredStyle->IconScaleBox = IconScaleBox;
 		StoredStyle->IconImage = IconImage;
 		StoredStyle->FrameImage = FrameImage;
+		StoredStyle->OriginalButtonContent = Button->GetContent();
 		StoredStyle->OriginalLabelVisibility = TextBlock->GetVisibility();
 		StoredStyle->OriginalLabelRenderOpacity = TextBlock->GetRenderOpacity();
 
@@ -3582,33 +3842,40 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(UTextBl
 			FrameSlot->SetVerticalAlignment(VAlign_Fill);
 		}
 
+		RootSizeBox->SetContent(Overlay);
 		TextBlock->SetRenderOpacity(0.0f);
 		TextBlock->SetVisibility(ESlateVisibility::HitTestInvisible);
-		if (UOverlaySlot* LabelSlot = Overlay->AddChildToOverlay(TextBlock))
-		{
-			LabelSlot->SetHorizontalAlignment(HAlign_Center);
-			LabelSlot->SetVerticalAlignment(VAlign_Center);
-		}
 
-		Button->SetContent(Overlay);
+		Button->SetContent(RootSizeBox);
 	}
 
 	UButton* Button = StoredStyle->Button.Get();
+	UTextBlock* Label = StoredStyle->Label.Get();
+	USizeBox* RootSizeBox = StoredStyle->RootSizeBox.Get();
+	UOverlay* Overlay = StoredStyle->Overlay.Get();
 	UImage* IconImage = StoredStyle->IconImage.Get();
 	UImage* FrameImage = StoredStyle->FrameImage.Get();
-	if (!IsValid(Button) || !IsValid(IconImage) || !IsValid(FrameImage))
+	if (!IsValid(Button) || !IsValid(RootSizeBox) || !IsValid(Overlay) || !IsValid(IconImage) || !IsValid(FrameImage))
 	{
 		RestoreGeneratedAttachmentIconStyle(TextBlock);
 		return;
 	}
 
+	if (Button->GetContent() != RootSizeBox)
+	{
+		Button->SetContent(RootSizeBox);
+	}
+
+	if (IsValid(Label))
+	{
+		Label->SetRenderOpacity(0.0f);
+		Label->SetVisibility(ESlateVisibility::HitTestInvisible);
+	}
+
 	IconImage->SetBrush(MakeGeneratedAttachmentIconBrush(RealIcon));
 	IconImage->SetColorAndOpacity(FLinearColor::White);
-	if (UOverlay* Overlay = StoredStyle->Overlay.Get())
-	{
-		const float HoverScale = GeneratedAttachmentHoverScale(Button->IsHovered());
-		Overlay->SetRenderScale(FVector2D(HoverScale, HoverScale));
-	}
+	const float HoverScale = GeneratedAttachmentHoverScale(Button->IsHovered());
+	Overlay->SetRenderScale(FVector2D(HoverScale, HoverScale));
 	FrameImage->SetBrush(MakeGeneratedAttachmentFrameBrush(bSelected));
 	FrameImage->SetColorAndOpacity(bSelected ? GeneratedAttachmentIconSelectionFrameColor() : FLinearColor::Transparent);
 }
@@ -3628,20 +3895,29 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreGeneratedAttachmentIconStyle(U
 
 	UTextBlock* Label = StoredStyle->Label.Get();
 	UButton* Button = StoredStyle->Button.Get();
+	USizeBox* RootSizeBox = StoredStyle->RootSizeBox.Get();
 	UOverlay* Overlay = StoredStyle->Overlay.Get();
+	UWidget* OriginalButtonContent = StoredStyle->OriginalButtonContent.Get();
 	if (IsValid(Label))
 	{
 		Label->SetRenderOpacity(StoredStyle->OriginalLabelRenderOpacity);
 		Label->SetVisibility(StoredStyle->OriginalLabelVisibility);
 	}
 
-	if (IsValid(Button) && IsValid(Label))
+	if (IsValid(Button))
 	{
-		if (IsValid(Overlay))
+		if (IsValid(OriginalButtonContent))
 		{
-			Overlay->RemoveChild(Label);
+			Button->SetContent(OriginalButtonContent);
 		}
-		Button->SetContent(Label);
+		else if (IsValid(RootSizeBox))
+		{
+			RootSizeBox->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		else if (IsValid(Overlay))
+		{
+			Overlay->SetVisibility(ESlateVisibility::Collapsed);
+		}
 	}
 
 	GeneratedAttachmentIconStyles.Remove(TextBlock);
@@ -3668,17 +3944,22 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreGeneratedAttachmentIconStyles(
 
 void UTMMenuViewerMeshTransitionSubsystem::RestoreAttachmentSelectionHighlight()
 {
+	TArray<UTextBlock*> GeneratedIconLabelsToRestore;
 	for (auto It = AttachmentSelectionLabelStyles.CreateIterator(); It; ++It)
 	{
 		UTextBlock* TextBlock = It.Key().Get();
 		if (IsValid(TextBlock))
 		{
 			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
+			GeneratedIconLabelsToRestore.Add(TextBlock);
 		}
 		It.RemoveCurrent();
 	}
 
-	RestoreGeneratedAttachmentIconStyles();
+	for (UTextBlock* TextBlock : GeneratedIconLabelsToRestore)
+	{
+		RestoreGeneratedAttachmentIconStyle(TextBlock);
+	}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld* World, const bool bLoadoutVisible)
@@ -3705,7 +3986,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 		}
 
 		const UClass* WidgetClass = Widget->GetClass();
-		if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Loadout")))
+		if (!IsLoadoutWeaponSelectionWidgetClass(WidgetClass))
 		{
 			continue;
 		}
@@ -3715,8 +3996,14 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 			continue;
 		}
 
-		TArray<UTextBlock*> WeaponLabels;
-		VisitWidgetTree(Widget, [&WeaponLabels](UWidget* ChildWidget)
+		struct FWeaponSelectionIconCandidate
+		{
+			UTextBlock* TextBlock = nullptr;
+			UButton* Button = nullptr;
+		};
+
+		TArray<FWeaponSelectionIconCandidate> WeaponLabels;
+		VisitWidgetTree(Widget, [Widget, &WeaponLabels](UWidget* ChildWidget)
 		{
 			UTextBlock* TextBlock = Cast<UTextBlock>(ChildWidget);
 			if (!IsValid(TextBlock))
@@ -3724,17 +4011,36 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 				return;
 			}
 
-			const FString NormalizedText = NormalizeAttachmentFocusToken(TextBlock->GetText().ToString());
-			if (!NormalizedText.IsEmpty())
+			if (IsHiddenWeaponSelectionText(TextBlock->GetText().ToString()))
 			{
-				WeaponLabels.Add(TextBlock);
+				CollapseWeaponSelectionRow(Widget, TextBlock);
+				return;
+			}
+
+			const FString NormalizedText = NormalizeAttachmentFocusToken(TextBlock->GetText().ToString());
+			if (!NormalizedText.IsEmpty()
+				&& FindGeneratedWeaponIconDefinitionForText(TextBlock->GetText().ToString()))
+			{
+				if (UButton* Button = FindWeaponSelectionButtonForTextBlock(Widget, TextBlock))
+				{
+					FWeaponSelectionIconCandidate Candidate;
+					Candidate.TextBlock = TextBlock;
+					Candidate.Button = Button;
+					WeaponLabels.Add(Candidate);
+				}
 			}
 		});
 
 		UTextBlock* BestLabel = nullptr;
 		int32 BestScore = INDEX_NONE;
-		for (UTextBlock* TextBlock : WeaponLabels)
+		for (const FWeaponSelectionIconCandidate& Candidate : WeaponLabels)
 		{
+			UTextBlock* TextBlock = Candidate.TextBlock;
+			if (!IsValid(TextBlock))
+			{
+				continue;
+			}
+
 			SeenLabels.Add(TextBlock);
 			FAttachmentSelectionLabelStyle* StoredStyle = WeaponSelectionLabelStyles.Find(TextBlock);
 			if (!StoredStyle)
@@ -3752,8 +4058,14 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 			}
 		}
 
-		for (UTextBlock* TextBlock : WeaponLabels)
+		for (const FWeaponSelectionIconCandidate& Candidate : WeaponLabels)
 		{
+			UTextBlock* TextBlock = Candidate.TextBlock;
+			if (!IsValid(TextBlock))
+			{
+				continue;
+			}
+
 			const FAttachmentSelectionLabelStyle* StoredStyle = WeaponSelectionLabelStyles.Find(TextBlock);
 			if (!StoredStyle)
 			{
@@ -3764,7 +4076,38 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 			TextBlock->SetColorAndOpacity(bHighlighted
 				? FSlateColor(AttachmentSelectionHighlightColor())
 				: StoredStyle->OriginalColorAndOpacity);
+			UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted, true, Candidate.Button);
 		}
+	}
+
+	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)
+	{
+		UTextBlock* TextBlock = It.Key().Get();
+		if (!IsValid(TextBlock) || SeenLabels.Contains(TextBlock))
+		{
+			continue;
+		}
+
+		FGeneratedAttachmentIconStyle* IconStyle = GeneratedAttachmentIconStyles.Find(TextBlock);
+		UButton* Button = IconStyle ? IconStyle->Button.Get() : nullptr;
+		if (!IsValid(Button) || Button->GetWorld() != World)
+		{
+			continue;
+		}
+
+		const ESlateVisibility ButtonVisibility = Button->GetVisibility();
+		if (ButtonVisibility == ESlateVisibility::Collapsed || ButtonVisibility == ESlateVisibility::Hidden)
+		{
+			continue;
+		}
+
+		SeenLabels.Add(TextBlock);
+		const int32 Score = ScoreSelectionTextAgainstTokens(TextBlock->GetText().ToString(), HighlightTokens);
+		const bool bHighlighted = Score != INDEX_NONE;
+		TextBlock->SetColorAndOpacity(bHighlighted
+			? FSlateColor(AttachmentSelectionHighlightColor())
+			: It.Value().OriginalColorAndOpacity);
+		UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted, true, Button);
 	}
 
 	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)
@@ -3779,6 +4122,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 		if (!SeenLabels.Contains(TextBlock))
 		{
 			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
+			RestoreGeneratedAttachmentIconStyle(TextBlock);
 			It.RemoveCurrent();
 		}
 	}
@@ -3786,14 +4130,21 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 
 void UTMMenuViewerMeshTransitionSubsystem::RestoreWeaponSelectionHighlight()
 {
+	TArray<UTextBlock*> GeneratedIconLabelsToRestore;
 	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)
 	{
 		UTextBlock* TextBlock = It.Key().Get();
 		if (IsValid(TextBlock))
 		{
 			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
+			GeneratedIconLabelsToRestore.Add(TextBlock);
 		}
 		It.RemoveCurrent();
+	}
+
+	for (UTextBlock* TextBlock : GeneratedIconLabelsToRestore)
+	{
+		RestoreGeneratedAttachmentIconStyle(TextBlock);
 	}
 }
 
