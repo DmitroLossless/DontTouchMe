@@ -122,8 +122,6 @@ private:
 		TWeakObjectPtr<UImage> IconImage;
 		TWeakObjectPtr<UImage> FrameImage;
 		TWeakObjectPtr<UWidget> OriginalButtonContent;
-		FString IconLookupToken;
-		bool bUseWeaponDefinitions = false;
 		ESlateVisibility OriginalLabelVisibility = ESlateVisibility::Visible;
 		float OriginalLabelRenderOpacity = 1.0f;
 	};
@@ -189,10 +187,7 @@ private:
 	void RestoreAttachmentSelectionHighlight();
 	void UpdateGeneratedAttachmentIcon(
 		UTextBlock* TextBlock,
-		bool bSelected,
-		bool bUseWeaponDefinitions = false,
-		UButton* ButtonOverride = nullptr,
-		const FString& LookupToken = FString());
+		bool bSelected);
 	void RestoreGeneratedAttachmentIconStyle(UTextBlock* TextBlock);
 	void RestoreGeneratedAttachmentIconStyles();
 	void UpdateWeaponSelectionHighlight(UWorld* World, bool bLoadoutVisible);
@@ -246,7 +241,6 @@ private:
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> MainMenuBackGlowVisualStates;
 	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> AttachmentSelectionLabelStyles;
 	TMap<TWeakObjectPtr<UTextBlock>, FGeneratedAttachmentIconStyle> GeneratedAttachmentIconStyles;
-	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> WeaponSelectionLabelStyles;
 	TWeakObjectPtr<UCameraComponent> MainMenuCameraDriftCamera;
 	FPostProcessSettings SavedLoadoutPostProcessSettings;
 	FVector MainMenuCameraDriftBaseRelativeLocation = FVector::ZeroVector;

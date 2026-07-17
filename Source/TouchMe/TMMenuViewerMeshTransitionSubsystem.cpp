@@ -1,5 +1,7 @@
 #include "TMMenuViewerMeshTransitionSubsystem.h"
 
+#include "TMWeaponLayerWidget.h"
+
 #include "Blueprint/UserWidget.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
@@ -605,12 +607,6 @@ const FVector2D& GeneratedAttachmentIconSize()
 	return Size;
 }
 
-const FVector2D& GeneratedWeaponSelectionIconWidgetSize()
-{
-	static const FVector2D Size(288.0f, 72.0f);
-	return Size;
-}
-
 struct FGeneratedAttachmentIconDefinition
 {
 	FString IconObjectPath;
@@ -859,86 +855,6 @@ TArray<FGeneratedAttachmentIconDefinition>& GeneratedAttachmentIconDefinitions()
 	return Definitions;
 }
 
-void CollectGeneratedWeaponIconTokensFromProperty(const FProperty* Property, const void* ValuePtr, TSet<FString>& OutTokens)
-{
-	if (!Property || !ValuePtr)
-	{
-		return;
-	}
-
-	if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
-	{
-		if (const UScriptStruct* Struct = StructProperty->Struct)
-		{
-			for (TFieldIterator<FProperty> PropertyIt(Struct); PropertyIt; ++PropertyIt)
-			{
-				const FProperty* ChildProperty = *PropertyIt;
-				const void* ChildValuePtr = ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr);
-				CollectGeneratedWeaponIconTokensFromProperty(ChildProperty, ChildValuePtr, OutTokens);
-			}
-		}
-		return;
-	}
-
-	const FString NormalizedPropertyName = NormalizeAttachmentFocusToken(Property->GetName());
-	if (!NormalizedPropertyName.Contains(TEXT("DisplayName"), ESearchCase::IgnoreCase))
-	{
-		return;
-	}
-
-	CollectGeneratedAttachmentIconTokensFromProperty(Property, ValuePtr, OutTokens);
-}
-
-TArray<FGeneratedAttachmentIconDefinition>& GeneratedWeaponIconDefinitions()
-{
-	static bool bBuiltDefinitions = false;
-	static TArray<FGeneratedAttachmentIconDefinition> Definitions;
-
-	if (bBuiltDefinitions)
-	{
-		return Definitions;
-	}
-	bBuiltDefinitions = true;
-
-	UDataTable* WeaponTable = LoadObject<UDataTable>(
-		nullptr,
-		TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons"));
-	if (!WeaponTable || !WeaponTable->GetRowStruct())
-	{
-		return Definitions;
-	}
-
-	const UScriptStruct* RowStruct = WeaponTable->GetRowStruct();
-	for (const TPair<FName, uint8*>& RowPair : WeaponTable->GetRowMap())
-	{
-		TSet<FString> RowTokens;
-		AddGeneratedAttachmentIconToken(RowTokens, RowPair.Key.ToString());
-
-		TArray<UObject*> RowMeshes;
-		for (TFieldIterator<FProperty> PropertyIt(RowStruct); PropertyIt; ++PropertyIt)
-		{
-			const FProperty* Property = *PropertyIt;
-			const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(RowPair.Value);
-			CollectGeneratedWeaponIconTokensFromProperty(Property, ValuePtr, RowTokens);
-			CollectGeneratedAttachmentIconMeshesFromProperty(Property, ValuePtr, RowMeshes);
-		}
-
-		for (UObject* Mesh : RowMeshes)
-		{
-			FGeneratedAttachmentIconDefinition Definition;
-			Definition.Tokens = RowTokens;
-			AddGeneratedAttachmentIconToken(Definition.Tokens, Mesh->GetName());
-			Definition.IconObjectPath = MakeGeneratedAttachmentIconObjectPath(Mesh);
-			if (!Definition.IconObjectPath.IsEmpty())
-			{
-				Definitions.Add(MoveTemp(Definition));
-			}
-		}
-	}
-
-	return Definitions;
-}
-
 bool DoesGeneratedAttachmentIconDefinitionMatchToken(
 	const FGeneratedAttachmentIconDefinition& Definition,
 	const FString& Token)
@@ -954,27 +870,6 @@ bool DoesGeneratedAttachmentIconDefinitionMatchToken(
 		if (DefinitionToken.Equals(NormalizedToken, ESearchCase::IgnoreCase)
 			|| (NormalizedToken.Len() >= 4 && DefinitionToken.Contains(NormalizedToken, ESearchCase::IgnoreCase))
 			|| (DefinitionToken.Len() >= 4 && NormalizedToken.Contains(DefinitionToken, ESearchCase::IgnoreCase)))
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-bool DoesGeneratedAttachmentIconDefinitionMatchExactToken(
-	const FGeneratedAttachmentIconDefinition& Definition,
-	const FString& Token)
-{
-	const FString NormalizedToken = NormalizeAttachmentFocusToken(Token);
-	if (NormalizedToken.IsEmpty())
-	{
-		return false;
-	}
-
-	for (const FString& DefinitionToken : Definition.Tokens)
-	{
-		if (DefinitionToken.Equals(NormalizedToken, ESearchCase::IgnoreCase))
 		{
 			return true;
 		}
@@ -1002,32 +897,6 @@ const FGeneratedAttachmentIconDefinition* FindGeneratedAttachmentIconDefinitionF
 	return nullptr;
 }
 
-const FGeneratedAttachmentIconDefinition* FindGeneratedWeaponIconDefinitionForToken(const FString& Token)
-{
-	const FString NormalizedToken = NormalizeAttachmentFocusToken(Token);
-	if (NormalizedToken.IsEmpty())
-	{
-		return nullptr;
-	}
-
-	for (const FGeneratedAttachmentIconDefinition& Definition : GeneratedWeaponIconDefinitions())
-	{
-		if (DoesGeneratedAttachmentIconDefinitionMatchExactToken(Definition, NormalizedToken))
-		{
-			return &Definition;
-		}
-	}
-
-	return nullptr;
-}
-
-bool IsHiddenWeaponSelectionText(const FString& Text)
-{
-	const FString NormalizedText = NormalizeAttachmentFocusToken(Text);
-	return NormalizedText.Equals(TEXT("BP_Sniper"), ESearchCase::IgnoreCase)
-		|| NormalizedText.Equals(TEXT("Sniper"), ESearchCase::IgnoreCase);
-}
-
 bool IsLoadoutWeaponSelectionWidgetClass(const UClass* WidgetClass)
 {
 	if (!WidgetClass)
@@ -1037,52 +906,6 @@ bool IsLoadoutWeaponSelectionWidgetClass(const UClass* WidgetClass)
 
 	const FString WidgetClassPath = WidgetClass->GetPathName();
 	return WidgetClassPath.Contains(TEXT("W_Weapon_Layer"));
-}
-
-FString ReadWeaponSelectionLookupTokenFromWidget(const UUserWidget* Widget)
-{
-	if (!IsValid(Widget))
-	{
-		return FString();
-	}
-
-	const UClass* WidgetClass = Widget->GetClass();
-	if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Weapon_Layer")))
-	{
-		return FString();
-	}
-
-	if (const FNameProperty* NameProperty = FindFProperty<FNameProperty>(WidgetClass, TEXT("Name")))
-	{
-		return NameProperty->GetPropertyValue_InContainer(Widget).ToString();
-	}
-
-	if (const FStrProperty* StringProperty = FindFProperty<FStrProperty>(WidgetClass, TEXT("Name")))
-	{
-		return StringProperty->GetPropertyValue_InContainer(Widget);
-	}
-
-	if (const FTextProperty* TextProperty = FindFProperty<FTextProperty>(WidgetClass, TEXT("Name")))
-	{
-		return TextProperty->GetPropertyValue_InContainer(Widget).ToString();
-	}
-
-	return FString();
-}
-
-FString ReadWeaponSelectionLookupTokenFromObject(const UObject* Object)
-{
-	for (const UObject* Current = Object; Current; Current = Current->GetOuter())
-	{
-		const UUserWidget* Widget = Cast<UUserWidget>(Current);
-		const FString LookupToken = ReadWeaponSelectionLookupTokenFromWidget(Widget);
-		if (!LookupToken.IsEmpty())
-		{
-			return LookupToken;
-		}
-	}
-
-	return FString();
 }
 
 UButton* FindOwningButton(UWidget* Widget)
@@ -1105,62 +928,6 @@ UButton* FindOwningButton(UWidget* Widget)
 	}
 
 	return nullptr;
-}
-
-UButton* FindWeaponSelectionButtonForTextBlock(UUserWidget* Widget, UTextBlock* TextBlock)
-{
-	if (UButton* OwningButton = FindOwningButton(TextBlock))
-	{
-		return OwningButton;
-	}
-
-	if (!IsValid(Widget))
-	{
-		return nullptr;
-	}
-
-	const UClass* WidgetClass = Widget->GetClass();
-	if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Weapon_Layer")))
-	{
-		return nullptr;
-	}
-
-	static const FName ButtonNames[] =
-	{
-		TEXT("SlotBox"),
-		TEXT("B_Weapon")
-	};
-
-	for (const FName ButtonName : ButtonNames)
-	{
-		if (UButton* Button = Cast<UButton>(Widget->GetWidgetFromName(ButtonName)))
-		{
-			return Button;
-		}
-	}
-
-	return nullptr;
-}
-
-void CollapseWeaponSelectionRow(UUserWidget* Widget, UTextBlock* TextBlock)
-{
-	if (IsValid(TextBlock))
-	{
-		TextBlock->SetRenderOpacity(0.0f);
-		TextBlock->SetVisibility(ESlateVisibility::Collapsed);
-	}
-
-	if (UButton* Button = FindWeaponSelectionButtonForTextBlock(Widget, TextBlock))
-	{
-		Button->SetVisibility(ESlateVisibility::Collapsed);
-	}
-
-	if (IsValid(Widget)
-		&& Widget->GetClass()
-		&& Widget->GetClass()->GetPathName().Contains(TEXT("W_Weapon_Layer")))
-	{
-		Widget->SetVisibility(ESlateVisibility::Collapsed);
-	}
 }
 
 UTexture2D* LoadGeneratedAttachmentIcon(const FGeneratedAttachmentIconDefinition& Definition)
@@ -3849,30 +3616,15 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(
 	UTextBlock* TextBlock,
-	const bool bSelected,
-	const bool bUseWeaponDefinitions,
-	UButton* ButtonOverride,
-	const FString& LookupToken)
+	const bool bSelected)
 {
 	if (!IsValid(TextBlock))
 	{
 		return;
 	}
 
-	FString DefinitionToken = LookupToken;
-	if (DefinitionToken.IsEmpty() && bUseWeaponDefinitions && IsValid(ButtonOverride))
-	{
-		DefinitionToken = ReadWeaponSelectionLookupTokenFromObject(ButtonOverride);
-	}
-	if (DefinitionToken.IsEmpty())
-	{
-		DefinitionToken = TextBlock->GetText().ToString();
-	}
-
 	const FGeneratedAttachmentIconDefinition* Definition =
-		bUseWeaponDefinitions
-			? FindGeneratedWeaponIconDefinitionForToken(DefinitionToken)
-			: FindGeneratedAttachmentIconDefinitionForText(DefinitionToken);
+		FindGeneratedAttachmentIconDefinitionForText(TextBlock->GetText().ToString());
 	if (!Definition)
 	{
 		RestoreGeneratedAttachmentIconStyle(TextBlock);
@@ -3889,7 +3641,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(
 	FGeneratedAttachmentIconStyle* StoredStyle = GeneratedAttachmentIconStyles.Find(TextBlock);
 	if (!StoredStyle)
 	{
-		UButton* Button = IsValid(ButtonOverride) ? ButtonOverride : FindOwningButton(TextBlock);
+		UButton* Button = FindOwningButton(TextBlock);
 		if (!IsValid(Button))
 		{
 			return;
@@ -3905,10 +3657,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(
 			return;
 		}
 
-		const FVector2D IconWidgetSize =
-			bUseWeaponDefinitions
-				? GeneratedWeaponSelectionIconWidgetSize()
-				: GeneratedAttachmentIconSize();
+		const FVector2D IconWidgetSize = GeneratedAttachmentIconSize();
 		RootSizeBox->SetVisibility(ESlateVisibility::HitTestInvisible);
 		RootSizeBox->SetWidthOverride(IconWidgetSize.X);
 		RootSizeBox->SetHeightOverride(IconWidgetSize.Y);
@@ -3952,9 +3701,6 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(
 
 		Button->SetContent(RootSizeBox);
 	}
-
-	StoredStyle->IconLookupToken = DefinitionToken;
-	StoredStyle->bUseWeaponDefinitions = bUseWeaponDefinitions;
 
 	UButton* Button = StoredStyle->Button.Get();
 	UTextBlock* Label = StoredStyle->Label.Get();
@@ -4083,7 +3829,6 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 		HighlightTokens.Add(NormalizeAttachmentFocusToken(TEXT("Empty")));
 	}
 
-	TSet<TWeakObjectPtr<UTextBlock>> SeenLabels;
 	for (TObjectIterator<UUserWidget> It; It; ++It)
 	{
 		UUserWidget* Widget = *It;
@@ -4103,164 +3848,27 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 			continue;
 		}
 
-		struct FWeaponSelectionIconCandidate
+		if (UTMWeaponLayerWidget* WeaponLayerWidget = Cast<UTMWeaponLayerWidget>(Widget))
 		{
-			UTextBlock* TextBlock = nullptr;
-			UButton* Button = nullptr;
-			FString LookupToken;
-		};
-
-		TArray<FWeaponSelectionIconCandidate> WeaponLabels;
-		const FString WidgetLookupToken = ReadWeaponSelectionLookupTokenFromWidget(Widget);
-		const bool bHiddenWeaponRow = IsHiddenWeaponSelectionText(WidgetLookupToken);
-		const FGeneratedAttachmentIconDefinition* WeaponIconDefinition =
-			FindGeneratedWeaponIconDefinitionForToken(WidgetLookupToken);
-		VisitWidgetTree(Widget, [Widget, &WeaponLabels, &WidgetLookupToken, bHiddenWeaponRow, WeaponIconDefinition](UWidget* ChildWidget)
-		{
-			UTextBlock* TextBlock = Cast<UTextBlock>(ChildWidget);
-			if (!IsValid(TextBlock))
-			{
-				return;
-			}
-
-			if (bHiddenWeaponRow)
-			{
-				CollapseWeaponSelectionRow(Widget, TextBlock);
-				return;
-			}
-
-			if (!WidgetLookupToken.IsEmpty() && WeaponIconDefinition)
-			{
-				if (UButton* Button = FindWeaponSelectionButtonForTextBlock(Widget, TextBlock))
-				{
-					FWeaponSelectionIconCandidate Candidate;
-					Candidate.TextBlock = TextBlock;
-					Candidate.Button = Button;
-					Candidate.LookupToken = WidgetLookupToken;
-					WeaponLabels.Add(Candidate);
-				}
-			}
-		});
-
-		UTextBlock* BestLabel = nullptr;
-		int32 BestScore = INDEX_NONE;
-		for (const FWeaponSelectionIconCandidate& Candidate : WeaponLabels)
-		{
-			UTextBlock* TextBlock = Candidate.TextBlock;
-			if (!IsValid(TextBlock))
-			{
-				continue;
-			}
-
-			SeenLabels.Add(TextBlock);
-			FAttachmentSelectionLabelStyle* StoredStyle = WeaponSelectionLabelStyles.Find(TextBlock);
-			if (!StoredStyle)
-			{
-				FAttachmentSelectionLabelStyle NewStyle;
-				NewStyle.OriginalColorAndOpacity = TextBlock->GetColorAndOpacity();
-				StoredStyle = &WeaponSelectionLabelStyles.Add(TextBlock, NewStyle);
-			}
-
-			const int32 Score = ScoreSelectionTextAgainstTokens(Candidate.LookupToken, HighlightTokens);
-			if (Score > BestScore)
-			{
-				BestScore = Score;
-				BestLabel = TextBlock;
-			}
-		}
-
-		for (const FWeaponSelectionIconCandidate& Candidate : WeaponLabels)
-		{
-			UTextBlock* TextBlock = Candidate.TextBlock;
-			if (!IsValid(TextBlock))
-			{
-				continue;
-			}
-
-			const FAttachmentSelectionLabelStyle* StoredStyle = WeaponSelectionLabelStyles.Find(TextBlock);
-			if (!StoredStyle)
-			{
-				continue;
-			}
-
-			const bool bHighlighted = TextBlock == BestLabel && BestScore != INDEX_NONE;
-			TextBlock->SetColorAndOpacity(bHighlighted
-				? FSlateColor(AttachmentSelectionHighlightColor())
-				: StoredStyle->OriginalColorAndOpacity);
-			UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted, true, Candidate.Button, Candidate.LookupToken);
-		}
-	}
-
-	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)
-	{
-		UTextBlock* TextBlock = It.Key().Get();
-		if (!IsValid(TextBlock) || SeenLabels.Contains(TextBlock))
-		{
+			WeaponLayerWidget->RefreshWeaponIcon();
+			const int32 Score = ScoreSelectionTextAgainstTokens(
+				WeaponLayerWidget->GetWeaponLookupToken(),
+				HighlightTokens);
+			WeaponLayerWidget->SetWeaponIconSelected(Score != INDEX_NONE);
 			continue;
-		}
-
-		FGeneratedAttachmentIconStyle* IconStyle = GeneratedAttachmentIconStyles.Find(TextBlock);
-		UButton* Button = IconStyle ? IconStyle->Button.Get() : nullptr;
-		if (!IsValid(Button) || Button->GetWorld() != World)
-		{
-			continue;
-		}
-
-		const ESlateVisibility ButtonVisibility = Button->GetVisibility();
-		if (ButtonVisibility == ESlateVisibility::Collapsed || ButtonVisibility == ESlateVisibility::Hidden)
-		{
-			continue;
-		}
-
-		SeenLabels.Add(TextBlock);
-		FString LookupToken = IconStyle->IconLookupToken;
-		if (LookupToken.IsEmpty())
-		{
-			LookupToken = ReadWeaponSelectionLookupTokenFromObject(Button);
-		}
-		const int32 Score = ScoreSelectionTextAgainstTokens(LookupToken, HighlightTokens);
-		const bool bHighlighted = Score != INDEX_NONE;
-		TextBlock->SetColorAndOpacity(bHighlighted
-			? FSlateColor(AttachmentSelectionHighlightColor())
-			: It.Value().OriginalColorAndOpacity);
-		UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted, true, Button, LookupToken);
-	}
-
-	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)
-	{
-		UTextBlock* TextBlock = It.Key().Get();
-		if (!IsValid(TextBlock))
-		{
-			It.RemoveCurrent();
-			continue;
-		}
-
-		if (!SeenLabels.Contains(TextBlock))
-		{
-			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
-			RestoreGeneratedAttachmentIconStyle(TextBlock);
-			It.RemoveCurrent();
 		}
 	}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::RestoreWeaponSelectionHighlight()
 {
-	TArray<UTextBlock*> GeneratedIconLabelsToRestore;
-	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)
+	for (TObjectIterator<UTMWeaponLayerWidget> It; It; ++It)
 	{
-		UTextBlock* TextBlock = It.Key().Get();
-		if (IsValid(TextBlock))
+		UTMWeaponLayerWidget* Widget = *It;
+		if (IsValid(Widget))
 		{
-			TextBlock->SetColorAndOpacity(It.Value().OriginalColorAndOpacity);
-			GeneratedIconLabelsToRestore.Add(TextBlock);
+			Widget->SetWeaponIconSelected(false);
 		}
-		It.RemoveCurrent();
-	}
-
-	for (UTextBlock* TextBlock : GeneratedIconLabelsToRestore)
-	{
-		RestoreGeneratedAttachmentIconStyle(TextBlock);
 	}
 }
 
