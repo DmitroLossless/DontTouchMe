@@ -11080,6 +11080,141 @@ namespace
 		return TMSavePackageForAsset(Blueprint, LogPrefix);
 	}
 
+	bool TMLoadoutGearShimmerAlreadyPatched(const UEdGraph* EventGraph)
+	{
+		if (!EventGraph)
+		{
+			return false;
+		}
+
+		for (const UEdGraphNode* Node : EventGraph->Nodes)
+		{
+			const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+			if (CallNode
+				&& CallNode->FunctionReference.GetMemberName()
+					== GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, StartLoadoutGearShimmer))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMPatchLoadoutGearShimmer()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutGearShimmer] Failed to load W_Loadout."));
+			return false;
+		}
+
+		UEdGraph* EventGraph = TMFindGraphByName(Blueprint, TEXT("EventGraph"));
+		UEdGraphNode* EventConstructNode = TMFindWidgetEventConstructNode(EventGraph);
+		UEdGraphPin* EventThenPin = TMFindPinByName(EventConstructNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		const UEdGraphSchema_K2* Schema = EventGraph ? Cast<UEdGraphSchema_K2>(EventGraph->GetSchema()) : nullptr;
+		if (!EventGraph || !EventConstructNode || !EventThenPin || !Schema)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutGearShimmer] Missing EventGraph/Event Construct pins. EventGraph=%d Construct=%d Then=%d Schema=%d"),
+				EventGraph ? 1 : 0,
+				EventConstructNode ? 1 : 0,
+				EventThenPin ? 1 : 0,
+				Schema ? 1 : 0);
+			return false;
+		}
+
+		if (TMLoadoutGearShimmerAlreadyPatched(EventGraph))
+		{
+			UE_LOG(LogTemp, Display, TEXT("[TMLoadoutGearShimmer] W_Loadout already calls StartLoadoutGearShimmer."));
+			return true;
+		}
+
+		UFunction* ShimmerFunction = UTMGameplayStatics::StaticClass()->FindFunctionByName(
+			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, StartLoadoutGearShimmer));
+		if (!ShimmerFunction)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutGearShimmer] StartLoadoutGearShimmer function was not found."));
+			return false;
+		}
+
+		EventGraph->Modify();
+		TArray<UEdGraphPin*> PreviousThenTargets = EventThenPin->LinkedTo;
+
+		FGraphNodeCreator<UK2Node_CallFunction> ShimmerCreator(*EventGraph);
+		UK2Node_CallFunction* ShimmerNode = ShimmerCreator.CreateNode();
+		ShimmerNode->SetFromFunction(ShimmerFunction);
+		ShimmerNode->NodePosX = EventConstructNode->NodePosX + 320;
+		ShimmerNode->NodePosY = EventConstructNode->NodePosY + 180;
+		ShimmerNode->NodeComment = TEXT("TM: gear icon light shimmer every 15 seconds");
+		ShimmerCreator.Finalize();
+		ShimmerNode->ReconstructNode();
+
+		FGraphNodeCreator<UK2Node_Self> SelfCreator(*EventGraph);
+		UK2Node_Self* SelfNode = SelfCreator.CreateNode();
+		SelfNode->NodePosX = ShimmerNode->NodePosX - 220;
+		SelfNode->NodePosY = ShimmerNode->NodePosY + 140;
+		SelfNode->NodeComment = TEXT("TM: owner widget for gear shimmer");
+		SelfCreator.Finalize();
+		SelfNode->ReconstructNode();
+
+		UEdGraphPin* ShimmerExecPin = TMFindPinByName(ShimmerNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		UEdGraphPin* ShimmerThenPin = TMFindPinByName(ShimmerNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		UEdGraphPin* OwnerWidgetPin = TMFindPinByName(ShimmerNode, TEXT("OwnerWidget"), EGPD_Input);
+		UEdGraphPin* SelfOutputPin = TMFindPinByName(SelfNode, UEdGraphSchema_K2::PN_Self, EGPD_Output);
+		if (!OwnerWidgetPin)
+		{
+			OwnerWidgetPin = TMFindFirstDataPin(ShimmerNode, EGPD_Input);
+		}
+
+		if (!ShimmerExecPin || !ShimmerThenPin || !OwnerWidgetPin || !SelfOutputPin)
+		{
+			EventGraph->RemoveNode(ShimmerNode);
+			EventGraph->RemoveNode(SelfNode);
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMLoadoutGearShimmer] Failed to create shimmer pins. Exec=%d Then=%d Owner=%d Self=%d"),
+				ShimmerExecPin ? 1 : 0,
+				ShimmerThenPin ? 1 : 0,
+				OwnerWidgetPin ? 1 : 0,
+				SelfOutputPin ? 1 : 0);
+			return false;
+		}
+
+		EventThenPin->Modify();
+		EventThenPin->BreakAllPinLinks(false);
+
+		bool bConnected = true;
+		bConnected &= Schema->TryCreateConnection(EventThenPin, ShimmerExecPin);
+		bConnected &= Schema->TryCreateConnection(SelfOutputPin, OwnerWidgetPin);
+		for (UEdGraphPin* PreviousThenTarget : PreviousThenTargets)
+		{
+			if (PreviousThenTarget)
+			{
+				bConnected &= Schema->TryCreateConnection(ShimmerThenPin, PreviousThenTarget);
+			}
+		}
+
+		if (!bConnected)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMLoadoutGearShimmer] Failed to connect shimmer node."));
+			return false;
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutGearShimmer] Inserted StartLoadoutGearShimmer into W_Loadout Event Construct. OldThenTargets=%d"),
+			PreviousThenTargets.Num());
+		return TMCompileAndSaveBlueprintIfChanged(Blueprint, true, TEXT("TMLoadoutGearShimmer"));
+	}
+
 	bool TMInsertMainMenuBeatAnimationDelay()
 	{
 		UBlueprint* Blueprint = LoadObject<UBlueprint>(
@@ -11946,6 +12081,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 		const bool bLayerPatched = TMPatchLoadoutWeaponLayerIcons();
 		const bool bLoadoutPatched = TMPatchLoadoutCreatedWeaponLayerIcons();
 		return (bLayerPatched && bLoadoutPatched) ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchLoadoutGearShimmer"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchLoadoutGearShimmer() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("PatchMainMenuLoadoutPreviewCleanup"), ESearchCase::IgnoreCase))

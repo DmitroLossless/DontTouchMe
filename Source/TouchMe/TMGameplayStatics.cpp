@@ -110,6 +110,13 @@ namespace TMGameplayStatics
 	constexpr float LoadoutWeaponLayerIconWidth = 288.0f;
 	constexpr float LoadoutWeaponLayerIconHeight = 72.0f;
 	constexpr float LoadoutWeaponLayerIconHoverScale = 1.07f;
+	constexpr float LoadoutGearShimmerPeriod = 7.5f;
+	constexpr float LoadoutGearShimmerDuration = 0.55f;
+	constexpr float LoadoutGearShimmerFirstDelay = 1.5f;
+	constexpr float LoadoutReturnShimmerPeriod = 15.0f;
+	constexpr float LoadoutReturnShimmerDuration = 0.55f;
+	constexpr float LoadoutReturnShimmerFirstDelay = 3.0f;
+	const FLinearColor LoadoutReturnNormalTint(0.090842f, 0.001214f, 0.002125f, 0.901961f);
 
 	struct FLoadoutWeaponLayerIconHoverState
 	{
@@ -120,6 +127,48 @@ namespace TMGameplayStatics
 
 	TArray<FLoadoutWeaponLayerIconHoverState> LoadoutWeaponLayerIconHoverStates;
 	FTSTicker::FDelegateHandle LoadoutWeaponLayerIconHoverTickerHandle;
+
+	struct FLoadoutGearShimmerState
+	{
+		TWeakObjectPtr<UButton> Button;
+		FButtonStyle BaseStyle;
+		FLinearColor BaseColorAndOpacity = FLinearColor::White;
+		FLinearColor BaseBackgroundColor = FLinearColor::White;
+		float Period = LoadoutGearShimmerPeriod;
+		float Duration = LoadoutGearShimmerDuration;
+		float Elapsed = 0.0f;
+		float PreviousIntensity = 0.0f;
+	};
+
+	TArray<FLoadoutGearShimmerState> LoadoutGearShimmerStates;
+	FTSTicker::FDelegateHandle LoadoutGearShimmerTickerHandle;
+
+	struct FLoadoutImageShimmerState
+	{
+		TWeakObjectPtr<UImage> Image;
+		TWeakObjectPtr<UButton> HoverButton;
+		FSlateBrush BaseBrush;
+		FLinearColor BaseColorAndOpacity = FLinearColor::White;
+		float Period = LoadoutReturnShimmerPeriod;
+		float Duration = LoadoutReturnShimmerDuration;
+		float Elapsed = 0.0f;
+		float PreviousIntensity = 0.0f;
+		bool bPreviousHovered = false;
+	};
+
+	struct FLoadoutDeferredImageShimmerRegistration
+	{
+		TWeakObjectPtr<UUserWidget> OwnerWidget;
+		FName ImageName;
+		FName HoverButtonName;
+		float Period = LoadoutReturnShimmerPeriod;
+		float Duration = LoadoutReturnShimmerDuration;
+		float FirstDelay = LoadoutReturnShimmerFirstDelay;
+		float DelayRemaining = 0.2f;
+	};
+
+	TArray<FLoadoutImageShimmerState> LoadoutImageShimmerStates;
+	TArray<FLoadoutDeferredImageShimmerRegistration> LoadoutDeferredImageShimmerRegistrations;
 
 	void ApplyLoadoutWeaponLayerIconHoverVisual(UImage* IconImage, const bool bHovered)
 	{
@@ -192,6 +241,339 @@ namespace TMGameplayStatics
 		{
 			LoadoutWeaponLayerIconHoverTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 				FTickerDelegate::CreateStatic(&TickLoadoutWeaponLayerIconHover));
+		}
+	}
+
+	FLinearColor BlendLoadoutGearShimmerTint(const FLinearColor& BaseTint, const float Intensity)
+	{
+		const FLinearColor HighlightTint = FLinearColor::FromSRGBColor(FColor(255, 246, 216, 255));
+		const float BlendAlpha = FMath::Clamp(Intensity, 0.0f, 1.0f);
+		FLinearColor Result = FMath::Lerp(BaseTint, HighlightTint, BlendAlpha);
+		Result.A = FMath::Lerp(BaseTint.A, 1.0f, BlendAlpha);
+		return Result;
+	}
+
+	void ApplyLoadoutGearShimmerVisual(
+		UButton* Button,
+		const FButtonStyle& BaseStyle,
+		const FLinearColor& BaseColorAndOpacity,
+		const FLinearColor& BaseBackgroundColor,
+		const float Intensity)
+	{
+		if (!Button)
+		{
+			return;
+		}
+
+		FButtonStyle Style = BaseStyle;
+		Style.Normal.TintColor = FSlateColor(BlendLoadoutGearShimmerTint(
+			BaseStyle.Normal.TintColor.GetSpecifiedColor(),
+			Intensity));
+		Style.Hovered.TintColor = FSlateColor(BlendLoadoutGearShimmerTint(
+			BaseStyle.Hovered.TintColor.GetSpecifiedColor(),
+			Intensity));
+		Style.Pressed.TintColor = FSlateColor(BlendLoadoutGearShimmerTint(
+			BaseStyle.Pressed.TintColor.GetSpecifiedColor(),
+			Intensity));
+		Style.Disabled.TintColor = FSlateColor(BlendLoadoutGearShimmerTint(
+			BaseStyle.Disabled.TintColor.GetSpecifiedColor(),
+			Intensity));
+
+		Button->SetStyle(Style);
+		Button->SetColorAndOpacity(BlendLoadoutGearShimmerTint(BaseColorAndOpacity, Intensity * 0.35f));
+		Button->SetBackgroundColor(BlendLoadoutGearShimmerTint(BaseBackgroundColor, Intensity * 0.18f));
+		Button->SynchronizeProperties();
+	}
+
+	void ApplyLoadoutImageShimmerVisual(
+		UImage* Image,
+		const FSlateBrush& BaseBrush,
+		const FLinearColor& BaseColorAndOpacity,
+		const float Intensity,
+		const bool bHovered)
+	{
+		if (!Image)
+		{
+			return;
+		}
+
+		FSlateBrush Brush = BaseBrush;
+		if (bHovered)
+		{
+			Brush.TintColor = FSlateColor(FLinearColor::White);
+			Image->SetBrush(Brush);
+			Image->SetColorAndOpacity(FLinearColor::White);
+			return;
+		}
+
+		Brush.TintColor = FSlateColor(BlendLoadoutGearShimmerTint(
+			BaseBrush.TintColor.GetSpecifiedColor(),
+			Intensity));
+		Image->SetBrush(Brush);
+		Image->SetColorAndOpacity(BlendLoadoutGearShimmerTint(BaseColorAndOpacity, Intensity * 0.35f));
+	}
+
+	bool IsLoadoutReturnImageStillUsingEditorPlaceholder(const UImage* Image)
+	{
+		if (!Image)
+		{
+			return false;
+		}
+
+		const FLinearColor BrushTint = Image->GetBrush().TintColor.GetSpecifiedColor();
+		const FLinearColor ColorAndOpacity = Image->GetColorAndOpacity();
+		const bool bMagentaBrush = BrushTint.R > 0.9f && BrushTint.G < 0.2f && BrushTint.B > 0.9f;
+		const bool bWhiteColor = ColorAndOpacity.R > 0.9f
+			&& ColorAndOpacity.G > 0.9f
+			&& ColorAndOpacity.B > 0.9f;
+		return bMagentaBrush && bWhiteColor;
+	}
+
+	void RegisterLoadoutImageShimmer(
+		UImage* Image,
+		UButton* HoverButton,
+		const float Period,
+		const float Duration,
+		const float FirstDelay);
+
+	bool TickLoadoutGearShimmer(const float DeltaTime)
+	{
+		for (int32 Index = LoadoutDeferredImageShimmerRegistrations.Num() - 1; Index >= 0; --Index)
+		{
+			FLoadoutDeferredImageShimmerRegistration& State = LoadoutDeferredImageShimmerRegistrations[Index];
+			UUserWidget* OwnerWidget = State.OwnerWidget.Get();
+			if (!OwnerWidget)
+			{
+				LoadoutDeferredImageShimmerRegistrations.RemoveAtSwap(Index);
+				continue;
+			}
+
+			State.DelayRemaining -= DeltaTime;
+			if (State.DelayRemaining > 0.0f)
+			{
+				continue;
+			}
+
+			UImage* Image = Cast<UImage>(OwnerWidget->GetWidgetFromName(State.ImageName));
+			if (!Image)
+			{
+				LoadoutDeferredImageShimmerRegistrations.RemoveAtSwap(Index);
+				continue;
+			}
+
+			UButton* HoverButton = State.HoverButtonName.IsNone()
+				? nullptr
+				: Cast<UButton>(OwnerWidget->GetWidgetFromName(State.HoverButtonName));
+			RegisterLoadoutImageShimmer(Image, HoverButton, State.Period, State.Duration, State.FirstDelay);
+			LoadoutDeferredImageShimmerRegistrations.RemoveAtSwap(Index);
+		}
+
+		for (int32 Index = LoadoutGearShimmerStates.Num() - 1; Index >= 0; --Index)
+		{
+			FLoadoutGearShimmerState& State = LoadoutGearShimmerStates[Index];
+			UButton* Button = State.Button.Get();
+			if (!Button)
+			{
+				LoadoutGearShimmerStates.RemoveAtSwap(Index);
+				continue;
+			}
+
+			State.Elapsed = FMath::Fmod(State.Elapsed + DeltaTime, State.Period);
+			const bool bInPulse = State.Elapsed <= State.Duration;
+			const float PulseT = bInPulse
+				? FMath::Clamp(State.Elapsed / State.Duration, 0.0f, 1.0f)
+				: 0.0f;
+			const float Intensity = bInPulse ? FMath::Sin(PulseT * PI) : 0.0f;
+			if (Intensity > 0.001f || State.PreviousIntensity > 0.001f)
+			{
+				ApplyLoadoutGearShimmerVisual(
+					Button,
+					State.BaseStyle,
+					State.BaseColorAndOpacity,
+					State.BaseBackgroundColor,
+					Intensity);
+			}
+
+			State.PreviousIntensity = Intensity;
+		}
+
+		for (int32 Index = LoadoutImageShimmerStates.Num() - 1; Index >= 0; --Index)
+		{
+			FLoadoutImageShimmerState& State = LoadoutImageShimmerStates[Index];
+			UImage* Image = State.Image.Get();
+			if (!Image)
+			{
+				LoadoutImageShimmerStates.RemoveAtSwap(Index);
+				continue;
+			}
+
+			State.Elapsed = FMath::Fmod(State.Elapsed + DeltaTime, State.Period);
+			const bool bInPulse = State.Elapsed <= State.Duration;
+			const float PulseT = bInPulse
+				? FMath::Clamp(State.Elapsed / State.Duration, 0.0f, 1.0f)
+				: 0.0f;
+			const float Intensity = bInPulse ? FMath::Sin(PulseT * PI) : 0.0f;
+			const bool bHovered = State.HoverButton.IsValid() && State.HoverButton->IsHovered();
+			if (bHovered
+				|| State.bPreviousHovered
+				|| Intensity > 0.001f
+				|| State.PreviousIntensity > 0.001f)
+			{
+				ApplyLoadoutImageShimmerVisual(
+					Image,
+					State.BaseBrush,
+					State.BaseColorAndOpacity,
+					Intensity,
+					bHovered);
+			}
+
+			State.PreviousIntensity = Intensity;
+			State.bPreviousHovered = bHovered;
+		}
+
+		if (LoadoutGearShimmerStates.Num() == 0
+			&& LoadoutImageShimmerStates.Num() == 0
+			&& LoadoutDeferredImageShimmerRegistrations.Num() == 0)
+		{
+			LoadoutGearShimmerTickerHandle.Reset();
+			return false;
+		}
+
+		return true;
+	}
+
+	void RegisterLoadoutGearShimmer(
+		UButton* Button,
+		const float Period = LoadoutGearShimmerPeriod,
+		const float Duration = LoadoutGearShimmerDuration,
+		const float FirstDelay = LoadoutGearShimmerFirstDelay)
+	{
+		if (!Button)
+		{
+			return;
+		}
+
+		for (FLoadoutGearShimmerState& State : LoadoutGearShimmerStates)
+		{
+			if (State.Button.Get() == Button)
+			{
+				return;
+			}
+		}
+
+		FLoadoutGearShimmerState& State = LoadoutGearShimmerStates.AddDefaulted_GetRef();
+		State.Button = Button;
+		State.BaseStyle = Button->GetStyle();
+		State.BaseColorAndOpacity = Button->GetColorAndOpacity();
+		State.BaseBackgroundColor = Button->GetBackgroundColor();
+		State.Period = Period;
+		State.Duration = Duration;
+		State.Elapsed = Period - FirstDelay;
+		ApplyLoadoutGearShimmerVisual(
+			Button,
+			State.BaseStyle,
+			State.BaseColorAndOpacity,
+			State.BaseBackgroundColor,
+			0.0f);
+
+		if (!LoadoutGearShimmerTickerHandle.IsValid())
+		{
+			LoadoutGearShimmerTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateStatic(&TickLoadoutGearShimmer));
+		}
+	}
+
+	void RegisterLoadoutImageShimmer(
+		UImage* Image,
+		UButton* HoverButton,
+		const float Period,
+		const float Duration,
+		const float FirstDelay)
+	{
+		if (!Image)
+		{
+			return;
+		}
+
+		for (FLoadoutImageShimmerState& State : LoadoutImageShimmerStates)
+		{
+			if (State.Image.Get() == Image)
+			{
+				return;
+			}
+		}
+
+		FSlateBrush BaseBrush = Image->GetBrush();
+		FLinearColor BaseColorAndOpacity = Image->GetColorAndOpacity();
+		if (IsLoadoutReturnImageStillUsingEditorPlaceholder(Image))
+		{
+			BaseBrush.TintColor = FSlateColor(LoadoutReturnNormalTint);
+			BaseColorAndOpacity = FLinearColor::White;
+		}
+
+		const FLinearColor BaseBrushTint = BaseBrush.TintColor.GetSpecifiedColor();
+		if (BaseBrushTint.A <= KINDA_SMALL_NUMBER || BaseColorAndOpacity.A <= KINDA_SMALL_NUMBER)
+		{
+			return;
+		}
+
+		FLoadoutImageShimmerState& State = LoadoutImageShimmerStates.AddDefaulted_GetRef();
+		State.Image = Image;
+		State.HoverButton = HoverButton;
+		State.BaseBrush = BaseBrush;
+		State.BaseColorAndOpacity = BaseColorAndOpacity;
+		State.Period = Period;
+		State.Duration = Duration;
+		State.Elapsed = Period - FirstDelay;
+		State.bPreviousHovered = HoverButton && HoverButton->IsHovered();
+		ApplyLoadoutImageShimmerVisual(
+			Image,
+			State.BaseBrush,
+			State.BaseColorAndOpacity,
+			0.0f,
+			State.bPreviousHovered);
+
+		if (!LoadoutGearShimmerTickerHandle.IsValid())
+		{
+			LoadoutGearShimmerTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateStatic(&TickLoadoutGearShimmer));
+		}
+	}
+
+	void RegisterLoadoutImageShimmerDeferred(
+		UUserWidget* OwnerWidget,
+		const FName ImageName,
+		const FName HoverButtonName,
+		const float Period,
+		const float Duration,
+		const float FirstDelay)
+	{
+		if (!OwnerWidget || ImageName.IsNone())
+		{
+			return;
+		}
+
+		for (FLoadoutDeferredImageShimmerRegistration& State : LoadoutDeferredImageShimmerRegistrations)
+		{
+			if (State.OwnerWidget.Get() == OwnerWidget && State.ImageName == ImageName)
+			{
+				return;
+			}
+		}
+
+		FLoadoutDeferredImageShimmerRegistration& State =
+			LoadoutDeferredImageShimmerRegistrations.AddDefaulted_GetRef();
+		State.OwnerWidget = OwnerWidget;
+		State.ImageName = ImageName;
+		State.HoverButtonName = HoverButtonName;
+		State.Period = Period;
+		State.Duration = Duration;
+		State.FirstDelay = FirstDelay;
+
+		if (!LoadoutGearShimmerTickerHandle.IsValid())
+		{
+			LoadoutGearShimmerTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateStatic(&TickLoadoutGearShimmer));
 		}
 	}
 
@@ -2553,6 +2935,54 @@ bool UTMGameplayStatics::ApplyLoadoutWeaponLayerIcon(UUserWidget* WeaponLayerWid
 	}
 
 	return true;
+}
+
+void UTMGameplayStatics::StartLoadoutGearShimmer(UUserWidget* OwnerWidget)
+{
+	if (!OwnerWidget)
+	{
+		return;
+	}
+
+	if (UButton* GearButton = Cast<UButton>(OwnerWidget->GetWidgetFromName(TEXT("B_Gear"))))
+	{
+		TMGameplayStatics::RegisterLoadoutGearShimmer(GearButton);
+	}
+
+	static const FName ReturnButtonNames[] = { TEXT("B_Return"), TEXT("B_Return_1") };
+	for (const FName& ReturnButtonName : ReturnButtonNames)
+	{
+		if (UButton* ReturnButton = Cast<UButton>(OwnerWidget->GetWidgetFromName(ReturnButtonName)))
+		{
+			TMGameplayStatics::RegisterLoadoutGearShimmer(
+				ReturnButton,
+				TMGameplayStatics::LoadoutReturnShimmerPeriod,
+				TMGameplayStatics::LoadoutReturnShimmerDuration,
+				TMGameplayStatics::LoadoutReturnShimmerFirstDelay);
+		}
+	}
+
+	struct FReturnImageHoverBinding
+	{
+		FName ImageName;
+		FName HoverButtonName;
+	};
+
+	static const FReturnImageHoverBinding ReturnImageHoverBindings[] =
+	{
+		{ TEXT("I_Return"), TEXT("B_Return") },
+		{ TEXT("I_Return_1"), TEXT("B_Return_1") }
+	};
+	for (const FReturnImageHoverBinding& Binding : ReturnImageHoverBindings)
+	{
+		TMGameplayStatics::RegisterLoadoutImageShimmerDeferred(
+			OwnerWidget,
+			Binding.ImageName,
+			Binding.HoverButtonName,
+			TMGameplayStatics::LoadoutReturnShimmerPeriod,
+			TMGameplayStatics::LoadoutReturnShimmerDuration,
+			TMGameplayStatics::LoadoutReturnShimmerFirstDelay);
+	}
 }
 
 bool UTMGameplayStatics::AttachActiveLoadoutWeaponToTransformator(AActor* WeaponActor)
