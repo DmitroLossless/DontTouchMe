@@ -529,6 +529,24 @@ void VisitWidgetTree(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
 	}
 }
 
+bool IsWidgetInVisibleTree(UWidget* RootWidget, const UWidget* CandidateWidget)
+{
+	if (!RootWidget || !IsValid(CandidateWidget))
+	{
+		return false;
+	}
+
+	bool bFound = false;
+	VisitWidgetTree(RootWidget, [CandidateWidget, &bFound](UWidget* ChildWidget)
+	{
+		if (ChildWidget == CandidateWidget)
+		{
+			bFound = true;
+		}
+	});
+	return bFound;
+}
+
 float ResolveViewportAspectRatio(UWorld* World)
 {
 	if (World)
@@ -949,7 +967,7 @@ bool DoesGeneratedAttachmentIconDefinitionMatchExactToken(
 	const FString& Token)
 {
 	const FString NormalizedToken = NormalizeAttachmentFocusToken(Token);
-	if (NormalizedToken.Len() < 3)
+	if (NormalizedToken.IsEmpty())
 	{
 		return false;
 	}
@@ -984,31 +1002,19 @@ const FGeneratedAttachmentIconDefinition* FindGeneratedAttachmentIconDefinitionF
 	return nullptr;
 }
 
-const FGeneratedAttachmentIconDefinition* FindGeneratedWeaponIconDefinitionForText(const FString& Text)
+const FGeneratedAttachmentIconDefinition* FindGeneratedWeaponIconDefinitionForToken(const FString& Token)
 {
-	const FString NormalizedText = NormalizeAttachmentFocusToken(Text);
-	if (NormalizedText.Len() < 3)
+	const FString NormalizedToken = NormalizeAttachmentFocusToken(Token);
+	if (NormalizedToken.IsEmpty())
 	{
 		return nullptr;
 	}
 
 	for (const FGeneratedAttachmentIconDefinition& Definition : GeneratedWeaponIconDefinitions())
 	{
-		if (DoesGeneratedAttachmentIconDefinitionMatchExactToken(Definition, NormalizedText))
+		if (DoesGeneratedAttachmentIconDefinitionMatchExactToken(Definition, NormalizedToken))
 		{
 			return &Definition;
-		}
-	}
-
-	if (NormalizedText.Equals(TEXT("SCAR"), ESearchCase::IgnoreCase))
-	{
-		for (const FGeneratedAttachmentIconDefinition& Definition : GeneratedWeaponIconDefinitions())
-		{
-			if (DoesGeneratedAttachmentIconDefinitionMatchExactToken(Definition, TEXT("M4"))
-				|| DoesGeneratedAttachmentIconDefinitionMatchExactToken(Definition, TEXT("SMG_M4")))
-			{
-				return &Definition;
-			}
 		}
 	}
 
@@ -1030,8 +1036,53 @@ bool IsLoadoutWeaponSelectionWidgetClass(const UClass* WidgetClass)
 	}
 
 	const FString WidgetClassPath = WidgetClass->GetPathName();
-	return WidgetClassPath.Contains(TEXT("W_Loadout"))
-		|| WidgetClassPath.Contains(TEXT("W_Weapon_Layer"));
+	return WidgetClassPath.Contains(TEXT("W_Weapon_Layer"));
+}
+
+FString ReadWeaponSelectionLookupTokenFromWidget(const UUserWidget* Widget)
+{
+	if (!IsValid(Widget))
+	{
+		return FString();
+	}
+
+	const UClass* WidgetClass = Widget->GetClass();
+	if (!WidgetClass || !WidgetClass->GetPathName().Contains(TEXT("W_Weapon_Layer")))
+	{
+		return FString();
+	}
+
+	if (const FNameProperty* NameProperty = FindFProperty<FNameProperty>(WidgetClass, TEXT("Name")))
+	{
+		return NameProperty->GetPropertyValue_InContainer(Widget).ToString();
+	}
+
+	if (const FStrProperty* StringProperty = FindFProperty<FStrProperty>(WidgetClass, TEXT("Name")))
+	{
+		return StringProperty->GetPropertyValue_InContainer(Widget);
+	}
+
+	if (const FTextProperty* TextProperty = FindFProperty<FTextProperty>(WidgetClass, TEXT("Name")))
+	{
+		return TextProperty->GetPropertyValue_InContainer(Widget).ToString();
+	}
+
+	return FString();
+}
+
+FString ReadWeaponSelectionLookupTokenFromObject(const UObject* Object)
+{
+	for (const UObject* Current = Object; Current; Current = Current->GetOuter())
+	{
+		const UUserWidget* Widget = Cast<UUserWidget>(Current);
+		const FString LookupToken = ReadWeaponSelectionLookupTokenFromWidget(Widget);
+		if (!LookupToken.IsEmpty())
+		{
+			return LookupToken;
+		}
+	}
+
+	return FString();
 }
 
 UButton* FindOwningButton(UWidget* Widget)
@@ -3598,6 +3649,29 @@ UTMMenuViewerMeshTransitionSubsystem::ResolveActiveAttachmentCameraFocusGroup(UW
 				}
 			});
 
+			if (Result == EAttachmentCameraFocusGroup::None)
+			{
+				for (const auto& IconStylePair : GeneratedAttachmentIconStyles)
+				{
+					const FGeneratedAttachmentIconStyle& IconStyle = IconStylePair.Value;
+					const UButton* Button = IconStyle.Button.Get();
+					const UTextBlock* Label = IconStyle.Label.Get();
+					if (!IsValid(Button)
+						|| !IsValid(Label)
+						|| !IsWidgetInVisibleTree(AttachmentList, Button))
+					{
+						continue;
+					}
+
+					const EAttachmentCameraFocusGroup Candidate =
+						InferAttachmentCameraFocusGroupFromText(Label->GetText().ToString());
+					if (Candidate != EAttachmentCameraFocusGroup::None)
+					{
+						Result = Candidate;
+					}
+				}
+			}
+
 			if (Result != EAttachmentCameraFocusGroup::None)
 			{
 				return Result;
@@ -3665,16 +3739,35 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentSelectionHighlight(UW
 			}
 
 			TArray<UTextBlock*> AttachmentLabels;
-			VisitWidgetTree(AttachmentList, [&AttachmentLabels](UWidget* ChildWidget)
+			const auto AddAttachmentLabel = [&AttachmentLabels](UTextBlock* TextBlock)
 			{
-				UTextBlock* TextBlock = Cast<UTextBlock>(ChildWidget);
 				if (!IsValid(TextBlock) || !IsAttachmentSelectionOptionText(TextBlock->GetText().ToString()))
 				{
 					return;
 				}
 
-				AttachmentLabels.Add(TextBlock);
+				AttachmentLabels.AddUnique(TextBlock);
+			};
+
+			VisitWidgetTree(AttachmentList, [&AddAttachmentLabel](UWidget* ChildWidget)
+			{
+				AddAttachmentLabel(Cast<UTextBlock>(ChildWidget));
 			});
+
+			for (const auto& IconStylePair : GeneratedAttachmentIconStyles)
+			{
+				const FGeneratedAttachmentIconStyle& IconStyle = IconStylePair.Value;
+				UButton* Button = IconStyle.Button.Get();
+				UTextBlock* Label = IconStyle.Label.Get();
+				if (!IsValid(Button)
+					|| !IsValid(Label)
+					|| !IsWidgetInVisibleTree(AttachmentList, Button))
+				{
+					continue;
+				}
+
+				AddAttachmentLabel(Label);
+			}
 
 			UTextBlock* BestLabel = nullptr;
 			int32 BestScore = INDEX_NONE;
@@ -3758,17 +3851,28 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(
 	UTextBlock* TextBlock,
 	const bool bSelected,
 	const bool bUseWeaponDefinitions,
-	UButton* ButtonOverride)
+	UButton* ButtonOverride,
+	const FString& LookupToken)
 {
 	if (!IsValid(TextBlock))
 	{
 		return;
 	}
 
+	FString DefinitionToken = LookupToken;
+	if (DefinitionToken.IsEmpty() && bUseWeaponDefinitions && IsValid(ButtonOverride))
+	{
+		DefinitionToken = ReadWeaponSelectionLookupTokenFromObject(ButtonOverride);
+	}
+	if (DefinitionToken.IsEmpty())
+	{
+		DefinitionToken = TextBlock->GetText().ToString();
+	}
+
 	const FGeneratedAttachmentIconDefinition* Definition =
 		bUseWeaponDefinitions
-			? FindGeneratedWeaponIconDefinitionForText(TextBlock->GetText().ToString())
-			: FindGeneratedAttachmentIconDefinitionForText(TextBlock->GetText().ToString());
+			? FindGeneratedWeaponIconDefinitionForToken(DefinitionToken)
+			: FindGeneratedAttachmentIconDefinitionForText(DefinitionToken);
 	if (!Definition)
 	{
 		RestoreGeneratedAttachmentIconStyle(TextBlock);
@@ -3848,6 +3952,9 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateGeneratedAttachmentIcon(
 
 		Button->SetContent(RootSizeBox);
 	}
+
+	StoredStyle->IconLookupToken = DefinitionToken;
+	StoredStyle->bUseWeaponDefinitions = bUseWeaponDefinitions;
 
 	UButton* Button = StoredStyle->Button.Get();
 	UTextBlock* Label = StoredStyle->Label.Get();
@@ -4000,10 +4107,15 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 		{
 			UTextBlock* TextBlock = nullptr;
 			UButton* Button = nullptr;
+			FString LookupToken;
 		};
 
 		TArray<FWeaponSelectionIconCandidate> WeaponLabels;
-		VisitWidgetTree(Widget, [Widget, &WeaponLabels](UWidget* ChildWidget)
+		const FString WidgetLookupToken = ReadWeaponSelectionLookupTokenFromWidget(Widget);
+		const bool bHiddenWeaponRow = IsHiddenWeaponSelectionText(WidgetLookupToken);
+		const FGeneratedAttachmentIconDefinition* WeaponIconDefinition =
+			FindGeneratedWeaponIconDefinitionForToken(WidgetLookupToken);
+		VisitWidgetTree(Widget, [Widget, &WeaponLabels, &WidgetLookupToken, bHiddenWeaponRow, WeaponIconDefinition](UWidget* ChildWidget)
 		{
 			UTextBlock* TextBlock = Cast<UTextBlock>(ChildWidget);
 			if (!IsValid(TextBlock))
@@ -4011,21 +4123,20 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 				return;
 			}
 
-			if (IsHiddenWeaponSelectionText(TextBlock->GetText().ToString()))
+			if (bHiddenWeaponRow)
 			{
 				CollapseWeaponSelectionRow(Widget, TextBlock);
 				return;
 			}
 
-			const FString NormalizedText = NormalizeAttachmentFocusToken(TextBlock->GetText().ToString());
-			if (!NormalizedText.IsEmpty()
-				&& FindGeneratedWeaponIconDefinitionForText(TextBlock->GetText().ToString()))
+			if (!WidgetLookupToken.IsEmpty() && WeaponIconDefinition)
 			{
 				if (UButton* Button = FindWeaponSelectionButtonForTextBlock(Widget, TextBlock))
 				{
 					FWeaponSelectionIconCandidate Candidate;
 					Candidate.TextBlock = TextBlock;
 					Candidate.Button = Button;
+					Candidate.LookupToken = WidgetLookupToken;
 					WeaponLabels.Add(Candidate);
 				}
 			}
@@ -4050,7 +4161,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 				StoredStyle = &WeaponSelectionLabelStyles.Add(TextBlock, NewStyle);
 			}
 
-			const int32 Score = ScoreSelectionTextAgainstTokens(TextBlock->GetText().ToString(), HighlightTokens);
+			const int32 Score = ScoreSelectionTextAgainstTokens(Candidate.LookupToken, HighlightTokens);
 			if (Score > BestScore)
 			{
 				BestScore = Score;
@@ -4076,7 +4187,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 			TextBlock->SetColorAndOpacity(bHighlighted
 				? FSlateColor(AttachmentSelectionHighlightColor())
 				: StoredStyle->OriginalColorAndOpacity);
-			UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted, true, Candidate.Button);
+			UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted, true, Candidate.Button, Candidate.LookupToken);
 		}
 	}
 
@@ -4102,12 +4213,17 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 		}
 
 		SeenLabels.Add(TextBlock);
-		const int32 Score = ScoreSelectionTextAgainstTokens(TextBlock->GetText().ToString(), HighlightTokens);
+		FString LookupToken = IconStyle->IconLookupToken;
+		if (LookupToken.IsEmpty())
+		{
+			LookupToken = ReadWeaponSelectionLookupTokenFromObject(Button);
+		}
+		const int32 Score = ScoreSelectionTextAgainstTokens(LookupToken, HighlightTokens);
 		const bool bHighlighted = Score != INDEX_NONE;
 		TextBlock->SetColorAndOpacity(bHighlighted
 			? FSlateColor(AttachmentSelectionHighlightColor())
 			: It.Value().OriginalColorAndOpacity);
-		UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted, true, Button);
+		UpdateGeneratedAttachmentIcon(TextBlock, bHighlighted, true, Button, LookupToken);
 	}
 
 	for (auto It = WeaponSelectionLabelStyles.CreateIterator(); It; ++It)

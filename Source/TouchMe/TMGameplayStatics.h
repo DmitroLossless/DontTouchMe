@@ -129,6 +129,9 @@ class UTMGameplayStatics : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, Category = "TM|Loadout", meta = (DisplayName = "Apply Loadout Weapon Layer Icon"))
 	static TOUCHME_API bool ApplyLoadoutWeaponLayerIcon(UUserWidget* WeaponLayerWidget);
 
+	UFUNCTION(BlueprintCallable, Category = "TM|Loadout", meta = (DisplayName = "Start Loadout Gear Shimmer"))
+	static TOUCHME_API void StartLoadoutGearShimmer(UUserWidget* OwnerWidget);
+
 	UFUNCTION(BlueprintCallable, Category = "TM|Loadout", meta = (DisplayName = "Attach Active Loadout Weapon To Transformator"))
 	static TOUCHME_API bool AttachActiveLoadoutWeaponToTransformator(AActor* WeaponActor);
 
