@@ -9,8 +9,10 @@
 #include "Components/ContentWidget.h"
 #include "Components/Image.h"
 #include "Components/PanelWidget.h"
+#include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/Widget.h"
+#include "Engine/Texture2D.h"
 #include "UObject/UObjectIterator.h"
 
 namespace
@@ -30,9 +32,58 @@ namespace
 	constexpr float MainMenuLabelHoverScale = 1.07f;
 	constexpr float MainMenuSubmenuLabelHoverFontScale = 1.15f;
 	constexpr float QuitConfirmationOptionHoverFontScale = 1.12f;
+	constexpr float LoadoutCategoryButtonDisplayScale = 0.15f;
+	constexpr float LoadoutCategoryButtonHoverScale = 1.30f;
 	const FLinearColor MainMenuDialogYellow(0.672443f, 0.381326f, 0.025187f, 1.0f);
 	const FLinearColor MainMenuDialogHoverRed(1.0f, 0.0f, 0.0f, 1.0f);
 	const FName MainMenuLabelHoverTypeface(TEXT("Light"));
+
+	struct FLoadoutCategoryButtonSpec
+	{
+		FName ButtonName;
+		FName IconBoxName;
+		FName IconImageName;
+		FVector2D FallbackNativeSize = FVector2D(128.0f, 64.0f);
+	};
+
+	const FLoadoutCategoryButtonSpec LoadoutCategoryButtonSpecs[] =
+	{
+		{ TEXT("B_Primary"), TEXT("TM_Primary_CategoryIconBox"), TEXT("TM_Primary_CategoryIconImage"), FVector2D(1881.0f, 560.0f) },
+		{ TEXT("B_Secondary"), TEXT("TM_Secondary_CategoryIconBox"), TEXT("TM_Secondary_CategoryIconImage"), FVector2D(1688.0f, 639.0f) },
+		{ TEXT("B_Special"), TEXT("TM_Special_CategoryIconBox"), TEXT("TM_Special_CategoryIconImage"), FVector2D(1672.0f, 645.0f) },
+		{ TEXT("B_Melee"), TEXT("TM_Melee_CategoryIconBox"), TEXT("TM_Melee_CategoryIconImage"), FVector2D(1685.0f, 654.0f) },
+		{ TEXT("B_Explosive"), TEXT("TM_Explosive_CategoryIconBox"), TEXT("TM_Explosive_CategoryIconImage"), FVector2D(1679.0f, 648.0f) }
+	};
+
+	FVector2D GetLoadoutCategoryNativeSize(const FLoadoutCategoryButtonSpec& Spec, const UImage* IconImage)
+	{
+		if (IconImage)
+		{
+			const FSlateBrush Brush = IconImage->GetBrush();
+			if (const UTexture2D* Texture = Cast<UTexture2D>(Brush.GetResourceObject()))
+			{
+				const int32 TextureWidth = Texture->GetSizeX();
+				const int32 TextureHeight = Texture->GetSizeY();
+				if (TextureWidth > 0 && TextureHeight > 0)
+				{
+					return FVector2D(static_cast<float>(TextureWidth), static_cast<float>(TextureHeight));
+				}
+			}
+
+			const FVector2D BrushSize = Brush.GetImageSize();
+			if (BrushSize.X > 0.0f && BrushSize.Y > 0.0f)
+			{
+				return BrushSize;
+			}
+		}
+
+		return Spec.FallbackNativeSize;
+	}
+
+	FVector2D GetLoadoutCategoryDisplaySize(const FLoadoutCategoryButtonSpec& Spec, const UImage* IconImage)
+	{
+		return GetLoadoutCategoryNativeSize(Spec, IconImage) * LoadoutCategoryButtonDisplayScale;
+	}
 
 	void VisitMainMenuHoverWidgetTree(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
 	{
@@ -161,8 +212,21 @@ void UTMMainMenuHoverStyleSubsystem::Deinitialize()
 		TextBlock->SetColorAndOpacity(Pair.Value.NormalColor);
 	}
 
+	for (TPair<TWeakObjectPtr<UWidget>, FTrackedWidgetTransform>& Pair : TrackedLoadoutCategoryButtons)
+	{
+		UWidget* Widget = Pair.Key.Get();
+		if (!IsValid(Widget))
+		{
+			continue;
+		}
+
+		Widget->SetRenderTransform(Pair.Value.NormalTransform);
+		Widget->SetRenderTransformPivot(Pair.Value.NormalPivot);
+	}
+
 	TrackedLabels.Reset();
 	TrackedQuitOptionLabels.Reset();
+	TrackedLoadoutCategoryButtons.Reset();
 	Super::Deinitialize();
 }
 
@@ -191,6 +255,7 @@ void UTMMainMenuHoverStyleSubsystem::ApplyMainMenuHoverStyle()
 	}
 
 	TSet<TWeakObjectPtr<UTextBlock>> SeenLabels;
+	TSet<TWeakObjectPtr<UWidget>> SeenLoadoutCategoryButtons;
 
 	for (TObjectIterator<UUserWidget> WidgetIt; WidgetIt; ++WidgetIt)
 	{
@@ -222,6 +287,7 @@ void UTMMainMenuHoverStyleSubsystem::ApplyMainMenuHoverStyle()
 		}
 
 		ApplyQuitConfirmationStyle(Widget, SeenLabels);
+		ApplyLoadoutCategoryButtonStyle(Widget, SeenLoadoutCategoryButtons);
 	}
 
 	for (auto It = TrackedLabels.CreateIterator(); It; ++It)
@@ -254,6 +320,23 @@ void UTMMainMenuHoverStyleSubsystem::ApplyMainMenuHoverStyle()
 			TextBlock->SetRenderTransform(It.Value().NormalTransform);
 			TextBlock->SetRenderTransformPivot(It.Value().NormalPivot);
 			TextBlock->SetColorAndOpacity(It.Value().NormalColor);
+			It.RemoveCurrent();
+		}
+	}
+
+	for (auto It = TrackedLoadoutCategoryButtons.CreateIterator(); It; ++It)
+	{
+		UWidget* Widget = It.Key().Get();
+		if (!IsValid(Widget))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+
+		if (!SeenLoadoutCategoryButtons.Contains(Widget))
+		{
+			Widget->SetRenderTransform(It.Value().NormalTransform);
+			Widget->SetRenderTransformPivot(It.Value().NormalPivot);
 			It.RemoveCurrent();
 		}
 	}
@@ -318,10 +401,63 @@ void UTMMainMenuHoverStyleSubsystem::ApplyQuitConfirmationStyle(
 	});
 }
 
+void UTMMainMenuHoverStyleSubsystem::ApplyLoadoutCategoryButtonStyle(
+	UUserWidget* Widget,
+	TSet<TWeakObjectPtr<UWidget>>& SeenButtons)
+{
+	if (!IsLoadoutCategoryWidget(Widget))
+	{
+		return;
+	}
+
+	for (const FLoadoutCategoryButtonSpec& Spec : LoadoutCategoryButtonSpecs)
+	{
+		UButton* Button = Cast<UButton>(Widget->GetWidgetFromName(Spec.ButtonName));
+		if (!IsValid(Button) || !Button->IsVisible())
+		{
+			continue;
+		}
+
+		UImage* IconImage = Cast<UImage>(Widget->GetWidgetFromName(Spec.IconImageName));
+		const FVector2D DisplaySize = GetLoadoutCategoryDisplaySize(Spec, IconImage);
+
+		if (USizeBox* IconBox = Cast<USizeBox>(Widget->GetWidgetFromName(Spec.IconBoxName)))
+		{
+			IconBox->SetWidthOverride(DisplaySize.X);
+			IconBox->SetHeightOverride(DisplaySize.Y);
+			IconBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+
+		if (IconImage)
+		{
+			IconImage->SetDesiredSizeOverride(DisplaySize);
+			IconImage->SetColorAndOpacity(FLinearColor::White);
+			IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+
+		SeenButtons.Add(Button);
+		SetLoadoutCategoryButtonHovered(Button, Button->IsHovered() || IsMainMenuHoverWidgetTreeHovered(Button));
+	}
+}
+
 bool UTMMainMenuHoverStyleSubsystem::IsMainMenuWidget(const UUserWidget* Widget)
 {
 	const UClass* WidgetClass = Widget ? Widget->GetClass() : nullptr;
 	return WidgetClass && WidgetClass->GetName().Contains(TEXT("W_MainMenu"), ESearchCase::IgnoreCase);
+}
+
+bool UTMMainMenuHoverStyleSubsystem::IsLoadoutCategoryWidget(const UUserWidget* Widget)
+{
+	const UClass* WidgetClass = Widget ? Widget->GetClass() : nullptr;
+	if (!WidgetClass)
+	{
+		return false;
+	}
+
+	const FString ClassName = WidgetClass->GetName();
+	return ClassName.Contains(TEXT("W_Loadout"), ESearchCase::IgnoreCase)
+		|| ClassName.Contains(TEXT("W_Attachments"), ESearchCase::IgnoreCase)
+		|| ClassName.Contains(TEXT("W_MainMenu"), ESearchCase::IgnoreCase);
 }
 
 bool UTMMainMenuHoverStyleSubsystem::IsMainMenuLargeLabel(const FString& Text)
@@ -463,4 +599,34 @@ void UTMMainMenuHoverStyleSubsystem::SetQuitOptionHovered(UTextBlock* TextBlock,
 	TextBlock->SetFont(Font);
 	TextBlock->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
 	TextBlock->SetRenderTransform(Transform);
+}
+
+void UTMMainMenuHoverStyleSubsystem::SetLoadoutCategoryButtonHovered(UWidget* Widget, const bool bHovered)
+{
+	if (!IsValid(Widget))
+	{
+		return;
+	}
+
+	FTrackedWidgetTransform* Style = TrackedLoadoutCategoryButtons.Find(Widget);
+	if (!Style)
+	{
+		FTrackedWidgetTransform NewStyle;
+		NewStyle.NormalTransform = Widget->GetRenderTransform();
+		NewStyle.NormalPivot = Widget->GetRenderTransformPivot();
+		Style = &TrackedLoadoutCategoryButtons.Add(Widget, NewStyle);
+	}
+
+	Style->bHovered = bHovered;
+
+	FWidgetTransform Transform = Style->NormalTransform;
+	if (bHovered)
+	{
+		Transform.Scale = FVector2D(
+			Style->NormalTransform.Scale.X * LoadoutCategoryButtonHoverScale,
+			Style->NormalTransform.Scale.Y * LoadoutCategoryButtonHoverScale);
+	}
+
+	Widget->SetRenderTransformPivot(bHovered ? FVector2D(0.5f, 0.5f) : Style->NormalPivot);
+	Widget->SetRenderTransform(Transform);
 }

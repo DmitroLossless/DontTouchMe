@@ -9,6 +9,7 @@
 #include "TMMainMenuHoverStyleSubsystem.generated.h"
 
 class UTextBlock;
+class UWidget;
 
 UCLASS()
 class TOUCHME_API UTMMainMenuHoverStyleSubsystem final : public UGameInstanceSubsystem, public FTickableGameObject
@@ -32,15 +33,26 @@ private:
 		bool bHovered = false;
 	};
 
+	struct FTrackedWidgetTransform
+	{
+		FWidgetTransform NormalTransform;
+		FVector2D NormalPivot = FVector2D::ZeroVector;
+		bool bHovered = false;
+	};
+
 	void ApplyMainMenuHoverStyle();
 	void ApplyQuitConfirmationStyle(class UUserWidget* Widget, TSet<TWeakObjectPtr<UTextBlock>>& SeenLabels);
+	void ApplyLoadoutCategoryButtonStyle(class UUserWidget* Widget, TSet<TWeakObjectPtr<UWidget>>& SeenButtons);
 	static bool IsMainMenuWidget(const class UUserWidget* Widget);
+	static bool IsLoadoutCategoryWidget(const class UUserWidget* Widget);
 	static bool IsMainMenuLargeLabel(const FString& Text);
 	static UTextBlock* FindLargeLabelText(class UWidget* RootWidget);
 	static UTextBlock* FindQuitOptionLabelText(class UWidget* RootWidget);
 	void SetLabelHovered(UTextBlock* TextBlock, bool bHovered);
 	void SetQuitOptionHovered(UTextBlock* TextBlock, bool bHovered);
+	void SetLoadoutCategoryButtonHovered(UWidget* Widget, bool bHovered);
 
 	TMap<TWeakObjectPtr<UTextBlock>, FTrackedLabelStyle> TrackedLabels;
 	TMap<TWeakObjectPtr<UTextBlock>, FTrackedLabelStyle> TrackedQuitOptionLabels;
+	TMap<TWeakObjectPtr<UWidget>, FTrackedWidgetTransform> TrackedLoadoutCategoryButtons;
 };

@@ -36,12 +36,16 @@
 #include "Components/AudioComponent.h"
 #include "Components/Border.h"
 #include "Components/Button.h"
+#include "Components/ButtonSlot.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/ContentWidget.h"
 #include "Components/Image.h"
+#include "Components/Overlay.h"
+#include "Components/OverlaySlot.h"
 #include "Components/PanelWidget.h"
 #include "Components/ProgressBar.h"
 #include "Components/RichTextBlock.h"
+#include "Components/ScaleBox.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBoxSlot.h"
@@ -66,8 +70,12 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/EnumEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
+#include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
 #include "Particles/ParticleSystem.h"
@@ -78,6 +86,7 @@
 #include "UObject/ObjectRedirector.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
+#include "WidgetBlueprint.h"
 
 namespace
 {
@@ -6297,6 +6306,17 @@ namespace
 					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Button Hovered{%s}"), *TMDescribeSlateBrushForMenuDump(Style.Hovered));
 					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Button Pressed{%s}"), *TMDescribeSlateBrushForMenuDump(Style.Pressed));
 				}
+				else if (USizeBox* SizeBox = Cast<USizeBox>(Widget))
+				{
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMMenuButtonDump]     SizeBox WidthOverride=%d %.3f HeightOverride=%d %.3f"),
+						SizeBox->IsWidthOverride() ? 1 : 0,
+						static_cast<double>(SizeBox->GetWidthOverride()),
+						SizeBox->IsHeightOverride() ? 1 : 0,
+						static_cast<double>(SizeBox->GetHeightOverride()));
+				}
 				else if (UImage* Image = Cast<UImage>(Widget))
 				{
 					UE_LOG(LogTemp, Display, TEXT("[TMMenuButtonDump]     Image Brush{%s} Color=%s"), *TMDescribeSlateBrushForMenuDump(Image->GetBrush()), *Image->GetColorAndOpacity().ToString());
@@ -7854,6 +7874,1122 @@ namespace
 		for (const TCHAR* BlueprintPath : WidgetBlueprintPaths)
 		{
 			bSuccess &= TMPatchMinimalMenuButtonsForWidgetBlueprint(BlueprintPath, IndicatorResource);
+		}
+
+		return bSuccess;
+	}
+
+	const TCHAR* TMCategoryIconOutputPath = TEXT("/Game/UI/Generated/Icons");
+	const TCHAR* TMCategoryIconSourceFolder = TEXT("UI/Source/MenuCategoryIcons");
+	const int32 TMCategoryIconWidth = 128;
+	const int32 TMCategoryIconHeight = 64;
+	const int32 TMCategoryIconSupersample = 4;
+	constexpr float TMCategoryIconDisplayScale = 0.15f;
+	constexpr uint8 TMCategoryIconCropColorThreshold = 18;
+	constexpr uint8 TMCategoryIconCropAlphaThreshold = 8;
+	const int32 TMCategoryIconCropPadding = 0;
+
+	struct FTMCategoryIconCanvas
+	{
+		int32 Width = TMCategoryIconWidth;
+		int32 Height = TMCategoryIconHeight;
+		int32 Scale = TMCategoryIconSupersample;
+		TArray<uint8> Alpha;
+
+		FTMCategoryIconCanvas()
+		{
+			Alpha.Init(0, Width * Scale * Height * Scale);
+		}
+
+		void Fill(TFunctionRef<bool(float, float)> Shape)
+		{
+			const int32 HighWidth = Width * Scale;
+			const int32 HighHeight = Height * Scale;
+			for (int32 Y = 0; Y < HighHeight; ++Y)
+			{
+				for (int32 X = 0; X < HighWidth; ++X)
+				{
+					const float SampleX = (static_cast<float>(X) + 0.5f) / static_cast<float>(Scale);
+					const float SampleY = (static_cast<float>(Y) + 0.5f) / static_cast<float>(Scale);
+					if (Shape(SampleX, SampleY))
+					{
+						Alpha[Y * HighWidth + X] = 255;
+					}
+				}
+			}
+		}
+
+		void Rect(const float X0, const float Y0, const float X1, const float Y1)
+		{
+			Fill([=](const float X, const float Y)
+			{
+				return X >= X0 && X <= X1 && Y >= Y0 && Y <= Y1;
+			});
+		}
+
+		void RoundedRect(const float X0, const float Y0, const float X1, const float Y1, const float Radius)
+		{
+			Fill([=](const float X, const float Y)
+			{
+				const float ClampedX = FMath::Clamp(X, X0 + Radius, X1 - Radius);
+				const float ClampedY = FMath::Clamp(Y, Y0 + Radius, Y1 - Radius);
+				const float DeltaX = X - ClampedX;
+				const float DeltaY = Y - ClampedY;
+				return DeltaX * DeltaX + DeltaY * DeltaY <= Radius * Radius;
+			});
+		}
+
+		void Circle(const FVector2D Center, const float Radius)
+		{
+			Fill([=](const float X, const float Y)
+			{
+				const float DeltaX = X - Center.X;
+				const float DeltaY = Y - Center.Y;
+				return DeltaX * DeltaX + DeltaY * DeltaY <= Radius * Radius;
+			});
+		}
+
+		void StrokeCircle(const FVector2D Center, const float Radius, const float Thickness)
+		{
+			const float Inner = FMath::Max(0.0f, Radius - Thickness * 0.5f);
+			const float Outer = Radius + Thickness * 0.5f;
+			Fill([=](const float X, const float Y)
+			{
+				const float DeltaX = X - Center.X;
+				const float DeltaY = Y - Center.Y;
+				const float DistanceSq = DeltaX * DeltaX + DeltaY * DeltaY;
+				return DistanceSq >= Inner * Inner && DistanceSq <= Outer * Outer;
+			});
+		}
+
+		void Line(const FVector2D A, const FVector2D B, const float Thickness)
+		{
+			const FVector2D Segment = B - A;
+			const float SegmentLengthSq = Segment.SizeSquared();
+			const float Radius = Thickness * 0.5f;
+			Fill([=](const float X, const float Y)
+			{
+				const FVector2D Point(X, Y);
+				const float T = SegmentLengthSq > 0.0f
+					? FMath::Clamp(FVector2D::DotProduct(Point - A, Segment) / SegmentLengthSq, 0.0f, 1.0f)
+					: 0.0f;
+				const FVector2D Closest = A + Segment * T;
+				return FVector2D::DistSquared(Point, Closest) <= Radius * Radius;
+			});
+		}
+
+		void Polygon(const TArray<FVector2D>& Points)
+		{
+			if (Points.Num() < 3)
+			{
+				return;
+			}
+
+			Fill([=](const float X, const float Y)
+			{
+				bool bInside = false;
+				for (int32 I = 0, J = Points.Num() - 1; I < Points.Num(); J = I++)
+				{
+					const FVector2D& A = Points[I];
+					const FVector2D& B = Points[J];
+					const bool bCrosses = ((A.Y > Y) != (B.Y > Y))
+						&& (X < (B.X - A.X) * (Y - A.Y) / (B.Y - A.Y + SMALL_NUMBER) + A.X);
+					if (bCrosses)
+					{
+						bInside = !bInside;
+					}
+				}
+				return bInside;
+			});
+		}
+
+		TArray<uint8> ToBgra8() const
+		{
+			TArray<uint8> PixelData;
+			PixelData.Init(0, Width * Height * 4);
+			const int32 HighWidth = Width * Scale;
+			const int32 SamplesPerPixel = Scale * Scale;
+			for (int32 Y = 0; Y < Height; ++Y)
+			{
+				for (int32 X = 0; X < Width; ++X)
+				{
+					int32 Coverage = 0;
+					for (int32 SubY = 0; SubY < Scale; ++SubY)
+					{
+						for (int32 SubX = 0; SubX < Scale; ++SubX)
+						{
+							const int32 HighX = X * Scale + SubX;
+							const int32 HighY = Y * Scale + SubY;
+							Coverage += Alpha[HighY * HighWidth + HighX];
+						}
+					}
+
+					const uint8 OutAlpha = static_cast<uint8>(Coverage / SamplesPerPixel);
+					const int32 DestIndex = (Y * Width + X) * 4;
+					PixelData[DestIndex] = 255;
+					PixelData[DestIndex + 1] = 255;
+					PixelData[DestIndex + 2] = 255;
+					PixelData[DestIndex + 3] = OutAlpha;
+				}
+			}
+
+			return PixelData;
+		}
+	};
+
+	void TMDrawPrimaryCategoryIcon(FTMCategoryIconCanvas& Canvas)
+	{
+		Canvas.Line(FVector2D(13.0f, 31.0f), FVector2D(39.0f, 31.0f), 4.0f);
+		Canvas.Rect(36.0f, 24.0f, 78.0f, 37.0f);
+		Canvas.Polygon({ FVector2D(77.0f, 24.0f), FVector2D(112.0f, 19.0f), FVector2D(118.0f, 36.0f), FVector2D(82.0f, 37.0f) });
+		Canvas.Polygon({ FVector2D(42.0f, 37.0f), FVector2D(57.0f, 37.0f), FVector2D(53.0f, 52.0f), FVector2D(38.0f, 49.0f) });
+		Canvas.Polygon({ FVector2D(58.0f, 38.0f), FVector2D(71.0f, 38.0f), FVector2D(73.0f, 54.0f), FVector2D(61.0f, 54.0f) });
+		Canvas.Rect(48.0f, 19.0f, 68.0f, 24.0f);
+		Canvas.Line(FVector2D(79.0f, 22.0f), FVector2D(89.0f, 22.0f), 3.0f);
+		Canvas.Circle(FVector2D(77.0f, 30.0f), 2.3f);
+		Canvas.Line(FVector2D(7.0f, 31.0f), FVector2D(16.0f, 31.0f), 2.0f);
+	}
+
+	void TMDrawSecondaryCategoryIcon(FTMCategoryIconCanvas& Canvas)
+	{
+		Canvas.RoundedRect(27.0f, 22.0f, 83.0f, 34.0f, 2.5f);
+		Canvas.Line(FVector2D(17.0f, 31.0f), FVector2D(30.0f, 31.0f), 3.0f);
+		Canvas.Polygon({ FVector2D(65.0f, 34.0f), FVector2D(80.0f, 35.0f), FVector2D(72.0f, 55.0f), FVector2D(56.0f, 52.0f) });
+		Canvas.Line(FVector2D(48.0f, 35.0f), FVector2D(39.0f, 45.0f), 4.0f);
+		Canvas.Line(FVector2D(39.0f, 45.0f), FVector2D(52.0f, 47.0f), 4.0f);
+		Canvas.Circle(FVector2D(55.0f, 35.5f), 2.4f);
+		Canvas.Rect(34.0f, 18.0f, 58.0f, 22.0f);
+		Canvas.Line(FVector2D(31.0f, 27.0f), FVector2D(75.0f, 27.0f), 1.4f);
+	}
+
+	void TMDrawSpecialCategoryIcon(FTMCategoryIconCanvas& Canvas)
+	{
+		Canvas.StrokeCircle(FVector2D(62.0f, 32.0f), 18.0f, 4.0f);
+		Canvas.Line(FVector2D(62.0f, 10.0f), FVector2D(62.0f, 20.0f), 3.0f);
+		Canvas.Line(FVector2D(62.0f, 44.0f), FVector2D(62.0f, 54.0f), 3.0f);
+		Canvas.Line(FVector2D(40.0f, 32.0f), FVector2D(50.0f, 32.0f), 3.0f);
+		Canvas.Line(FVector2D(74.0f, 32.0f), FVector2D(84.0f, 32.0f), 3.0f);
+		Canvas.Polygon({ FVector2D(68.0f, 13.0f), FVector2D(50.0f, 35.0f), FVector2D(62.0f, 35.0f), FVector2D(57.0f, 53.0f), FVector2D(78.0f, 27.0f), FVector2D(65.0f, 27.0f) });
+		Canvas.Circle(FVector2D(93.0f, 18.0f), 3.0f);
+		Canvas.Circle(FVector2D(34.0f, 47.0f), 2.5f);
+	}
+
+	void TMDrawMeleeCategoryIcon(FTMCategoryIconCanvas& Canvas)
+	{
+		Canvas.Polygon({ FVector2D(13.0f, 34.0f), FVector2D(72.0f, 19.0f), FVector2D(86.0f, 30.0f), FVector2D(29.0f, 43.0f) });
+		Canvas.Line(FVector2D(31.0f, 35.0f), FVector2D(71.0f, 25.0f), 2.0f);
+		Canvas.Line(FVector2D(83.0f, 23.0f), FVector2D(83.0f, 42.0f), 5.0f);
+		Canvas.RoundedRect(86.0f, 27.0f, 115.0f, 38.0f, 4.0f);
+		Canvas.Circle(FVector2D(116.0f, 32.5f), 4.0f);
+	}
+
+	void TMDrawExplosiveCategoryIcon(FTMCategoryIconCanvas& Canvas)
+	{
+		Canvas.RoundedRect(48.0f, 25.0f, 80.0f, 56.0f, 9.0f);
+		Canvas.Rect(57.0f, 18.0f, 72.0f, 27.0f);
+		Canvas.StrokeCircle(FVector2D(84.0f, 19.0f), 7.0f, 3.0f);
+		Canvas.Line(FVector2D(72.0f, 21.0f), FVector2D(91.0f, 31.0f), 4.0f);
+		Canvas.Line(FVector2D(56.0f, 36.0f), FVector2D(72.0f, 36.0f), 2.0f);
+		Canvas.Line(FVector2D(57.0f, 46.0f), FVector2D(70.0f, 46.0f), 2.0f);
+		Canvas.Line(FVector2D(31.0f, 18.0f), FVector2D(38.0f, 25.0f), 3.0f);
+		Canvas.Line(FVector2D(30.0f, 32.0f), FVector2D(40.0f, 32.0f), 3.0f);
+		Canvas.Line(FVector2D(31.0f, 46.0f), FVector2D(38.0f, 39.0f), 3.0f);
+	}
+
+	struct FTMMenuCategoryIconSpec
+	{
+		FName ButtonName;
+		FString Token;
+		FString SourceFileName;
+		FVector2D SourceNativeSize;
+		FVector2D CroppedNativeSize;
+	};
+
+	const FTMMenuCategoryIconSpec TMMenuCategoryIconSpecs[] =
+	{
+		{ TEXT("B_Primary"), TEXT("Primary"), TEXT("01_Primary.png"), FVector2D(1959.0f, 803.0f), FVector2D(1881.0f, 560.0f) },
+		{ TEXT("B_Secondary"), TEXT("Secondary"), TEXT("02_Secondary.png"), FVector2D(1742.0f, 903.0f), FVector2D(1688.0f, 639.0f) },
+		{ TEXT("B_Special"), TEXT("Special"), TEXT("03_Special.png"), FVector2D(1740.0f, 904.0f), FVector2D(1672.0f, 645.0f) },
+		{ TEXT("B_Melee"), TEXT("Melee"), TEXT("04_Melee.png"), FVector2D(1742.0f, 903.0f), FVector2D(1685.0f, 654.0f) },
+		{ TEXT("B_Explosive"), TEXT("Explosive"), TEXT("05_Explosive.png"), FVector2D(1742.0f, 903.0f), FVector2D(1679.0f, 648.0f) }
+	};
+
+	FString TMMakeCategoryIconAssetName(const FString& Token)
+	{
+		return FString::Printf(TEXT("T_Menu_%s_Icon"), *Token);
+	}
+
+	FString TMMakeCategoryIconObjectPath(const FString& Token)
+	{
+		const FString AssetName = TMMakeCategoryIconAssetName(Token);
+		return FString::Printf(TEXT("%s/%s.%s"), TMCategoryIconOutputPath, *AssetName, *AssetName);
+	}
+
+	FName TMMakeCategoryOverlayWidgetName(const FString& Token)
+	{
+		return FName(*FString::Printf(TEXT("TM_%s_CategoryButtonOverlay"), *Token));
+	}
+
+	FName TMMakeLegacyCategoryTextWidgetName(const FString& Token)
+	{
+		return FName(*FString::Printf(TEXT("%s_Text"), *Token));
+	}
+
+	FText TMMakeLegacyCategoryTextValue(const FString& Token)
+	{
+		return Token.Equals(TEXT("Special"), ESearchCase::IgnoreCase)
+			? FText::FromString(TEXT("BP_Special"))
+			: FText::FromString(Token);
+	}
+
+	FString TMGetCategoryIconSourcePath(const FTMMenuCategoryIconSpec& Spec)
+	{
+		return FPaths::ProjectContentDir() / TMCategoryIconSourceFolder / Spec.SourceFileName;
+	}
+
+	FVector2D TMGetCategoryIconNativeSize(const FTMMenuCategoryIconSpec& Spec, const UTexture2D* Texture)
+	{
+		if (Texture)
+		{
+			const int32 TextureWidth = Texture->GetSizeX();
+			const int32 TextureHeight = Texture->GetSizeY();
+			if (TextureWidth > 0 && TextureHeight > 0)
+			{
+				return FVector2D(static_cast<float>(TextureWidth), static_cast<float>(TextureHeight));
+			}
+
+#if WITH_EDITORONLY_DATA
+			const int32 SourceWidth = Texture->Source.GetSizeX();
+			const int32 SourceHeight = Texture->Source.GetSizeY();
+			if (SourceWidth > 0 && SourceHeight > 0)
+			{
+				return FVector2D(static_cast<float>(SourceWidth), static_cast<float>(SourceHeight));
+			}
+#endif
+		}
+
+		return Spec.CroppedNativeSize;
+	}
+
+	FVector2D TMGetCategoryIconDisplaySize(const FTMMenuCategoryIconSpec& Spec, const UTexture2D* Texture)
+	{
+		return TMGetCategoryIconNativeSize(Spec, Texture) * TMCategoryIconDisplayScale;
+	}
+
+	bool TMLoadCategoryIconSourcePixels(
+		const FTMMenuCategoryIconSpec& Spec,
+		TArray64<uint8>& OutPixelData,
+		int32& OutWidth,
+		int32& OutHeight)
+	{
+		const FString SourcePath = TMGetCategoryIconSourcePath(Spec);
+		TArray<uint8> CompressedData;
+		if (!FFileHelper::LoadFileToArray(CompressedData, *SourcePath))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Failed to read source PNG: %s"), *SourcePath);
+			return false;
+		}
+
+		IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+		const TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+		if (!ImageWrapper.IsValid() || !ImageWrapper->SetCompressed(CompressedData.GetData(), CompressedData.Num()))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Failed to decode source PNG header: %s"), *SourcePath);
+			return false;
+		}
+
+		OutWidth = static_cast<int32>(ImageWrapper->GetWidth());
+		OutHeight = static_cast<int32>(ImageWrapper->GetHeight());
+		if (OutWidth <= 0 || OutHeight <= 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Invalid source PNG size %dx%d: %s"), OutWidth, OutHeight, *SourcePath);
+			return false;
+		}
+
+		if (!FMath::IsNearlyEqual(Spec.SourceNativeSize.X, static_cast<float>(OutWidth))
+			|| !FMath::IsNearlyEqual(Spec.SourceNativeSize.Y, static_cast<float>(OutHeight)))
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMCategoryIcons] Source PNG size differs from expected native size for %s. Expected=%.0fx%.0f Actual=%dx%d"),
+				*Spec.Token,
+				static_cast<double>(Spec.SourceNativeSize.X),
+				static_cast<double>(Spec.SourceNativeSize.Y),
+				OutWidth,
+				OutHeight);
+		}
+
+		if (!ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, OutPixelData))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Failed to decode source PNG pixels: %s"), *SourcePath);
+			return false;
+		}
+
+		const int64 ExpectedBytes = static_cast<int64>(OutWidth) * static_cast<int64>(OutHeight) * 4;
+		if (OutPixelData.Num() != ExpectedBytes)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMCategoryIcons] Unexpected decoded byte count for %s. Expected=%lld Actual=%lld"),
+				*SourcePath,
+				ExpectedBytes,
+				static_cast<int64>(OutPixelData.Num()));
+			return false;
+		}
+
+		return true;
+	}
+
+	int64 TMGetCategoryIconPixelOffset(const int32 X, const int32 Y, const int32 Width)
+	{
+		return (static_cast<int64>(Y) * static_cast<int64>(Width) + static_cast<int64>(X)) * 4;
+	}
+
+	uint8 TMGetCategoryIconPixelBrightestColor(const TArray64<uint8>& PixelData, const int64 PixelOffset)
+	{
+		return FMath::Max(PixelData[PixelOffset], FMath::Max(PixelData[PixelOffset + 1], PixelData[PixelOffset + 2]));
+	}
+
+	bool TMIsCategoryIconOpaqueBlackPixel(const TArray64<uint8>& PixelData, const int64 PixelOffset)
+	{
+		return PixelData[PixelOffset + 3] > TMCategoryIconCropAlphaThreshold
+			&& TMGetCategoryIconPixelBrightestColor(PixelData, PixelOffset) <= TMCategoryIconCropColorThreshold;
+	}
+
+	bool TMIsCategoryIconBlackBackgroundPixel(const TArray64<uint8>& PixelData, const int64 PixelOffset)
+	{
+		return PixelData[PixelOffset + 3] <= TMCategoryIconCropAlphaThreshold
+			|| TMGetCategoryIconPixelBrightestColor(PixelData, PixelOffset) <= TMCategoryIconCropColorThreshold;
+	}
+
+	void TMClearCategoryIconPixel(TArray64<uint8>& PixelData, const int64 PixelOffset)
+	{
+		PixelData[PixelOffset] = 0;
+		PixelData[PixelOffset + 1] = 0;
+		PixelData[PixelOffset + 2] = 0;
+		PixelData[PixelOffset + 3] = 0;
+	}
+
+	bool TMClearCategoryIconEdgeConnectedBlackBackground(
+		const FTMMenuCategoryIconSpec& Spec,
+		TArray64<uint8>& InOutPixelData,
+		const int32 Width,
+		const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0 || InOutPixelData.Num() != static_cast<int64>(Width) * static_cast<int64>(Height) * 4)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Cannot clear invalid pixel data for %s."), *Spec.Token);
+			return false;
+		}
+
+		const int32 PixelCount = Width * Height;
+		TArray<uint8> VisitedPixels;
+		VisitedPixels.Init(0, PixelCount);
+
+		TArray<int32> PendingPixels;
+		PendingPixels.Reserve(PixelCount / 2);
+		auto TryQueuePixel = [&](const int32 X, const int32 Y)
+		{
+			if (X < 0 || X >= Width || Y < 0 || Y >= Height)
+			{
+				return;
+			}
+
+			const int32 PixelIndex = Y * Width + X;
+			if (VisitedPixels[PixelIndex] != 0)
+			{
+				return;
+			}
+
+			VisitedPixels[PixelIndex] = 1;
+			if (TMIsCategoryIconBlackBackgroundPixel(InOutPixelData, static_cast<int64>(PixelIndex) * 4))
+			{
+				PendingPixels.Add(PixelIndex);
+			}
+		};
+
+		for (int32 X = 0; X < Width; ++X)
+		{
+			TryQueuePixel(X, 0);
+			TryQueuePixel(X, Height - 1);
+		}
+
+		for (int32 Y = 1; Y < Height - 1; ++Y)
+		{
+			TryQueuePixel(0, Y);
+			TryQueuePixel(Width - 1, Y);
+		}
+
+		int32 ClearedPixels = 0;
+		for (int32 ReadIndex = 0; ReadIndex < PendingPixels.Num(); ++ReadIndex)
+		{
+			const int32 PixelIndex = PendingPixels[ReadIndex];
+			const int32 X = PixelIndex % Width;
+			const int32 Y = PixelIndex / Width;
+			TMClearCategoryIconPixel(InOutPixelData, static_cast<int64>(PixelIndex) * 4);
+			++ClearedPixels;
+
+			TryQueuePixel(X - 1, Y);
+			TryQueuePixel(X + 1, Y);
+			TryQueuePixel(X, Y - 1);
+			TryQueuePixel(X, Y + 1);
+			TryQueuePixel(X - 1, Y - 1);
+			TryQueuePixel(X + 1, Y - 1);
+			TryQueuePixel(X - 1, Y + 1);
+			TryQueuePixel(X + 1, Y + 1);
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMCategoryIcons] Cleared %s edge-connected black background pixels=%d Source=%dx%d Threshold=%d."),
+			*Spec.Token,
+			ClearedPixels,
+			Width,
+			Height,
+			static_cast<int32>(TMCategoryIconCropColorThreshold));
+		return true;
+	}
+
+	int32 TMClearCategoryIconOpaqueBlackBorderPixels(TArray64<uint8>& InOutPixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0)
+		{
+			return 0;
+		}
+
+		int32 ClearedPixels = 0;
+		auto ClearIfOpaqueBlack = [&](const int32 X, const int32 Y)
+		{
+			const int64 PixelOffset = TMGetCategoryIconPixelOffset(X, Y, Width);
+			if (!TMIsCategoryIconOpaqueBlackPixel(InOutPixelData, PixelOffset))
+			{
+				return;
+			}
+
+			TMClearCategoryIconPixel(InOutPixelData, PixelOffset);
+			++ClearedPixels;
+		};
+
+		for (int32 X = 0; X < Width; ++X)
+		{
+			ClearIfOpaqueBlack(X, 0);
+			if (Height > 1)
+			{
+				ClearIfOpaqueBlack(X, Height - 1);
+			}
+		}
+
+		for (int32 Y = 1; Y < Height - 1; ++Y)
+		{
+			ClearIfOpaqueBlack(0, Y);
+			if (Width > 1)
+			{
+				ClearIfOpaqueBlack(Width - 1, Y);
+			}
+		}
+
+		return ClearedPixels;
+	}
+
+	int32 TMCountCategoryIconOpaqueBlackBorderPixels(const TArray64<uint8>& PixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0)
+		{
+			return 0;
+		}
+
+		int32 BlackPixels = 0;
+		auto CountIfOpaqueBlack = [&](const int32 X, const int32 Y)
+		{
+			if (TMIsCategoryIconOpaqueBlackPixel(PixelData, TMGetCategoryIconPixelOffset(X, Y, Width)))
+			{
+				++BlackPixels;
+			}
+		};
+
+		for (int32 X = 0; X < Width; ++X)
+		{
+			CountIfOpaqueBlack(X, 0);
+			if (Height > 1)
+			{
+				CountIfOpaqueBlack(X, Height - 1);
+			}
+		}
+
+		for (int32 Y = 1; Y < Height - 1; ++Y)
+		{
+			CountIfOpaqueBlack(0, Y);
+			if (Width > 1)
+			{
+				CountIfOpaqueBlack(Width - 1, Y);
+			}
+		}
+
+		return BlackPixels;
+	}
+
+	bool TMCropCategoryIconBlackEdges(
+		const FTMMenuCategoryIconSpec& Spec,
+		TArray64<uint8>& InOutPixelData,
+		int32& InOutWidth,
+		int32& InOutHeight)
+	{
+		if (InOutWidth <= 0 || InOutHeight <= 0 || InOutPixelData.Num() != static_cast<int64>(InOutWidth) * static_cast<int64>(InOutHeight) * 4)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Cannot crop invalid pixel data for %s."), *Spec.Token);
+			return false;
+		}
+
+		int32 MinX = InOutWidth;
+		int32 MinY = InOutHeight;
+		int32 MaxX = -1;
+		int32 MaxY = -1;
+		for (int32 Y = 0; Y < InOutHeight; ++Y)
+		{
+			for (int32 X = 0; X < InOutWidth; ++X)
+			{
+				const int64 PixelIndex = (static_cast<int64>(Y) * static_cast<int64>(InOutWidth) + static_cast<int64>(X)) * 4;
+				const uint8 Alpha = InOutPixelData[PixelIndex + 3];
+				if (Alpha > TMCategoryIconCropAlphaThreshold)
+				{
+					MinX = FMath::Min(MinX, X);
+					MinY = FMath::Min(MinY, Y);
+					MaxX = FMath::Max(MaxX, X);
+					MaxY = FMath::Max(MaxY, Y);
+				}
+			}
+		}
+
+		if (MaxX < MinX || MaxY < MinY)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMCategoryIcons] Source PNG for %s appears fully black; keeping original size."), *Spec.Token);
+			return true;
+		}
+
+		const int32 CropLeft = FMath::Max(0, MinX - TMCategoryIconCropPadding);
+		const int32 CropTop = FMath::Max(0, MinY - TMCategoryIconCropPadding);
+		const int32 CropRight = FMath::Min(InOutWidth - 1, MaxX + TMCategoryIconCropPadding);
+		const int32 CropBottom = FMath::Min(InOutHeight - 1, MaxY + TMCategoryIconCropPadding);
+		const int32 CroppedWidth = CropRight - CropLeft + 1;
+		const int32 CroppedHeight = CropBottom - CropTop + 1;
+		if (CroppedWidth == InOutWidth && CroppedHeight == InOutHeight)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[TMCategoryIcons] No black edge crop needed for %s NativeSize=%dx%d."), *Spec.Token, InOutWidth, InOutHeight);
+			return true;
+		}
+
+		TArray64<uint8> CroppedPixelData;
+		CroppedPixelData.SetNumUninitialized(static_cast<int64>(CroppedWidth) * static_cast<int64>(CroppedHeight) * 4);
+		for (int32 Y = 0; Y < CroppedHeight; ++Y)
+		{
+			const int64 SourceOffset = (static_cast<int64>(CropTop + Y) * static_cast<int64>(InOutWidth) + static_cast<int64>(CropLeft)) * 4;
+			const int64 DestOffset = static_cast<int64>(Y) * static_cast<int64>(CroppedWidth) * 4;
+			FMemory::Memcpy(
+				CroppedPixelData.GetData() + DestOffset,
+				InOutPixelData.GetData() + SourceOffset,
+				static_cast<SIZE_T>(CroppedWidth) * 4);
+		}
+
+		const int32 OriginalWidth = InOutWidth;
+		const int32 OriginalHeight = InOutHeight;
+		InOutPixelData = MoveTemp(CroppedPixelData);
+		InOutWidth = CroppedWidth;
+		InOutHeight = CroppedHeight;
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMCategoryIcons] Cropped %s black edges Source=%dx%d Removed=L%d T%d R%d B%d NativeSize=%dx%d DisplaySize=%.1fx%.1f."),
+			*Spec.Token,
+			OriginalWidth,
+			OriginalHeight,
+			CropLeft,
+			CropTop,
+			OriginalWidth - 1 - CropRight,
+			OriginalHeight - 1 - CropBottom,
+			CroppedWidth,
+			CroppedHeight,
+			static_cast<double>(CroppedWidth * TMCategoryIconDisplayScale),
+			static_cast<double>(CroppedHeight * TMCategoryIconDisplayScale));
+
+		return true;
+	}
+
+	bool TMSaveCategoryIconTexture(const FTMMenuCategoryIconSpec& Spec)
+	{
+		TArray64<uint8> PixelData;
+		int32 SourceWidth = 0;
+		int32 SourceHeight = 0;
+		if (!TMLoadCategoryIconSourcePixels(Spec, PixelData, SourceWidth, SourceHeight))
+		{
+			return false;
+		}
+
+		if (!TMClearCategoryIconEdgeConnectedBlackBackground(Spec, PixelData, SourceWidth, SourceHeight))
+		{
+			return false;
+		}
+
+		if (!TMCropCategoryIconBlackEdges(Spec, PixelData, SourceWidth, SourceHeight))
+		{
+			return false;
+		}
+
+		int32 TotalClearedBorderPixels = 0;
+		for (int32 PassIndex = 0; PassIndex < 64; ++PassIndex)
+		{
+			const int32 ClearedBorderPixels = TMClearCategoryIconOpaqueBlackBorderPixels(PixelData, SourceWidth, SourceHeight);
+			if (ClearedBorderPixels <= 0)
+			{
+				break;
+			}
+
+			TotalClearedBorderPixels += ClearedBorderPixels;
+			if (!TMCropCategoryIconBlackEdges(Spec, PixelData, SourceWidth, SourceHeight))
+			{
+				return false;
+			}
+		}
+
+		const int32 OpaqueBlackBorderPixels = TMCountCategoryIconOpaqueBlackBorderPixels(PixelData, SourceWidth, SourceHeight);
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMCategoryIcons] Final %s transparent cleanup NativeSize=%dx%d ExtraBorderPixelsCleared=%d OpaqueBlackBorderPixels=%d."),
+			*Spec.Token,
+			SourceWidth,
+			SourceHeight,
+			TotalClearedBorderPixels,
+			OpaqueBlackBorderPixels);
+		if (OpaqueBlackBorderPixels != 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] %s still has opaque black border pixels after cleanup."), *Spec.Token);
+			return false;
+		}
+
+		const FString AssetName = TMMakeCategoryIconAssetName(Spec.Token);
+		const FString PackageName = FString(TMCategoryIconOutputPath) / AssetName;
+		const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *PackageName, *AssetName);
+
+		UPackage* Package = CreatePackage(*PackageName);
+		Package->FullyLoad();
+
+		UObject* ExistingObject = StaticFindObject(UObject::StaticClass(), Package, *AssetName);
+		if (ExistingObject && !ExistingObject->IsA<UTexture2D>())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Non-texture asset already exists at %s."), *ObjectPath);
+			return false;
+		}
+
+		UTexture2D* Texture = Cast<UTexture2D>(ExistingObject);
+		const bool bCreatedTexture = Texture == nullptr;
+		if (!Texture)
+		{
+			Texture = NewObject<UTexture2D>(
+				Package,
+				*AssetName,
+				RF_Public | RF_Standalone | RF_Transactional);
+		}
+
+		Texture->Modify();
+		Texture->PreEditChange(nullptr);
+		Texture->Source.Init(SourceWidth, SourceHeight, 1, 1, TSF_BGRA8, PixelData.GetData());
+		Texture->SRGB = true;
+		Texture->CompressionSettings = TC_EditorIcon;
+		Texture->MipGenSettings = TMGS_NoMipmaps;
+		Texture->LODGroup = TEXTUREGROUP_UI;
+		Texture->NeverStream = true;
+		Texture->AddressX = TA_Clamp;
+		Texture->AddressY = TA_Clamp;
+		Texture->PostEditChange();
+		Texture->MarkPackageDirty();
+
+		if (bCreatedTexture)
+		{
+			FAssetRegistryModule::AssetCreated(Texture);
+		}
+
+		if (!TMSavePackageForAsset(Texture, TEXT("TMCategoryIcons")))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Failed to save %s."), *ObjectPath);
+			return false;
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMCategoryIcons] Saved %s from %s NativeSize=%dx%d DisplaySize=%.1fx%.1f."),
+			*ObjectPath,
+			*TMGetCategoryIconSourcePath(Spec),
+			SourceWidth,
+			SourceHeight,
+			static_cast<double>(SourceWidth * TMCategoryIconDisplayScale),
+			static_cast<double>(SourceHeight * TMCategoryIconDisplayScale));
+		return true;
+	}
+
+	FSlateBrush TMMakeCategoryIconBrush(const FTMMenuCategoryIconSpec& Spec, UTexture2D* Texture)
+	{
+		FSlateBrush Brush;
+		Brush.DrawAs = Texture ? ESlateBrushDrawType::Image : ESlateBrushDrawType::NoDrawType;
+		Brush.SetImageSize(TMGetCategoryIconNativeSize(Spec, Texture));
+		Brush.TintColor = FSlateColor(FLinearColor::White);
+		if (Texture)
+		{
+			Brush.SetResourceObject(Texture);
+		}
+		return Brush;
+	}
+
+	void TMEnsureWidgetBlueprintGuid(UBlueprint* Blueprint, UWidget* Widget)
+	{
+		UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Blueprint);
+		if (!WidgetBlueprint || !Widget)
+		{
+			return;
+		}
+
+		FGuid& Guid = WidgetBlueprint->WidgetVariableNameToGuidMap.FindOrAdd(Widget->GetFName());
+		if (!Guid.IsValid())
+		{
+			Guid = FGuid::NewGuid();
+		}
+	}
+
+	void TMEnsureWidgetBlueprintVariable(UBlueprint* Blueprint, UWidget* Widget)
+	{
+		if (!Widget)
+		{
+			return;
+		}
+
+		Widget->Modify();
+		Widget->bIsVariable = true;
+		TMEnsureWidgetBlueprintGuid(Blueprint, Widget);
+	}
+
+	UWidget* TMFindWidgetTreeSourceWidget(UWidgetTree* WidgetTree, const FName WidgetName)
+	{
+		if (!WidgetTree || WidgetName.IsNone())
+		{
+			return nullptr;
+		}
+
+		if (UWidget* Widget = WidgetTree->FindWidget(WidgetName))
+		{
+			return Widget;
+		}
+
+		return FindObject<UWidget>(WidgetTree, *WidgetName.ToString());
+	}
+
+	void TMAttachHiddenWidgetToCategoryOverlay(UOverlay* Overlay, UWidget* Widget)
+	{
+		if (!Overlay || !Widget)
+		{
+			return;
+		}
+
+		if (Widget->GetParent() != Overlay)
+		{
+			if (UPanelWidget* Parent = Widget->GetParent())
+			{
+				Parent->RemoveChild(Widget);
+			}
+			Overlay->AddChild(Widget);
+		}
+
+		if (UOverlaySlot* OverlaySlot = Cast<UOverlaySlot>(Widget->Slot))
+		{
+			OverlaySlot->SetHorizontalAlignment(HAlign_Center);
+			OverlaySlot->SetVerticalAlignment(VAlign_Center);
+			OverlaySlot->SetPadding(FMargin(0.0f));
+		}
+	}
+
+	UOverlay* TMFindFirstCategoryOverlay(UWidgetTree* WidgetTree)
+	{
+		for (const FTMMenuCategoryIconSpec& Spec : TMMenuCategoryIconSpecs)
+		{
+			if (UOverlay* Overlay = Cast<UOverlay>(TMFindWidgetTreeSourceWidget(
+				WidgetTree,
+				TMMakeCategoryOverlayWidgetName(Spec.Token))))
+			{
+				return Overlay;
+			}
+		}
+
+		return nullptr;
+	}
+
+	void TMEnsureHiddenLegacyCategoryWidgetVariables(UBlueprint* Blueprint, UWidgetTree* WidgetTree)
+	{
+		if (!Blueprint || !WidgetTree)
+		{
+			return;
+		}
+
+		for (const FTMMenuCategoryIconSpec& Spec : TMMenuCategoryIconSpecs)
+		{
+			const FName TextWidgetName = TMMakeLegacyCategoryTextWidgetName(Spec.Token);
+			UTextBlock* TextBlock = Cast<UTextBlock>(TMFindWidgetTreeSourceWidget(WidgetTree, TextWidgetName));
+			if (!TextBlock)
+			{
+				TextBlock = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TextWidgetName);
+			}
+
+			if (!TextBlock)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Failed to restore legacy text widget %s."), *TextWidgetName.ToString());
+				continue;
+			}
+
+			TMEnsureWidgetBlueprintVariable(Blueprint, TextBlock);
+			TextBlock->SetText(TMMakeLegacyCategoryTextValue(Spec.Token));
+			TextBlock->SetVisibility(ESlateVisibility::Collapsed);
+			TextBlock->SetRenderOpacity(0.0f);
+
+			UOverlay* Overlay = Cast<UOverlay>(TMFindWidgetTreeSourceWidget(
+				WidgetTree,
+				TMMakeCategoryOverlayWidgetName(Spec.Token)));
+			TMAttachHiddenWidgetToCategoryOverlay(Overlay, TextBlock);
+		}
+
+		UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Blueprint);
+		if (!WidgetBlueprint)
+		{
+			return;
+		}
+
+		UOverlay* LegacyScaleBoxParent = TMFindFirstCategoryOverlay(WidgetTree);
+		TArray<FName> GuidWidgetNames;
+		WidgetBlueprint->WidgetVariableNameToGuidMap.GetKeys(GuidWidgetNames);
+		for (const FName& WidgetName : GuidWidgetNames)
+		{
+			const FString NameString = WidgetName.ToString();
+			if (!NameString.StartsWith(TEXT("ScaleBox_"), ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+
+			if (TMFindWidgetTreeSourceWidget(WidgetTree, WidgetName))
+			{
+				continue;
+			}
+
+			UScaleBox* ScaleBox = WidgetTree->ConstructWidget<UScaleBox>(UScaleBox::StaticClass(), WidgetName);
+			if (!ScaleBox)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Failed to restore legacy scale box %s."), *NameString);
+				continue;
+			}
+
+			TMEnsureWidgetBlueprintVariable(Blueprint, ScaleBox);
+			ScaleBox->SetVisibility(ESlateVisibility::Collapsed);
+			ScaleBox->SetRenderOpacity(0.0f);
+			TMAttachHiddenWidgetToCategoryOverlay(LegacyScaleBoxParent, ScaleBox);
+		}
+	}
+
+	bool TMPatchCategoryButtonIcon(
+		UBlueprint* Blueprint,
+		UWidgetTree* WidgetTree,
+		UButton* Button,
+		const FTMMenuCategoryIconSpec& Spec,
+		int32& OutPatchedButtons)
+	{
+		if (!WidgetTree || !Button)
+		{
+			return false;
+		}
+
+		UTexture2D* IconTexture = LoadObject<UTexture2D>(nullptr, *TMMakeCategoryIconObjectPath(Spec.Token));
+		if (!IconTexture)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Missing icon texture for %s."), *Spec.Token);
+			return false;
+		}
+
+		TMVisitContentWidgets(Button, [](UWidget* Widget)
+		{
+			if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
+			{
+				TextBlock->Modify();
+				TextBlock->SetVisibility(ESlateVisibility::Collapsed);
+				TextBlock->SetRenderOpacity(0.0f);
+				return;
+			}
+
+			if (URichTextBlock* RichTextBlock = Cast<URichTextBlock>(Widget))
+			{
+				RichTextBlock->Modify();
+				RichTextBlock->SetVisibility(ESlateVisibility::Collapsed);
+				RichTextBlock->SetRenderOpacity(0.0f);
+			}
+		});
+
+		const FName OverlayName = TMMakeCategoryOverlayWidgetName(Spec.Token);
+		const FName IconBoxName(*FString::Printf(TEXT("TM_%s_CategoryIconBox"), *Spec.Token));
+		const FName IconImageName(*FString::Printf(TEXT("TM_%s_CategoryIconImage"), *Spec.Token));
+
+		UOverlay* ButtonOverlay = Cast<UOverlay>(TMFindWidgetTreeSourceWidget(WidgetTree, OverlayName));
+		if (!ButtonOverlay)
+		{
+			ButtonOverlay = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), OverlayName);
+		}
+		TMEnsureWidgetBlueprintGuid(Blueprint, ButtonOverlay);
+
+		USizeBox* IconBox = Cast<USizeBox>(TMFindWidgetTreeSourceWidget(WidgetTree, IconBoxName));
+		if (!IconBox)
+		{
+			IconBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), IconBoxName);
+		}
+		TMEnsureWidgetBlueprintGuid(Blueprint, IconBox);
+
+		UImage* IconImage = Cast<UImage>(TMFindWidgetTreeSourceWidget(WidgetTree, IconImageName));
+		if (!IconImage)
+		{
+			IconImage = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), IconImageName);
+		}
+		TMEnsureWidgetBlueprintGuid(Blueprint, IconImage);
+
+		if (!ButtonOverlay || !IconBox || !IconImage)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Failed to create category icon widgets for %s."), *Spec.Token);
+			return false;
+		}
+
+		const FVector2D NativeSize = TMGetCategoryIconNativeSize(Spec, IconTexture);
+		const FVector2D DisplaySize = TMGetCategoryIconDisplaySize(Spec, IconTexture);
+
+		IconImage->Modify();
+		IconImage->SetBrush(TMMakeCategoryIconBrush(Spec, IconTexture));
+		IconImage->SetDesiredSizeOverride(DisplaySize);
+		IconImage->SetColorAndOpacity(FLinearColor::White);
+		IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+
+		IconBox->Modify();
+		IconBox->SetWidthOverride(DisplaySize.X);
+		IconBox->SetHeightOverride(DisplaySize.Y);
+		IconBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		if (IconBox->GetContent() != IconImage)
+		{
+			IconBox->SetContent(IconImage);
+		}
+
+		ButtonOverlay->Modify();
+		ButtonOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+
+		Button->Modify();
+		if (Button->GetContent() != ButtonOverlay)
+		{
+			Button->SetContent(ButtonOverlay);
+		}
+
+		TMAttachHiddenWidgetToCategoryOverlay(ButtonOverlay, IconBox);
+
+		if (UButtonSlot* ButtonSlot = Cast<UButtonSlot>(ButtonOverlay->Slot))
+		{
+			ButtonSlot->SetHorizontalAlignment(HAlign_Center);
+			ButtonSlot->SetVerticalAlignment(VAlign_Center);
+			ButtonSlot->SetPadding(FMargin(0.0f));
+		}
+
+		int32 ChangedButtons = 0;
+		TMSetMinimalMenuButtonStyle(Button, nullptr, false, ChangedButtons);
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMCategoryIcons] Button=%s NativeSize=%.1fx%.1f DisplaySize=%.1fx%.1f HoverScale=1.30"),
+			*Button->GetName(),
+			static_cast<double>(NativeSize.X),
+			static_cast<double>(NativeSize.Y),
+			static_cast<double>(DisplaySize.X),
+			static_cast<double>(DisplaySize.Y));
+		++OutPatchedButtons;
+		return true;
+	}
+
+	bool TMPatchLoadoutCategoryIconsForWidgetBlueprint(const TCHAR* BlueprintPath)
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		UWidgetTree* WidgetTree = TMFindWidgetTree(Blueprint);
+		if (!Blueprint || !WidgetTree)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMCategoryIcons] Failed to load widget tree. BP=%s Loaded=%d Tree=%d"),
+				BlueprintPath,
+				Blueprint ? 1 : 0,
+				WidgetTree ? 1 : 0);
+			return false;
+		}
+
+		int32 FoundButtons = 0;
+		int32 PatchedButtons = 0;
+		for (const FTMMenuCategoryIconSpec& Spec : TMMenuCategoryIconSpecs)
+		{
+			UButton* Button = Cast<UButton>(WidgetTree->FindWidget(Spec.ButtonName));
+			if (!Button)
+			{
+				continue;
+			}
+
+			++FoundButtons;
+			TMPatchCategoryButtonIcon(Blueprint, WidgetTree, Button, Spec, PatchedButtons);
+		}
+
+		if (FoundButtons > 0)
+		{
+			TMEnsureHiddenLegacyCategoryWidgetVariables(Blueprint, WidgetTree);
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMCategoryIcons] %s: FoundButtons=%d PatchedButtons=%d"),
+			BlueprintPath,
+			FoundButtons,
+			PatchedButtons);
+
+		if (FoundButtons == 0)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMCategoryIcons] Blueprint compile failed: %s"), *Blueprint->GetPathName());
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMCategoryIcons"));
+	}
+
+	bool TMPatchLoadoutCategoryIcons()
+	{
+		bool bSuccess = true;
+		for (const FTMMenuCategoryIconSpec& Spec : TMMenuCategoryIconSpecs)
+		{
+			bSuccess &= TMSaveCategoryIconTexture(Spec);
+		}
+
+		const TCHAR* WidgetBlueprintPaths[] =
+		{
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_MainMenu.W_MainMenu")
+		};
+
+		for (const TCHAR* BlueprintPath : WidgetBlueprintPaths)
+		{
+			bSuccess &= TMPatchLoadoutCategoryIconsForWidgetBlueprint(BlueprintPath);
 		}
 
 		return bSuccess;
@@ -12044,6 +13180,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("PatchMinimalMenuButtons"), ESearchCase::IgnoreCase))
 	{
 		return TMPatchMinimalMenuButtons() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchLoadoutCategoryIcons"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchLoadoutCategoryIcons() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("PatchMainMenuBigLabels"), ESearchCase::IgnoreCase))
