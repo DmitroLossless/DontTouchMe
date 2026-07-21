@@ -97,14 +97,14 @@ FSlateBrush MakeWeaponFrameBrush(const bool bVisible)
 	return Brush;
 }
 
-FString MakeWeaponIconObjectPath(const UObject* Mesh)
+FString MakeWeaponIconObjectPath(const UObject* Mesh, const bool bSelected)
 {
 	if (!Mesh)
 	{
 		return FString();
 	}
 
-	const FString IconName = FString::Printf(TEXT("T_%s_Icon"), *Mesh->GetName());
+	const FString IconName = FString::Printf(TEXT("T_%s_Icon%s"), *Mesh->GetName(), bSelected ? TEXT("_Active") : TEXT(""));
 	return FString::Printf(TEXT("/Game/UI/Generated/Icons/%s.%s"), *IconName, *IconName);
 }
 }
@@ -144,7 +144,7 @@ void UTMWeaponLayerWidget::RefreshWeaponIcon()
 		return;
 	}
 
-	UTexture2D* IconTexture = ResolveWeaponIconTexture(LookupToken);
+	UTexture2D* IconTexture = ResolveWeaponIconTexture(LookupToken, bWeaponIconSelected);
 	if (!IconTexture)
 	{
 		return;
@@ -193,6 +193,7 @@ void UTMWeaponLayerWidget::SetWeaponIconSelected(const bool bSelected)
 {
 	bWeaponIconSelected = bSelected;
 	ResolveIconWidgets();
+	ApplyWeaponIconBrush();
 	ApplySelectionFrame();
 }
 
@@ -222,7 +223,7 @@ FString UTMWeaponLayerWidget::GetWeaponLookupToken() const
 	return FString();
 }
 
-UTexture2D* UTMWeaponLayerWidget::ResolveWeaponIconTexture(const FString& LookupToken) const
+UTexture2D* UTMWeaponLayerWidget::ResolveWeaponIconTexture(const FString& LookupToken, const bool bSelected) const
 {
 	const FString NormalizedLookupToken = NormalizeWeaponIconToken(LookupToken);
 	if (NormalizedLookupToken.IsEmpty())
@@ -255,7 +256,16 @@ UTexture2D* UTMWeaponLayerWidget::ResolveWeaponIconTexture(const FString& Lookup
 
 		for (UObject* Mesh : RowMeshes)
 		{
-			const FString IconObjectPath = MakeWeaponIconObjectPath(Mesh);
+			if (bSelected)
+			{
+				const FString ActiveIconObjectPath = MakeWeaponIconObjectPath(Mesh, true);
+				if (UTexture2D* ActiveIconTexture = LoadObject<UTexture2D>(nullptr, *ActiveIconObjectPath))
+				{
+					return ActiveIconTexture;
+				}
+			}
+
+			const FString IconObjectPath = MakeWeaponIconObjectPath(Mesh, false);
 			if (UTexture2D* IconTexture = LoadObject<UTexture2D>(nullptr, *IconObjectPath))
 			{
 				return IconTexture;
@@ -303,6 +313,24 @@ void UTMWeaponLayerWidget::ResolveIconWidgets()
 	{
 		NameText = Cast<UTextBlock>(GetWidgetFromName(TEXT("NameText")));
 	}
+}
+
+void UTMWeaponLayerWidget::ApplyWeaponIconBrush() const
+{
+	UImage* Image = IconImage.Get();
+	if (!Image)
+	{
+		return;
+	}
+
+	UTexture2D* IconTexture = ResolveWeaponIconTexture(GetWeaponLookupToken(), bWeaponIconSelected);
+	if (!IconTexture)
+	{
+		return;
+	}
+
+	Image->SetBrush(MakeWeaponIconBrush(IconTexture));
+	Image->SetColorAndOpacity(FLinearColor::White);
 }
 
 void UTMWeaponLayerWidget::ApplySelectionFrame() const

@@ -13,6 +13,7 @@ public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 	void GenerateIconsForAssets(TArray<FAssetData> SelectedAssets) const;
+	void GenerateLoadoutWeaponActiveIcons() const;
 
 private:
 	TSharedRef<FExtender> OnExtendAssetSelectionMenu(const TArray<FAssetData>& SelectedAssets);

@@ -98,6 +98,8 @@ namespace
 
 	const TCHAR* TMUIButtonPushSoundPath =
 		TEXT("/Game/AGLS/Audio/Foley/Button/ButtonPush_S011FO_80.ButtonPush_S011FO_80");
+	const TCHAR* TMUIButtonHoverSoundPath =
+		TEXT("/Game/AGLS/Audio/Foley/Button/LightSwitchClickOn_SFXB_185_Cue.LightSwitchClickOn_SFXB_185_Cue");
 	const TCHAR* TMMainMenuSoundtrackPath =
 		TEXT("/Game/Sound/MainCulto.MainCulto");
 	const TCHAR* TMMainMenuSoundtrackPatchComment =
@@ -6506,12 +6508,13 @@ namespace
 
 	bool TMPatchUIButtonSoundGraphPins(
 		UBlueprint* Blueprint,
-		UObject* ButtonSound,
+		UObject* PressedSound,
+		UObject* HoveredSound,
 		int32& OutPressedGraphPins,
 		int32& OutHoveredGraphPins,
 		int32& OutClickedGraphPins)
 	{
-		if (!Blueprint || !ButtonSound)
+		if (!Blueprint || !PressedSound || !HoveredSound)
 		{
 			return false;
 		}
@@ -6545,7 +6548,7 @@ namespace
 					const FString PinPath = TMGetPinHierarchyName(Pin);
 					if (PinPath.Contains(TEXT("PressedSlateSound"), ESearchCase::IgnoreCase)
 						&& TMPinLooksLikeSlateSoundResource(Pin, PinPath)
-						&& TMSetGraphSlateSoundPinDefault(Pin, ButtonSound))
+						&& TMSetGraphSlateSoundPinDefault(Pin, PressedSound))
 					{
 						++OutPressedGraphPins;
 						bChanged = true;
@@ -6561,7 +6564,7 @@ namespace
 
 					if (PinPath.Contains(TEXT("HoveredSlateSound"), ESearchCase::IgnoreCase)
 						&& TMPinLooksLikeSlateSoundResource(Pin, PinPath)
-						&& TMSetGraphSlateSoundPinDefault(Pin, ButtonSound))
+						&& TMSetGraphSlateSoundPinDefault(Pin, HoveredSound))
 					{
 						++OutHoveredGraphPins;
 						bChanged = true;
@@ -6599,13 +6602,14 @@ namespace
 
 	bool TMPatchUIButtonStyleSound(
 		UButton* Button,
-		UObject* ButtonSound,
+		UObject* PressedSound,
+		UObject* HoveredSound,
 		int32& OutPressedButtons,
 		int32& OutHoveredButtons,
 		int32& OutClearedClickedButtons,
 		int32& OutExistingClickButtons)
 	{
-		if (!Button || !ButtonSound)
+		if (!Button || !PressedSound || !HoveredSound)
 		{
 			return false;
 		}
@@ -6616,16 +6620,16 @@ namespace
 		const FString PreviousClickedSound = TMDescribeSlateSound(Style.ClickedSlateSound);
 
 		bool bChanged = false;
-		if (Style.PressedSlateSound.GetResourceObject() != ButtonSound)
+		if (Style.PressedSlateSound.GetResourceObject() != PressedSound)
 		{
-			Style.SetPressedSound(TMMakeSlateSound(ButtonSound));
+			Style.SetPressedSound(TMMakeSlateSound(PressedSound));
 			++OutPressedButtons;
 			bChanged = true;
 		}
 
-		if (Style.HoveredSlateSound.GetResourceObject() != ButtonSound)
+		if (Style.HoveredSlateSound.GetResourceObject() != HoveredSound)
 		{
-			Style.SetHoveredSound(TMMakeSlateSound(ButtonSound));
+			Style.SetHoveredSound(TMMakeSlateSound(HoveredSound));
 			++OutHoveredButtons;
 			bChanged = true;
 		}
@@ -6651,14 +6655,14 @@ namespace
 			TEXT("[TMUIButtonSounds] Button=%s Pressed '%s' -> '%s', Hovered '%s' -> '%s', Clicked '%s' -> ''"),
 			*Button->GetPathName(),
 			*PreviousPressedSound,
-			*GetPathNameSafe(ButtonSound),
+			*GetPathNameSafe(PressedSound),
 			*PreviousHoveredSound,
-			*GetPathNameSafe(ButtonSound),
+			*GetPathNameSafe(HoveredSound),
 			*PreviousClickedSound);
 		return true;
 	}
 
-	bool TMPatchUIButtonSoundsForWidgetBlueprint(const FAssetData& AssetData, UObject* ButtonSound)
+	bool TMPatchUIButtonSoundsForWidgetBlueprint(const FAssetData& AssetData, UObject* PressedSound, UObject* HoveredSound)
 	{
 		UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
 		if (!Blueprint)
@@ -6699,14 +6703,21 @@ namespace
 			++ButtonCount;
 			bChanged |= TMPatchUIButtonStyleSound(
 				Button,
-				ButtonSound,
+				PressedSound,
+				HoveredSound,
 				PressedButtons,
 				HoveredButtons,
 				ClearedClickedButtons,
 				ExistingClickButtons);
 		});
 
-		if (TMPatchUIButtonSoundGraphPins(Blueprint, ButtonSound, PressedGraphPins, HoveredGraphPins, ClickedGraphPins))
+		if (TMPatchUIButtonSoundGraphPins(
+			Blueprint,
+			PressedSound,
+			HoveredSound,
+			PressedGraphPins,
+			HoveredGraphPins,
+			ClickedGraphPins))
 		{
 			bChanged = true;
 		}
@@ -6895,10 +6906,17 @@ namespace
 
 	bool TMPatchUIButtonSounds()
 	{
-		USoundBase* ButtonSound = LoadObject<USoundBase>(nullptr, TMUIButtonPushSoundPath);
-		if (!ButtonSound)
+		USoundBase* PressedSound = LoadObject<USoundBase>(nullptr, TMUIButtonPushSoundPath);
+		if (!PressedSound)
 		{
 			UE_LOG(LogTemp, Error, TEXT("[TMUIButtonSounds] Failed to load button sound: %s"), TMUIButtonPushSoundPath);
+			return false;
+		}
+
+		USoundBase* HoveredSound = LoadObject<USoundBase>(nullptr, TMUIButtonHoverSoundPath);
+		if (!HoveredSound)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMUIButtonSounds] Failed to load hover sound: %s"), TMUIButtonHoverSoundPath);
 			return false;
 		}
 
@@ -6923,17 +6941,18 @@ namespace
 		UE_LOG(
 			LogTemp,
 			Display,
-			TEXT("[TMUIButtonSounds] Patching %d WidgetBlueprint assets with %s"),
+			TEXT("[TMUIButtonSounds] Patching %d WidgetBlueprint assets with Pressed=%s Hovered=%s"),
 			WidgetBlueprintAssets.Num(),
-			*ButtonSound->GetPathName());
+			*PressedSound->GetPathName(),
+			*HoveredSound->GetPathName());
 
 		bool bSuccess = true;
 		for (const FAssetData& AssetData : WidgetBlueprintAssets)
 		{
-			bSuccess &= TMPatchUIButtonSoundsForWidgetBlueprint(AssetData, ButtonSound);
+			bSuccess &= TMPatchUIButtonSoundsForWidgetBlueprint(AssetData, PressedSound, HoveredSound);
 		}
 
-		bSuccess &= TMConsolidateAdvancedLocomotionClick(ButtonSound);
+		bSuccess &= TMConsolidateAdvancedLocomotionClick(PressedSound);
 		return bSuccess;
 	}
 

@@ -17,6 +17,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "ImageUtils.h"
 #include "Materials/Material.h"
@@ -47,6 +48,8 @@ namespace
 	constexpr int32 TMIconHeight = 128;
 	constexpr int32 TMThumbnailRenderSize = 1024;
 	const TCHAR* TMIconOutputPath = TEXT("/Game/UI/Generated/Icons");
+	bool bTMGenerateLoadoutWeaponMaterialOnly = false;
+	bool bTMGenerateLoadoutWeaponActiveOnly = false;
 
 	uint32 TMHashRaggedValue(uint32 Value)
 	{
@@ -560,7 +563,10 @@ namespace
 		}
 
 		TArray<uint8> SubjectMask;
-		SubjectMask = TMBuildSubjectMaskFromLuminance(SourcePixels, SourceWidth, SourceHeight);
+		if (!TMBuildSubjectMaskFromAlpha(SourcePixels, SourceWidth, SourceHeight, SubjectMask))
+		{
+			SubjectMask = TMBuildSubjectMaskFromLuminance(SourcePixels, SourceWidth, SourceHeight);
+		}
 
 		FTMSubjectBounds Bounds = TMFindMaskBounds(SubjectMask, SourceWidth, SourceHeight);
 		if (!Bounds.IsValid())
@@ -570,13 +576,54 @@ namespace
 
 		Bounds.Expand(2, SourceWidth, SourceHeight);
 
-		const float SourceBoundsWidth = static_cast<float>(FMath::Max(Bounds.Width(), 1));
-		const float SourceBoundsHeight = static_cast<float>(FMath::Max(Bounds.Height(), 1));
+		const FVector2D SourceCenter(
+			(static_cast<float>(Bounds.MinX) + static_cast<float>(Bounds.MaxX)) * 0.5f,
+			(static_cast<float>(Bounds.MinY) + static_cast<float>(Bounds.MaxY)) * 0.5f);
 		const float RotationRadians = FMath::DegreesToRadians(RotationDegrees);
 		const float CosRotation = FMath::Cos(RotationRadians);
 		const float SinRotation = FMath::Sin(RotationRadians);
-		const float RotatedWidth = (FMath::Abs(SourceBoundsWidth * CosRotation) + FMath::Abs(SourceBoundsHeight * SinRotation));
-		const float RotatedHeight = (FMath::Abs(SourceBoundsWidth * SinRotation) + FMath::Abs(SourceBoundsHeight * CosRotation));
+		bool bHasRotatedBounds = false;
+		float MinRotatedX = 0.0f;
+		float MinRotatedY = 0.0f;
+		float MaxRotatedX = 0.0f;
+		float MaxRotatedY = 0.0f;
+		for (int32 SourceY = Bounds.MinY; SourceY <= Bounds.MaxY; ++SourceY)
+		{
+			for (int32 SourceX = Bounds.MinX; SourceX <= Bounds.MaxX; ++SourceX)
+			{
+				if (SubjectMask[(SourceY * SourceWidth) + SourceX] <= 16)
+				{
+					continue;
+				}
+
+				const float SubjectLocalX = static_cast<float>(SourceX) + 0.5f - SourceCenter.X;
+				const float SubjectLocalY = static_cast<float>(SourceY) + 0.5f - SourceCenter.Y;
+				const float RotatedX = (SubjectLocalX * CosRotation) - (SubjectLocalY * SinRotation);
+				const float RotatedY = (SubjectLocalX * SinRotation) + (SubjectLocalY * CosRotation);
+				if (!bHasRotatedBounds)
+				{
+					MinRotatedX = MaxRotatedX = RotatedX;
+					MinRotatedY = MaxRotatedY = RotatedY;
+					bHasRotatedBounds = true;
+					continue;
+				}
+
+				MinRotatedX = FMath::Min(MinRotatedX, RotatedX);
+				MinRotatedY = FMath::Min(MinRotatedY, RotatedY);
+				MaxRotatedX = FMath::Max(MaxRotatedX, RotatedX);
+				MaxRotatedY = FMath::Max(MaxRotatedY, RotatedY);
+			}
+		}
+
+		if (!bHasRotatedBounds)
+		{
+			return false;
+		}
+
+		const float RotatedWidth = FMath::Max(MaxRotatedX - MinRotatedX + 1.0f, 1.0f);
+		const float RotatedHeight = FMath::Max(MaxRotatedY - MinRotatedY + 1.0f, 1.0f);
+		const float RotatedCenterX = (MinRotatedX + MaxRotatedX) * 0.5f;
+		const float RotatedCenterY = (MinRotatedY + MaxRotatedY) * 0.5f;
 		const float Scale = FMath::Min(
 			(static_cast<float>(TMIconWidth) * TargetWidthRatio) / FMath::Max(RotatedWidth, 1.0f),
 			(static_cast<float>(TMIconHeight) * TargetHeightRatio) / FMath::Max(RotatedHeight, 1.0f))
@@ -586,9 +633,6 @@ namespace
 			return false;
 		}
 
-		const FVector2D SourceCenter(
-			(static_cast<float>(Bounds.MinX) + static_cast<float>(Bounds.MaxX)) * 0.5f,
-			(static_cast<float>(Bounds.MinY) + static_cast<float>(Bounds.MaxY)) * 0.5f);
 		const FVector2D DestCenter(static_cast<float>(TMIconWidth) * 0.5f, static_cast<float>(TMIconHeight) * 0.5f);
 
 		for (int32 DestY = 0; DestY < TMIconHeight; ++DestY)
@@ -597,8 +641,10 @@ namespace
 			{
 				const float LocalX = (static_cast<float>(DestX) + 0.5f - DestCenter.X) / Scale;
 				const float LocalY = (static_cast<float>(DestY) + 0.5f - DestCenter.Y) / Scale;
-				const float SourceXFloat = SourceCenter.X + (LocalX * CosRotation) + (LocalY * SinRotation);
-				const float SourceYFloat = SourceCenter.Y - (LocalX * SinRotation) + (LocalY * CosRotation);
+				const float RotatedX = LocalX + RotatedCenterX;
+				const float RotatedY = LocalY + RotatedCenterY;
+				const float SourceXFloat = SourceCenter.X + (RotatedX * CosRotation) + (RotatedY * SinRotation);
+				const float SourceYFloat = SourceCenter.Y - (RotatedX * SinRotation) + (RotatedY * CosRotation);
 				const int32 SourceX = FMath::Clamp(FMath::FloorToInt(SourceXFloat), 0, SourceWidth - 1);
 				const int32 SourceY = FMath::Clamp(FMath::FloorToInt(SourceYFloat), 0, SourceHeight - 1);
 				const uint8 Alpha = SubjectMask[(SourceY * SourceWidth) + SourceX];
@@ -992,6 +1038,8 @@ namespace
 	}
 
 	bool TMReadTextureSourceBgra8(UTexture2D* Texture, TArray<uint8>& OutPixels, int32& OutWidth, int32& OutHeight);
+	bool TMIsWeaponDataTableMeshSourceWithVisualOverride(const FAssetData& SourceAsset);
+	bool TMIsFragDataTableMeshSource(const FAssetData& SourceAsset);
 
 	bool TMIsSkeletalVisualMeshPath(const USkeletalMesh* SkeletalMesh, const TCHAR* MeshPath)
 	{
@@ -1247,7 +1295,7 @@ namespace
 		return TMIconHasReadableColor(OutPixels, TMIconWidth, TMIconHeight);
 	}
 
-	void TMApplyBlackSilhouetteIconPass(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	void TMCleanLoadoutWeaponIconAlpha(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
 	{
 		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
 		{
@@ -1265,7 +1313,7 @@ namespace
 
 		for (int32 PixelIndex = 0; PixelIndex < PixelCount; ++PixelIndex)
 		{
-			if (Seen[PixelIndex] != 0 || PixelData[(PixelIndex * 4) + 3] <= 8)
+			if (Seen[PixelIndex] != 0 || PixelData[(PixelIndex * 4) + 3] <= 16)
 			{
 				continue;
 			}
@@ -1298,7 +1346,7 @@ namespace
 						}
 
 						const int32 NeighborIndex = (NeighborY * Width) + NeighborX;
-						if (Seen[NeighborIndex] == 0 && PixelData[(NeighborIndex * 4) + 3] > 8)
+						if (Seen[NeighborIndex] == 0 && PixelData[(NeighborIndex * 4) + 3] > 16)
 						{
 							Seen[NeighborIndex] = 1;
 							Stack.Add(NeighborIndex);
@@ -1325,13 +1373,34 @@ namespace
 				PixelData[DataIndex + 1] = 0;
 				PixelData[DataIndex + 2] = 0;
 				PixelData[DataIndex + 3] = 0;
+			}
+		}
+	}
+
+	void TMApplyLoadoutWeaponMaterialIconTone(
+		TArray<uint8>& PixelData,
+		const int32 Width,
+		const int32 Height,
+		const bool bActiveVariant)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return;
+		}
+
+		const float Scale = bActiveVariant ? 1.22f : 0.56f;
+		const float Lift = bActiveVariant ? 10.0f : 0.0f;
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
+		{
+			const int32 DataIndex = PixelIndex * 4;
+			if (PixelData[DataIndex + 3] <= 16)
+			{
 				continue;
 			}
 
-			PixelData[DataIndex] = 0;
-			PixelData[DataIndex + 1] = 0;
-			PixelData[DataIndex + 2] = 0;
-			PixelData[DataIndex + 3] = 255;
+			PixelData[DataIndex] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(static_cast<float>(PixelData[DataIndex]) * Scale + Lift), 0, 255));
+			PixelData[DataIndex + 1] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(static_cast<float>(PixelData[DataIndex + 1]) * Scale + Lift), 0, 255));
+			PixelData[DataIndex + 2] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(static_cast<float>(PixelData[DataIndex + 2]) * Scale + Lift), 0, 255));
 		}
 	}
 
@@ -1418,6 +1487,142 @@ namespace
 		}
 
 		PixelData = MoveTemp(ShiftedPixels);
+	}
+
+	void TMApplyLoadoutWeaponRowIconAlignment(const FAssetData& AssetData, TArray<uint8>& PixelData)
+	{
+		TMLeftAlignIconForeground(PixelData, TMIconWidth, TMIconHeight);
+
+		const FString ObjectPath = AssetData.GetObjectPathString();
+		if (ObjectPath.Contains(TEXT("SMG_M4"), ESearchCase::IgnoreCase))
+		{
+			TMShiftIconForegroundRight(PixelData, TMIconWidth, TMIconHeight, 16);
+		}
+		if (ObjectPath.Contains(TEXT("SMG_TAR"), ESearchCase::IgnoreCase))
+		{
+			TMShiftIconForegroundRight(PixelData, TMIconWidth, TMIconHeight, 72);
+		}
+		if (ObjectPath.Contains(TEXT("SMG_ACWI"), ESearchCase::IgnoreCase))
+		{
+			TMShiftIconForegroundRight(PixelData, TMIconWidth, TMIconHeight, 3);
+		}
+	}
+
+	bool TMFitIconForegroundToCanvas(
+		TArray<uint8>& PixelData,
+		const int32 Width,
+		const int32 Height,
+		const float TargetWidthRatio,
+		const float TargetHeightRatio)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return false;
+		}
+
+		TArray<uint8> AlphaMask;
+		AlphaMask.Init(0, Width * Height);
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
+		{
+			const uint8 Alpha = PixelData[(PixelIndex * 4) + 3];
+			AlphaMask[PixelIndex] = Alpha > 16 ? Alpha : 0;
+		}
+
+		const FTMSubjectBounds Bounds = TMFindMaskBounds(AlphaMask, Width, Height);
+		if (!Bounds.IsValid())
+		{
+			return false;
+		}
+
+		const float TargetWidth = static_cast<float>(Width) * FMath::Clamp(TargetWidthRatio, 0.01f, 1.0f);
+		const float TargetHeight = static_cast<float>(Height) * FMath::Clamp(TargetHeightRatio, 0.01f, 1.0f);
+		const int32 DrawWidth = FMath::Clamp(
+			FMath::RoundToInt(TargetWidth),
+			1,
+			Width);
+		const int32 DrawHeight = FMath::Clamp(
+			FMath::RoundToInt(TargetHeight),
+			1,
+			Height);
+		const float ScaleX = static_cast<float>(DrawWidth) / static_cast<float>(FMath::Max(Bounds.Width(), 1));
+		const float ScaleY = static_cast<float>(DrawHeight) / static_cast<float>(FMath::Max(Bounds.Height(), 1));
+		const int32 DestMinX = (Width - DrawWidth) / 2;
+		const int32 DestMinY = (Height - DrawHeight) / 2;
+
+		TArray<uint8> FittedPixels;
+		FittedPixels.Init(0, PixelData.Num());
+		for (int32 DestY = 0; DestY < DrawHeight; ++DestY)
+		{
+			for (int32 DestX = 0; DestX < DrawWidth; ++DestX)
+			{
+				const float SourceXFloat = static_cast<float>(Bounds.MinX)
+					+ ((static_cast<float>(DestX) + 0.5f) / FMath::Max(ScaleX, 0.001f));
+				const float SourceYFloat = static_cast<float>(Bounds.MinY)
+					+ ((static_cast<float>(DestY) + 0.5f) / FMath::Max(ScaleY, 0.001f));
+				const float ClampedSourceX = FMath::Clamp(SourceXFloat, 0.0f, static_cast<float>(Width - 1));
+				const float ClampedSourceY = FMath::Clamp(SourceYFloat, 0.0f, static_cast<float>(Height - 1));
+				const int32 SourceX0 = FMath::Clamp(FMath::FloorToInt(ClampedSourceX), 0, Width - 1);
+				const int32 SourceY0 = FMath::Clamp(FMath::FloorToInt(ClampedSourceY), 0, Height - 1);
+				const int32 SourceX1 = FMath::Min(SourceX0 + 1, Width - 1);
+				const int32 SourceY1 = FMath::Min(SourceY0 + 1, Height - 1);
+				const float BlendX = ClampedSourceX - static_cast<float>(SourceX0);
+				const float BlendY = ClampedSourceY - static_cast<float>(SourceY0);
+				const auto SampleChannel = [&PixelData, Width](const int32 X, const int32 Y, const int32 Channel) -> float
+				{
+					return static_cast<float>(PixelData[((Y * Width) + X) * 4 + Channel]);
+				};
+
+				uint8 SampledChannels[4] = { 0, 0, 0, 0 };
+				for (int32 Channel = 0; Channel < 4; ++Channel)
+				{
+					const float Top = FMath::Lerp(
+						SampleChannel(SourceX0, SourceY0, Channel),
+						SampleChannel(SourceX1, SourceY0, Channel),
+						BlendX);
+					const float Bottom = FMath::Lerp(
+						SampleChannel(SourceX0, SourceY1, Channel),
+						SampleChannel(SourceX1, SourceY1, Channel),
+						BlendX);
+					SampledChannels[Channel] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(FMath::Lerp(Top, Bottom, BlendY)), 0, 255));
+				}
+				if (SampledChannels[3] <= 0)
+				{
+					continue;
+				}
+
+				const int32 DestIndex = (((DestMinY + DestY) * Width) + (DestMinX + DestX)) * 4;
+				FittedPixels[DestIndex] = SampledChannels[0];
+				FittedPixels[DestIndex + 1] = SampledChannels[1];
+				FittedPixels[DestIndex + 2] = SampledChannels[2];
+				FittedPixels[DestIndex + 3] = SampledChannels[3];
+			}
+		}
+
+		PixelData = MoveTemp(FittedPixels);
+		return true;
+	}
+
+	bool TMFindLoadoutWeaponPostIconFit(
+		const FAssetData& AssetData,
+		float& OutTargetWidthRatio,
+		float& OutTargetHeightRatio)
+	{
+		const FString ObjectPath = AssetData.GetObjectPathString();
+		if (ObjectPath.Contains(TEXT("SMG_TAR"), ESearchCase::IgnoreCase))
+		{
+			OutTargetWidthRatio = 0.68f;
+			OutTargetHeightRatio = 0.98f;
+			return true;
+		}
+
+		if (TMIsFragDataTableMeshSource(AssetData))
+		{
+			OutTargetWidthRatio = 0.22f;
+			OutTargetHeightRatio = 0.98f;
+			return true;
+		}
+
+		return false;
 	}
 
 	void TMShowNotification(const FText& Message, const SNotificationItem::ECompletionState State)
@@ -1976,6 +2181,372 @@ namespace
 		return true;
 	}
 
+	bool TMBuildRealMaterialSceneCaptureIconPixels(UObject* RenderSourceObject, TArray<uint8>& OutPixels)
+	{
+		OutPixels.Reset();
+		if (!RenderSourceObject)
+		{
+			return false;
+		}
+
+		if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(RenderSourceObject))
+		{
+			TArray<uint8> RenderPixels;
+			int32 RenderWidth = 0;
+			int32 RenderHeight = 0;
+			if (!TMRenderStaticMeshSceneCapturePixels(StaticMesh, RenderPixels, RenderWidth, RenderHeight))
+			{
+				return false;
+			}
+
+			const bool bSceneFitted = TMBuildButtonIconPixelsFromAlpha(RenderPixels, RenderWidth, RenderHeight, OutPixels)
+				|| TMBuildButtonIconPixels(RenderPixels, RenderWidth, RenderHeight, OutPixels);
+			if (bSceneFitted)
+			{
+				TMNormalizeSceneCaptureIconExposure(OutPixels, TMIconWidth, TMIconHeight);
+			}
+			return bSceneFitted && OutPixels.Num() == TMIconWidth * TMIconHeight * 4;
+		}
+
+		if (USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(RenderSourceObject))
+		{
+			TArray<uint8> RenderPixels;
+			int32 RenderWidth = 0;
+			int32 RenderHeight = 0;
+			if (!TMRenderSkeletalMeshSceneCapturePixels(SkeletalMesh, RenderPixels, RenderWidth, RenderHeight, false))
+			{
+				return false;
+			}
+
+			const bool bSceneFitted = TMBuildButtonIconPixelsFromAlpha(RenderPixels, RenderWidth, RenderHeight, OutPixels)
+				|| TMBuildButtonIconPixels(RenderPixels, RenderWidth, RenderHeight, OutPixels);
+			if (bSceneFitted)
+			{
+				TMNormalizeSceneCaptureIconExposure(OutPixels, TMIconWidth, TMIconHeight);
+			}
+			return bSceneFitted && OutPixels.Num() == TMIconWidth * TMIconHeight * 4;
+		}
+
+		return false;
+	}
+
+	UTexture2D* TMFindLoadoutWeaponSourceIconTexture(const FAssetData& SourceAsset)
+	{
+		const FString ObjectPath = SourceAsset.GetObjectPathString();
+		struct FTMSourceIconOverride
+		{
+			const TCHAR* SourcePath = nullptr;
+			const TCHAR* TexturePath = nullptr;
+		};
+
+		static const FTMSourceIconOverride SourceIconOverrides[] =
+		{
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Shotgun/Meshes/Shotgun.Shotgun"),
+				TEXT("/Game/Weapons/Textures/UI/T_M890_HUD.T_M890_HUD")
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_Kriss.SMG_Kriss"),
+				TEXT("/Game/Weapons/Textures/UI/T_V014_HUD.T_V014_HUD")
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_M4.SMG_M4"),
+				TEXT("/Game/Weapons/Textures/UI/T_M4_HUD.T_M4_HUD")
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_ACWI.SMG_ACWI"),
+				TEXT("/Game/Weapons/Textures/UI/T_ACWI_HUD.T_ACWI_HUD")
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/DE/Meshes/DE.DE"),
+				TEXT("/Game/Weapons/Textures/UI/T_DE-42_HUD.T_DE-42_HUD")
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/Pistol/Meshes/M9.M9"),
+				TEXT("/Game/Weapons/Textures/UI/T_FPN16_HUD.T_FPN16_HUD")
+			},
+			{
+				TEXT("/Game/Weapons/Mesh/Knife/SK_Knife1.SK_Knife1"),
+				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_Knife_Icon.T_Knife_Icon")
+			}
+		};
+
+		for (const FTMSourceIconOverride& SourceIconOverride : SourceIconOverrides)
+		{
+			if (ObjectPath.Equals(SourceIconOverride.SourcePath, ESearchCase::IgnoreCase))
+			{
+				return LoadObject<UTexture2D>(nullptr, SourceIconOverride.TexturePath);
+			}
+		}
+
+		return nullptr;
+	}
+
+	struct FTMLoadoutSourceIconTransform
+	{
+		float RotationDegrees = 0.0f;
+		float TargetWidthRatio = 0.90f;
+		float TargetHeightRatio = 0.90f;
+		float ScaleMultiplier = 1.0f;
+	};
+
+	bool TMFindLoadoutWeaponSourceIconTransform(
+		const FAssetData& SourceAsset,
+		FTMLoadoutSourceIconTransform& OutTransform)
+	{
+		const FString ObjectPath = SourceAsset.GetObjectPathString();
+		struct FTMSourceIconTransformOverride
+		{
+			const TCHAR* SourcePath = nullptr;
+			FTMLoadoutSourceIconTransform Transform;
+		};
+
+		static const FTMSourceIconTransformOverride TransformOverrides[] =
+		{
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Shotgun/Meshes/Shotgun.Shotgun"),
+				{ 40.0f, 0.98f, 0.98f, 1.0f }
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_Kriss.SMG_Kriss"),
+				{ 25.0f, 0.98f, 0.98f, 1.0f }
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_M4.SMG_M4"),
+				{ 25.0f, 0.98f, 0.98f, 1.0f }
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_ACWI.SMG_ACWI"),
+				{ 25.0f, 0.98f, 0.98f, 1.0f }
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/DE/Meshes/DE.DE"),
+				{ 60.0f, 0.70f, 0.98f, 1.0f }
+			},
+			{
+				TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/Pistol/Meshes/M9.M9"),
+				{ 59.0f, 0.70f, 0.98f, 1.0f }
+			}
+		};
+
+		for (const FTMSourceIconTransformOverride& TransformOverride : TransformOverrides)
+		{
+			if (ObjectPath.Equals(TransformOverride.SourcePath, ESearchCase::IgnoreCase))
+			{
+				OutTransform = TransformOverride.Transform;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void TMKeepLargestLoadoutIconAlphaComponent(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return;
+		}
+
+		const int32 PixelCount = Width * Height;
+		TArray<uint8> Seen;
+		Seen.Init(0, PixelCount);
+		TArray<int32> Stack;
+		TArray<int32> ComponentPixels;
+		TArray<int32> LargestComponentPixels;
+
+		for (int32 PixelIndex = 0; PixelIndex < PixelCount; ++PixelIndex)
+		{
+			if (Seen[PixelIndex] != 0 || PixelData[(PixelIndex * 4) + 3] <= 16)
+			{
+				continue;
+			}
+
+			Stack.Reset();
+			ComponentPixels.Reset();
+			Stack.Add(PixelIndex);
+			Seen[PixelIndex] = 1;
+			while (!Stack.IsEmpty())
+			{
+				const int32 CurrentIndex = Stack.Pop(EAllowShrinking::No);
+				ComponentPixels.Add(CurrentIndex);
+
+				const int32 X = CurrentIndex % Width;
+				const int32 Y = CurrentIndex / Width;
+				for (int32 OffsetY = -1; OffsetY <= 1; ++OffsetY)
+				{
+					for (int32 OffsetX = -1; OffsetX <= 1; ++OffsetX)
+					{
+						if (OffsetX == 0 && OffsetY == 0)
+						{
+							continue;
+						}
+
+						const int32 NeighborX = X + OffsetX;
+						const int32 NeighborY = Y + OffsetY;
+						if (NeighborX < 0 || NeighborX >= Width || NeighborY < 0 || NeighborY >= Height)
+						{
+							continue;
+						}
+
+						const int32 NeighborIndex = (NeighborY * Width) + NeighborX;
+						if (Seen[NeighborIndex] == 0 && PixelData[(NeighborIndex * 4) + 3] > 16)
+						{
+							Seen[NeighborIndex] = 1;
+							Stack.Add(NeighborIndex);
+						}
+					}
+				}
+			}
+
+			if (ComponentPixels.Num() > LargestComponentPixels.Num())
+			{
+				LargestComponentPixels = ComponentPixels;
+			}
+		}
+
+		TArray<uint8> KeepMask;
+		KeepMask.Init(0, PixelCount);
+		for (const int32 ComponentPixelIndex : LargestComponentPixels)
+		{
+			KeepMask[ComponentPixelIndex] = 1;
+		}
+
+		for (int32 PixelIndex = 0; PixelIndex < PixelCount; ++PixelIndex)
+		{
+			if (KeepMask[PixelIndex] != 0)
+			{
+				continue;
+			}
+
+			const int32 DataIndex = PixelIndex * 4;
+			PixelData[DataIndex] = 0;
+			PixelData[DataIndex + 1] = 0;
+			PixelData[DataIndex + 2] = 0;
+			PixelData[DataIndex + 3] = 0;
+		}
+	}
+
+	void TMApplyFragLoadoutIconColor(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return;
+		}
+
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
+		{
+			const int32 DataIndex = PixelIndex * 4;
+			if (PixelData[DataIndex + 3] <= 16)
+			{
+				continue;
+			}
+
+			const float Luminance =
+				(static_cast<float>(PixelData[DataIndex + 2]) * 0.2126f
+					+ static_cast<float>(PixelData[DataIndex + 1]) * 0.7152f
+					+ static_cast<float>(PixelData[DataIndex]) * 0.0722f) / 255.0f;
+			const float Shade = FMath::Clamp(Luminance * 1.25f + 0.10f, 0.0f, 1.0f);
+			PixelData[DataIndex] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(44.0f + Shade * 50.0f), 0, 255));
+			PixelData[DataIndex + 1] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(62.0f + Shade * 84.0f), 0, 255));
+			PixelData[DataIndex + 2] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(38.0f + Shade * 62.0f), 0, 255));
+		}
+	}
+
+	bool TMBuildLoadoutWeaponMaterialIconPixels(
+		const FAssetData& AssetData,
+		UObject* RenderSourceObject,
+		const bool bActiveVariant,
+		TArray<uint8>& OutPixels)
+	{
+		OutPixels.Reset();
+		if (!RenderSourceObject)
+		{
+			return false;
+		}
+
+		bool bBuiltPixels = false;
+		if (UTexture2D* SourceIconTexture = TMFindLoadoutWeaponSourceIconTexture(AssetData))
+		{
+			TArray<uint8> SourceIconPixels;
+			int32 SourceIconWidth = 0;
+			int32 SourceIconHeight = 0;
+			if (TMReadTextureSourceBgra8(SourceIconTexture, SourceIconPixels, SourceIconWidth, SourceIconHeight))
+			{
+				FTMLoadoutSourceIconTransform SourceIconTransform;
+				if (TMFindLoadoutWeaponSourceIconTransform(AssetData, SourceIconTransform))
+				{
+					bBuiltPixels = TMBuildTransformedButtonIconPixels(
+						SourceIconPixels,
+						SourceIconWidth,
+						SourceIconHeight,
+						SourceIconTransform.RotationDegrees,
+						SourceIconTransform.TargetWidthRatio,
+						SourceIconTransform.TargetHeightRatio,
+						SourceIconTransform.ScaleMultiplier,
+						OutPixels);
+				}
+
+				if (!bBuiltPixels)
+				{
+					bBuiltPixels = TMBuildButtonIconPixelsFromAlpha(SourceIconPixels, SourceIconWidth, SourceIconHeight, OutPixels)
+						|| TMBuildButtonIconPixels(SourceIconPixels, SourceIconWidth, SourceIconHeight, OutPixels);
+				}
+				if (bBuiltPixels)
+				{
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMIconGenerator] Using baked source HUD texture %s for %s."),
+						*SourceIconTexture->GetPathName(),
+						*AssetData.GetObjectPathString());
+				}
+			}
+			else
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("[TMIconGenerator] Failed to read baked source HUD texture %s for %s."),
+					*SourceIconTexture->GetPathName(),
+					*AssetData.GetObjectPathString());
+			}
+		}
+
+		if (!bBuiltPixels)
+		{
+			bBuiltPixels = TMBuildRealMaterialSceneCaptureIconPixels(RenderSourceObject, OutPixels);
+			if (!bBuiltPixels)
+			{
+				return false;
+			}
+		}
+
+		const bool bIsFrag = TMIsFragDataTableMeshSource(AssetData);
+		if (bIsFrag)
+		{
+			TMKeepLargestLoadoutIconAlphaComponent(OutPixels, TMIconWidth, TMIconHeight);
+		}
+		else
+		{
+			TMCleanLoadoutWeaponIconAlpha(OutPixels, TMIconWidth, TMIconHeight);
+		}
+
+		float PostFitWidthRatio = 0.0f;
+		float PostFitHeightRatio = 0.0f;
+		if (TMFindLoadoutWeaponPostIconFit(AssetData, PostFitWidthRatio, PostFitHeightRatio))
+		{
+			TMFitIconForegroundToCanvas(OutPixels, TMIconWidth, TMIconHeight, PostFitWidthRatio, PostFitHeightRatio);
+		}
+		if (bIsFrag)
+		{
+			TMApplyFragLoadoutIconColor(OutPixels, TMIconWidth, TMIconHeight);
+		}
+		TMApplyLoadoutWeaponRowIconAlignment(AssetData, OutPixels);
+		TMApplyLoadoutWeaponMaterialIconTone(OutPixels, TMIconWidth, TMIconHeight, bActiveVariant);
+		return OutPixels.Num() == TMIconWidth * TMIconHeight * 4;
+	}
+
 	UTexture2D* TMFindPreferredSourceIconTexture(const FAssetData& SourceAsset)
 	{
 		const FString SourceAssetName = SourceAsset.AssetName.ToString();
@@ -2140,6 +2711,27 @@ namespace
 			ESearchCase::IgnoreCase);
 	}
 
+	bool TMIsDEDataTableMeshSource(const FAssetData& SourceAsset)
+	{
+		return SourceAsset.GetObjectPathString().Equals(
+			TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/DE/Meshes/DE.DE"),
+			ESearchCase::IgnoreCase);
+	}
+
+	bool TMIsM9DataTableMeshSource(const FAssetData& SourceAsset)
+	{
+		return SourceAsset.GetObjectPathString().Equals(
+			TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/Pistol/Meshes/M9.M9"),
+			ESearchCase::IgnoreCase);
+	}
+
+	bool TMIsFragDataTableMeshSource(const FAssetData& SourceAsset)
+	{
+		return SourceAsset.GetObjectPathString().Equals(
+			TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/Meshes/Frag.Frag"),
+			ESearchCase::IgnoreCase);
+	}
+
 	bool TMIsWeaponDataTableMeshSourceWithVisualOverride(const FAssetData& SourceAsset)
 	{
 		return TMIsTARDataTableMeshSource(SourceAsset)
@@ -2275,6 +2867,27 @@ namespace
 				TEXT("ACWI"),
 				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/ACWI/BP_ACWI.BP_ACWI_C"),
 				TEXT("/Game/Weapons/Mesh/Assault/SK_ACWI_Assault_Yaxis.SK_ACWI_Assault_Yaxis"));
+		}
+
+		if (TMIsDEDataTableMeshSource(SourceAsset))
+		{
+			return LoadObject<USkeletalMesh>(
+				nullptr,
+				TEXT("/Game/Weapons/Mesh/Pistol/SK_DE-42_Pistol_Xaxis.SK_DE-42_Pistol_Xaxis"));
+		}
+
+		if (TMIsM9DataTableMeshSource(SourceAsset))
+		{
+			return LoadObject<USkeletalMesh>(
+				nullptr,
+				TEXT("/Game/Weapons/Mesh/Pistol/SK_NFP-16_Yaxis.SK_NFP-16_Yaxis"));
+		}
+
+		if (TMIsFragDataTableMeshSource(SourceAsset))
+		{
+			return LoadObject<USkeletalMesh>(
+				nullptr,
+				TEXT("/Game/Weapons/Mesh/GrenadesAndMine/SK_Frag_Grenade.SK_Frag_Grenade"));
 		}
 
 		return nullptr;
@@ -2517,6 +3130,21 @@ namespace
 	}
 }
 
+namespace
+{
+	void TMGenerateLoadoutWeaponActiveIconsConsoleCommand()
+	{
+		FTouchMeEditorModule& TouchMeEditorModule =
+			FModuleManager::LoadModuleChecked<FTouchMeEditorModule>(TEXT("TouchMeEditor"));
+		TouchMeEditorModule.GenerateLoadoutWeaponActiveIcons();
+	}
+
+	FAutoConsoleCommand TMGenerateLoadoutWeaponActiveIconsCommand(
+		TEXT("TM.GenerateLoadoutWeaponActiveIcons"),
+		TEXT("Generate real-material Icon and Icon_Active textures for loadout weapon row icons."),
+		FConsoleCommandDelegate::CreateStatic(&TMGenerateLoadoutWeaponActiveIconsConsoleCommand));
+}
+
 void FTouchMeEditorModule::StartupModule()
 {
 	if (IsRunningCommandlet())
@@ -2597,6 +3225,56 @@ void FTouchMeEditorModule::BuildAssetSelectionMenu(
 			MoveTemp(SelectedAssets))));
 }
 
+void FTouchMeEditorModule::GenerateLoadoutWeaponActiveIcons() const
+{
+	static const TCHAR* LoadoutWeaponIconSourcePaths[] =
+	{
+		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Shotgun/Meshes/Shotgun.Shotgun"),
+		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_Kriss.SMG_Kriss"),
+		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_M4.SMG_M4"),
+		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_TAR.SMG_TAR"),
+		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_ACWI.SMG_ACWI"),
+		TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/DE/Meshes/DE.DE"),
+		TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/Pistol/Meshes/M9.M9"),
+		TEXT("/Game/MP_System_V3/Game/Weapons/Special/Syringe/Meshes/SciFi_Syringe.SciFi_Syringe"),
+		TEXT("/Game/Weapons/Mesh/Knife/SK_Knife1.SK_Knife1"),
+		TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/Meshes/Frag.Frag")
+	};
+
+	TArray<FAssetData> SourceAssets;
+	SourceAssets.Reserve(UE_ARRAY_COUNT(LoadoutWeaponIconSourcePaths));
+	for (const TCHAR* SourcePath : LoadoutWeaponIconSourcePaths)
+	{
+		UObject* SourceAsset = LoadObject<UObject>(nullptr, SourcePath);
+		if (!SourceAsset)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMIconGenerator] Loadout active source asset not found: %s."), SourcePath);
+			continue;
+		}
+
+		const FAssetData AssetData(SourceAsset);
+		if (IsSupportedMeshAsset(AssetData))
+		{
+			SourceAssets.Add(AssetData);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMIconGenerator] Loadout active source asset is not a supported mesh: %s."), SourcePath);
+		}
+	}
+
+	const bool bPreviousMaterialOnly = bTMGenerateLoadoutWeaponMaterialOnly;
+	const bool bPreviousActiveOnly = bTMGenerateLoadoutWeaponActiveOnly;
+	bTMGenerateLoadoutWeaponMaterialOnly = true;
+	bTMGenerateLoadoutWeaponActiveOnly = false;
+	GenerateIconsForAssets(SourceAssets);
+	bTMGenerateLoadoutWeaponMaterialOnly = false;
+	bTMGenerateLoadoutWeaponActiveOnly = true;
+	GenerateIconsForAssets(MoveTemp(SourceAssets));
+	bTMGenerateLoadoutWeaponMaterialOnly = bPreviousMaterialOnly;
+	bTMGenerateLoadoutWeaponActiveOnly = bPreviousActiveOnly;
+}
+
 void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAssets) const
 {
 	TArray<FAssetData> MeshAssets;
@@ -2648,6 +3326,44 @@ void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAss
 		TArray<uint8> NormalPixels;
 		bool bBuiltNormalPixels = false;
 		bool bUsedPreferredSourceIcon = false;
+		if (bTMGenerateLoadoutWeaponActiveOnly)
+		{
+			if (!TMBuildLoadoutWeaponMaterialIconPixels(AssetData, RenderSourceObject, true, NormalPixels))
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("[TMIconGenerator] Failed to build active real-material icon pixels for %s."),
+					*AssetData.GetObjectPathString());
+				continue;
+			}
+
+			if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon_Active"), NormalPixels, TMIconWidth, TMIconHeight))
+			{
+				++SavedCount;
+			}
+			continue;
+		}
+
+		if (bTMGenerateLoadoutWeaponMaterialOnly)
+		{
+			if (!TMBuildLoadoutWeaponMaterialIconPixels(AssetData, RenderSourceObject, false, NormalPixels))
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("[TMIconGenerator] Failed to build inactive real-material icon pixels for %s."),
+					*AssetData.GetObjectPathString());
+				continue;
+			}
+
+			if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon"), NormalPixels, TMIconWidth, TMIconHeight))
+			{
+				++SavedCount;
+			}
+			continue;
+		}
+
 		if (UTexture2D* PreferredSourceIcon = TMFindPreferredSourceIconTexture(AssetData))
 		{
 			TArray<uint8> RenderPixels;
@@ -2853,21 +3569,10 @@ void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAss
 
 		if (TMIsWeaponDataTableMeshSourceWithVisualOverride(AssetData))
 		{
-	TMApplyBlackSilhouetteIconPass(NormalPixels, TMIconWidth, TMIconHeight);
-	TMLeftAlignIconForeground(NormalPixels, TMIconWidth, TMIconHeight);
-	if (AssetData.GetObjectPathString().Contains(TEXT("SMG_M4"), ESearchCase::IgnoreCase))
-	{
-		TMShiftIconForegroundRight(NormalPixels, TMIconWidth, TMIconHeight, 16);
-	}
-	if (AssetData.GetObjectPathString().Contains(TEXT("SMG_TAR"), ESearchCase::IgnoreCase))
-	{
-		TMShiftIconForegroundRight(NormalPixels, TMIconWidth, TMIconHeight, 72);
-	}
-	if (AssetData.GetObjectPathString().Contains(TEXT("SMG_ACWI"), ESearchCase::IgnoreCase))
-	{
-		TMShiftIconForegroundRight(NormalPixels, TMIconWidth, TMIconHeight, 3);
-	}
-}
+			TMCleanLoadoutWeaponIconAlpha(NormalPixels, TMIconWidth, TMIconHeight);
+			TMApplyLoadoutWeaponRowIconAlignment(AssetData, NormalPixels);
+			TMApplyLoadoutWeaponMaterialIconTone(NormalPixels, TMIconWidth, TMIconHeight, false);
+		}
 
 		if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon"), NormalPixels, TMIconWidth, TMIconHeight))
 		{

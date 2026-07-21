@@ -13,6 +13,7 @@
 #include "Components/TextBlock.h"
 #include "Components/Widget.h"
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "UObject/UObjectIterator.h"
 
 namespace
@@ -33,7 +34,7 @@ namespace
 	constexpr float MainMenuSubmenuLabelHoverFontScale = 1.15f;
 	constexpr float QuitConfirmationOptionHoverFontScale = 1.12f;
 	constexpr float LoadoutCategoryButtonDisplayScale = 0.15f;
-	constexpr float LoadoutCategoryButtonHoverScale = 1.30f;
+	constexpr float LoadoutCategoryButtonHoverScale = 1.15f;
 	const FLinearColor MainMenuDialogYellow(0.672443f, 0.381326f, 0.025187f, 1.0f);
 	const FLinearColor MainMenuDialogHoverRed(1.0f, 0.0f, 0.0f, 1.0f);
 	const FName MainMenuLabelHoverTypeface(TEXT("Light"));

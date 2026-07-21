@@ -100,6 +100,15 @@ namespace
 
 int32 UTMGenerateUIIconsCommandlet::Main(const FString& Params)
 {
+	if (FParse::Param(*Params, TEXT("LoadoutWeapons"))
+		|| FParse::Param(*Params, TEXT("LoadoutWeaponIcons")))
+	{
+		FTouchMeEditorModule& TouchMeEditorModule =
+			FModuleManager::LoadModuleChecked<FTouchMeEditorModule>(TEXT("TouchMeEditor"));
+		TouchMeEditorModule.GenerateLoadoutWeaponActiveIcons();
+		return 0;
+	}
+
 	FString TablePath;
 	if (FParse::Value(*Params, TEXT("Table="), TablePath)
 		|| FParse::Value(*Params, TEXT("DataTable="), TablePath))

@@ -1053,6 +1053,45 @@ void AddAttachmentHighlightToken(TSet<FString>& OutTokens, const FString& Text)
 	}
 }
 
+void AddWeaponMeshHighlightTokensFromObject(const UObject* Object, TSet<FString>& OutTokens)
+{
+	if (!Object)
+	{
+		return;
+	}
+
+	if (const UClass* ObjectClass = Cast<UClass>(Object))
+	{
+		AddAttachmentHighlightToken(OutTokens, ObjectClass->GetName());
+		AddAttachmentHighlightToken(OutTokens, ObjectClass->GetPathName());
+		AddWeaponMeshHighlightTokensFromObject(ObjectClass->GetDefaultObject(false), OutTokens);
+		return;
+	}
+
+	if (const AActor* Actor = Cast<AActor>(Object))
+	{
+		TInlineComponentArray<USkeletalMeshComponent*> SkeletalMeshComponents(Actor);
+		for (const USkeletalMeshComponent* MeshComponent : SkeletalMeshComponents)
+		{
+			if (const USkeletalMesh* Mesh = MeshComponent ? MeshComponent->GetSkeletalMeshAsset() : nullptr)
+			{
+				AddAttachmentHighlightToken(OutTokens, Mesh->GetName());
+				AddAttachmentHighlightToken(OutTokens, Mesh->GetPathName());
+			}
+		}
+
+		TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(Actor);
+		for (const UStaticMeshComponent* MeshComponent : StaticMeshComponents)
+		{
+			if (const UStaticMesh* Mesh = MeshComponent ? MeshComponent->GetStaticMesh() : nullptr)
+			{
+				AddAttachmentHighlightToken(OutTokens, Mesh->GetName());
+				AddAttachmentHighlightToken(OutTokens, Mesh->GetPathName());
+			}
+		}
+	}
+}
+
 bool IsAttachmentSelectionOptionText(const FString& Text)
 {
 	const FString Normalized = NormalizeAttachmentFocusToken(Text);
@@ -3829,6 +3868,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 		HighlightTokens.Add(NormalizeAttachmentFocusToken(TEXT("Empty")));
 	}
 
+	TArray<TObjectPtr<UTMWeaponLayerWidget>> WeaponLayerWidgets;
 	for (TObjectIterator<UUserWidget> It; It; ++It)
 	{
 		UUserWidget* Widget = *It;
@@ -3850,12 +3890,35 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateWeaponSelectionHighlight(UWorld
 
 		if (UTMWeaponLayerWidget* WeaponLayerWidget = Cast<UTMWeaponLayerWidget>(Widget))
 		{
-			WeaponLayerWidget->RefreshWeaponIcon();
-			const int32 Score = ScoreSelectionTextAgainstTokens(
-				WeaponLayerWidget->GetWeaponLookupToken(),
-				HighlightTokens);
-			WeaponLayerWidget->SetWeaponIconSelected(Score != INDEX_NONE);
+			WeaponLayerWidgets.Add(WeaponLayerWidget);
+		}
+	}
+
+	UTMWeaponLayerWidget* BestWeaponLayerWidget = nullptr;
+	int32 BestScore = INDEX_NONE;
+	for (UTMWeaponLayerWidget* WeaponLayerWidget : WeaponLayerWidgets)
+	{
+		if (!IsValid(WeaponLayerWidget))
+		{
 			continue;
+		}
+
+		WeaponLayerWidget->RefreshWeaponIcon();
+		const int32 Score = ScoreSelectionTextAgainstTokens(
+			WeaponLayerWidget->GetWeaponLookupToken(),
+			HighlightTokens);
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			BestWeaponLayerWidget = WeaponLayerWidget;
+		}
+	}
+
+	for (UTMWeaponLayerWidget* WeaponLayerWidget : WeaponLayerWidgets)
+	{
+		if (IsValid(WeaponLayerWidget))
+		{
+			WeaponLayerWidget->SetWeaponIconSelected(BestScore != INDEX_NONE && WeaponLayerWidget == BestWeaponLayerWidget);
 		}
 	}
 }
@@ -3925,6 +3988,7 @@ bool UTMMenuViewerMeshTransitionSubsystem::ResolveActiveLoadoutWeaponHighlightTo
 		{
 			AddAttachmentHighlightToken(OutTokens, ActiveWeaponClass->GetName());
 		}
+		AddWeaponMeshHighlightTokensFromObject(ActiveWeaponObject, OutTokens);
 
 		if (!OutTokens.IsEmpty())
 		{

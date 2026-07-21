@@ -34,9 +34,10 @@ protected:
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 private:
-	UTexture2D* ResolveWeaponIconTexture(const FString& LookupToken) const;
+	UTexture2D* ResolveWeaponIconTexture(const FString& LookupToken, bool bSelected) const;
 	bool ShouldCollapseWeaponRow(const FString& LookupToken) const;
 	void ResolveIconWidgets();
+	void ApplyWeaponIconBrush() const;
 	void ApplySelectionFrame() const;
 	void ApplyHoverScale() const;
 	void HideNameText() const;
