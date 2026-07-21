@@ -11,6 +11,9 @@ class USceneComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
+class ACharacter;
+class APlayerController;
+class APawn;
 class UPhysicalMaterial;
 class UProjectileImpactData;
 class UFakeGunAnimInstance;
@@ -30,6 +33,18 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Gun", meta = (DisplayName = "Get Weapon Display Name From Class"))
 	static FText GetWeaponDisplayNameFromClass(TSubclassOf<AGun> WeaponClass);
+
+	UFUNCTION(BlueprintPure, Category = "Gun|Loadout", meta = (DisplayName = "Can Loadout Shoot"))
+	bool CanLoadoutShoot() const { return bCanLoadoutShoot; }
+
+	UFUNCTION(BlueprintCallable, Category = "Gun|Loadout", meta = (DisplayName = "Set Can Loadout Shoot"))
+	void SetCanLoadoutShoot(bool bEnabled);
+
+	UFUNCTION(BlueprintCallable, Category = "Gun|Loadout|Feedback", meta = (DisplayName = "Play Loadout Shoot Feedback"))
+	bool PlayLoadoutShootFeedback();
+
+	UFUNCTION(BlueprintCallable, Category = "Gun|Loadout", meta = (DisplayName = "Trigger Loadout Shoot"))
+	bool TriggerLoadoutShoot(APlayerController* PlayerController = nullptr);
 
 	UFUNCTION(BlueprintCallable, Category = "Gun|Impact")
 	void Impact(FVector Location, FVector Normal, const UPhysicalMaterial* PhysicalMaterial);
@@ -146,6 +161,18 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Feedback")
 	FName WeaponSpawnFeedbackSocketName = NAME_None;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout", meta = (DisplayName = "Can Loadout Shoot"))
+	bool bCanLoadoutShoot = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (DisplayName = "Loadout Recoil Offset"))
+	FVector LoadoutRecoilOffset = FVector(-1.35f, 0.0f, 0.25f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (DisplayName = "Loadout Recoil Rotation"))
+	FRotator LoadoutRecoilRotation = FRotator(-0.9f, 0.0f, 0.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (ClampMin = "0.01", DisplayName = "Loadout Recoil Duration"))
+	float LoadoutRecoilDuration = 0.12f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gun", meta = (DisplayName = "Display Name"))
 	FText WeaponDisplayName;
 
@@ -238,6 +265,32 @@ private:
 	UStaticMeshComponent* ResolveAttachmentFeedbackTargetComponent(FName SocketName) const;
 	FRotator ResolveAttachmentFeedbackRotation(FVector FeedbackLocation, FName SocketName, FRotator FallbackRotation) const;
 	FTransform ResolveWeaponSpawnFeedbackTransform() const;
+	FTransform ResolveLoadoutShootFeedbackTransform() const;
+	bool PrepareLoadoutShootContext(APlayerController* PlayerController);
+	void ConfigureLoadoutShootMPSProxy(AActor* MPSActor) const;
+	bool PrepareLoadoutPlayerCharacterProxy(
+		APlayerController* PlayerController,
+		APawn*& OutPreviousPawn,
+		FRotator& OutPreviousControlRotation,
+		AActor*& OutPreviousViewTarget,
+		bool& bOutRestoreLookInput,
+		bool& bOutPossessedProxy);
+	ACharacter* ResolveLoadoutPlayerCharacterProxy(APlayerController* PlayerController);
+	void ConfigureLoadoutShootPlayerCharacterProxy(ACharacter* ProxyCharacter) const;
+	void RestoreLoadoutPlayerController(
+		APlayerController* PlayerController,
+		APawn* PreviousPawn,
+		const FRotator& PreviousControlRotation,
+		AActor* PreviousViewTarget,
+		bool bRestoreLookInput,
+		bool bPossessedProxy) const;
+	bool InvokeLoadoutShootFunction(FName FunctionName);
+	void ScheduleLoadoutStopShooting();
+	bool IsLoadoutRecoilFunction(const UFunction* Function) const;
+	bool IsLoadoutRecoilBypassActive() const;
+	void PlayLoadoutSpecialRecoil();
+	void UpdateLoadoutSpecialRecoil(float DeltaSeconds);
+	USkeletalMeshComponent* ResolveLoadoutRecoilMesh() const;
 	FName ResolveAttachmentFeedbackPreferredSocket(const UFunction* Function) const;
 	FName ResolveAttachmentFeedbackSocketFromContext(const FString& Context, FName SocketName) const;
 	FName ResolveChangedAttachmentFeedbackSocket(
@@ -284,11 +337,21 @@ private:
 	bool bFakeModeApplied = false;
 	bool bMainMeshWasVisible = true;
 	bool bAcogRenderTickActive = false;
+	bool bLoadoutShootContextActive = false;
+	bool bLoadoutRecoilTickActive = false;
+	bool bLoadoutRecoilTriggeredThisShot = false;
 	FName AttachmentFeedbackPreferredSocketName = NAME_None;
 	uint32 LastAttachmentFeedbackStateHash = 0;
 	TMap<FName, FString> LastAttachmentFeedbackStateSignatures;
 	TMap<FName, FName> LastAttachmentFeedbackStateSockets;
 	double AttachmentFeedbackSuppressUntilTime = 0.0;
+	double LoadoutRecoilBypassUntilTime = 0.0;
+	float LoadoutRecoilElapsedSeconds = 0.0f;
+	FTransform LoadoutRecoilBaseRelativeTransform = FTransform::Identity;
 	FTimerHandle AttachmentFeedbackMonitorTimerHandle;
+	FTimerHandle LoadoutStopShootingTimerHandle;
+	TWeakObjectPtr<AActor> LoadoutShootMPSProxy;
+	TWeakObjectPtr<ACharacter> LoadoutShootPlayerCharacterProxy;
+	TWeakObjectPtr<USkeletalMeshComponent> LoadoutRecoilMesh;
 	uint8 MainMeshPreviousAnimTickOption = 0;
 };

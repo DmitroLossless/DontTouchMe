@@ -3,6 +3,7 @@
 #include "Gun.h"
 
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/ActorComponent.h"
 #include "FakeGunAnimInstance.h"
@@ -13,6 +14,9 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -51,10 +55,17 @@ namespace
 	const TCHAR* HeadshotHitmarkerSound2AssetName = TEXT("Collect_Notification_Headshot_Gun_Shot_Ding_Perk_Touch_Hit_2_Cue");
 	constexpr float AttachmentFeedbackMonitorInterval = 0.05f;
 	constexpr float AttachmentFeedbackStartupSuppressSeconds = 0.35f;
+	constexpr float LoadoutShootStopDelaySeconds = 0.08f;
+	constexpr float LoadoutRecoilBypassWindowSeconds = 0.75f;
 	const FName UnderbarrelDataPropertyName(TEXT("UnderbarrelData"));
 	const FName UnderbarrelSocketName(TEXT("Underbarrel"));
 	const FName MuzzleSocketName(TEXT("Muzzle"));
 	const FName SilencercoMuzzleSocketName(TEXT("MuzzleSilencerco"));
+	const FName MPSPropertyName(TEXT("MPS"));
+	const FName ShootFunctionName(TEXT("Shoot"));
+	const FName ServerShootFunctionName(TEXT("Svr_Shoot"));
+	const FName StartShootingFunctionName(TEXT("StartShooting"));
+	const FName StopShootingFunctionName(TEXT("StopShooting"));
 	const FName AcogRenderDiscComponentName(TEXT("ACOG_RenderDisc"));
 	const FName AcogGlassComponentName(TEXT("ACOG_Glass"));
 	const FName AcogRenderDiscSocketName(TEXT("RM_Scope"));
@@ -485,6 +496,142 @@ namespace
 		return true;
 	}
 
+	UObject* ReadObjectPropertyByName(const UObject* Object, const TCHAR* ExpectedName)
+	{
+		if (!Object || !ExpectedName || ExpectedName[0] == TEXT('\0'))
+		{
+			return nullptr;
+		}
+
+		const FProperty* Property = FindPropertyByName(Object->GetClass(), ExpectedName);
+		if (!Property)
+		{
+			return nullptr;
+		}
+
+		const void* ValueAddress = Property->ContainerPtrToValuePtr<void>(Object);
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			return ObjectProperty->GetObjectPropertyValue(ValueAddress);
+		}
+
+		if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+		{
+			const FSoftObjectPtr* SoftObject = SoftObjectProperty->ContainerPtrToValuePtr<FSoftObjectPtr>(Object);
+			if (!SoftObject || SoftObject->IsNull())
+			{
+				return nullptr;
+			}
+
+			return SoftObject->LoadSynchronous();
+		}
+
+		return nullptr;
+	}
+
+	FObjectPropertyBase* FindMutableObjectPropertyByName(UObject* Object, const TCHAR* ExpectedName)
+	{
+		if (!Object || !ExpectedName || ExpectedName[0] == TEXT('\0'))
+		{
+			return nullptr;
+		}
+
+		return CastField<FObjectPropertyBase>(
+			const_cast<FProperty*>(FindPropertyByName(Object->GetClass(), ExpectedName)));
+	}
+
+	bool WriteObjectPropertyByName(UObject* Object, const TCHAR* ExpectedName, UObject* Value)
+	{
+		FObjectPropertyBase* ObjectProperty = FindMutableObjectPropertyByName(Object, ExpectedName);
+		if (!ObjectProperty || (Value && !Value->IsA(ObjectProperty->PropertyClass)))
+		{
+			return false;
+		}
+
+		ObjectProperty->SetObjectPropertyValue_InContainer(Object, Value);
+		return true;
+	}
+
+	template <SIZE_T NumNames>
+	void TryWriteObjectPropertyAliases(UObject* Object, const TCHAR* const (&Names)[NumNames], UObject* Value)
+	{
+		for (const TCHAR* Name : Names)
+		{
+			WriteObjectPropertyByName(Object, Name, Value);
+		}
+	}
+
+	UFXSystemAsset* ResolveLoadoutShootFX(const UObject* Object)
+	{
+		static const TCHAR* PropertyNames[] =
+		{
+			TEXT("DT_FlashParticle"),
+			TEXT("FlashParticle"),
+			TEXT("MuzzleFlash"),
+			TEXT("MuzzleFlashFX"),
+			TEXT("MuzzleFX"),
+			TEXT("MuzzleParticle"),
+			TEXT("SilencedParticle"),
+			TEXT("SilencedFlashParticle")
+		};
+
+		for (const TCHAR* PropertyName : PropertyNames)
+		{
+			if (UFXSystemAsset* FX = Cast<UFXSystemAsset>(ReadObjectPropertyByName(Object, PropertyName)))
+			{
+				return FX;
+			}
+		}
+
+		return nullptr;
+	}
+
+	USoundBase* ResolveLoadoutShootSound(const UObject* Object)
+	{
+		static const TCHAR* PropertyNames[] =
+		{
+			TEXT("DT_ShootSound"),
+			TEXT("ShootSound"),
+			TEXT("ShotSound"),
+			TEXT("FireSound"),
+			TEXT("SilencedShotSound"),
+			TEXT("SilencedSound"),
+			TEXT("DT_SilencedSound")
+		};
+
+		for (const TCHAR* PropertyName : PropertyNames)
+		{
+			if (USoundBase* Sound = Cast<USoundBase>(ReadObjectPropertyByName(Object, PropertyName)))
+			{
+				return ResolveLoadoutFeedbackSound(Sound, nullptr);
+			}
+		}
+
+		return nullptr;
+	}
+
+	UAnimMontage* ResolveLoadoutShootMontage(const UObject* Object)
+	{
+		static const TCHAR* PropertyNames[] =
+		{
+			TEXT("DT_Shoot"),
+			TEXT("DT_AimShoot"),
+			TEXT("ShootMontage"),
+			TEXT("FireMontage"),
+			TEXT("ShotMontage")
+		};
+
+		for (const TCHAR* PropertyName : PropertyNames)
+		{
+			if (UAnimMontage* Montage = Cast<UAnimMontage>(ReadObjectPropertyByName(Object, PropertyName)))
+			{
+				return Montage;
+			}
+		}
+
+		return nullptr;
+	}
+
 	bool ReadStaticMeshAssetPath(const FProperty* Property, const void* Container, FString& OutAssetPath)
 	{
 		OutAssetPath.Reset();
@@ -817,7 +964,23 @@ void AGun::BeginPlay()
 void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	GetWorldTimerManager().ClearTimer(AttachmentFeedbackMonitorTimerHandle);
+	GetWorldTimerManager().ClearTimer(LoadoutStopShootingTimerHandle);
 	DestroyAcogRenderComponents();
+
+	if (AActor* MPSProxy = LoadoutShootMPSProxy.Get())
+	{
+		MPSProxy->Destroy();
+	}
+	LoadoutShootMPSProxy.Reset();
+
+	if (ACharacter* PlayerCharacterProxy = LoadoutShootPlayerCharacterProxy.Get())
+	{
+		PlayerCharacterProxy->Destroy();
+	}
+	LoadoutShootPlayerCharacterProxy.Reset();
+
+	LoadoutRecoilMesh.Reset();
+	bLoadoutRecoilTickActive = false;
 
 	if (bFakeModeApplied)
 	{
@@ -830,6 +993,8 @@ void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AGun::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+
+	UpdateLoadoutSpecialRecoil(DeltaSeconds);
 
 	UStaticMeshComponent* AcogOpticComponent = ResolveAcogOpticComponent();
 	if (!IsValid(AcogOpticComponent))
@@ -873,6 +1038,659 @@ void AGun::SetFakeMode(const bool bEnabled)
 	RequestDeferredAttachmentSanitize();
 }
 
+void AGun::SetCanLoadoutShoot(const bool bEnabled)
+{
+	bCanLoadoutShoot = bEnabled;
+}
+
+bool AGun::PlayLoadoutShootFeedback()
+{
+	UWorld* World = GetWorld();
+	if (!World || HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return false;
+	}
+
+	const FTransform FeedbackTransform = ResolveLoadoutShootFeedbackTransform();
+	const FVector FeedbackLocation = FeedbackTransform.GetLocation();
+	const FRotator FeedbackRotation = FeedbackTransform.Rotator();
+	UFXSystemAsset* ShootFX = ResolveLoadoutShootFX(this);
+	USoundBase* ShootSound = ResolveLoadoutShootSound(this);
+	UAnimMontage* ShootMontage = ResolveLoadoutShootMontage(this);
+
+	bool bSpawnedFX = false;
+	if (ShootFX)
+	{
+		SpawnLoadoutFeedbackFX(this, World, ShootFX, FeedbackLocation, FeedbackRotation, FVector::OneVector);
+		bSpawnedFX = true;
+	}
+
+	bool bPlayedSound = false;
+	if (ShootSound)
+	{
+		UGameplayStatics::PlaySound2D(this, ShootSound, 1.0f, 1.0f);
+		bPlayedSound = true;
+	}
+
+	const auto TryPlayShootMontage = [ShootMontage](USkeletalMeshComponent* Mesh)
+	{
+		if (!ShootMontage || !Mesh)
+		{
+			return false;
+		}
+
+		UAnimInstance* AnimInstance = Mesh->GetAnimInstance();
+		return AnimInstance && AnimInstance->Montage_Play(ShootMontage, 1.0f) > 0.0f;
+	};
+
+	const bool bPlayedMontage = TryPlayShootMontage(ResolveMainSkeletalMesh())
+		|| TryPlayShootMontage(FakeSkeletalMeshComponent);
+
+	const FString SoundPath = ShootSound ? ShootSound->GetPathName() : FString(TEXT("None"));
+	const FString FXPath = ShootFX ? ShootFX->GetPathName() : FString(TEXT("None"));
+	const FString MontagePath = ShootMontage ? ShootMontage->GetPathName() : FString(TEXT("None"));
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMLoadoutPreviewShoot] Played loadout shoot feedback. Gun=%s Sound=%s FX=%s Montage=%s PlayedSound=%d SpawnedFX=%d PlayedMontage=%d Location=%s"),
+		*GetName(),
+		*SoundPath,
+		*FXPath,
+		*MontagePath,
+		bPlayedSound ? 1 : 0,
+		bSpawnedFX ? 1 : 0,
+		bPlayedMontage ? 1 : 0,
+		*FeedbackLocation.ToCompactString());
+
+	return bPlayedSound || bSpawnedFX || bPlayedMontage;
+}
+
+bool AGun::TriggerLoadoutShoot(APlayerController* PlayerController)
+{
+	UWorld* World = GetWorld();
+	if (!World || HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return false;
+	}
+
+	const bool bPreparedContext = PrepareLoadoutShootContext(PlayerController);
+	LoadoutRecoilBypassUntilTime = World->GetTimeSeconds() + LoadoutRecoilBypassWindowSeconds;
+	bLoadoutRecoilTriggeredThisShot = false;
+
+	APawn* PreviousPawn = nullptr;
+	FRotator PreviousControlRotation = FRotator::ZeroRotator;
+	AActor* PreviousViewTarget = nullptr;
+	bool bRestoreLookInput = false;
+	bool bPossessedCharacterProxy = false;
+	const bool bPreparedCharacterProxy = PrepareLoadoutPlayerCharacterProxy(
+		PlayerController,
+		PreviousPawn,
+		PreviousControlRotation,
+		PreviousViewTarget,
+		bRestoreLookInput,
+		bPossessedCharacterProxy);
+
+	TGuardValue<bool> LoadoutShootGuard(bLoadoutShootContextActive, true);
+	bool bInvoked = InvokeLoadoutShootFunction(ShootFunctionName)
+		|| InvokeLoadoutShootFunction(ServerShootFunctionName);
+	if (!bInvoked && InvokeLoadoutShootFunction(StartShootingFunctionName))
+	{
+		ScheduleLoadoutStopShooting();
+		bInvoked = true;
+	}
+
+	RestoreLoadoutPlayerController(
+		PlayerController,
+		PreviousPawn,
+		PreviousControlRotation,
+		PreviousViewTarget,
+		bRestoreLookInput,
+		bPossessedCharacterProxy);
+
+	if (bInvoked)
+	{
+		if (!bLoadoutRecoilTriggeredThisShot)
+		{
+			PlayLoadoutSpecialRecoil();
+		}
+
+		ConfigureLoadoutShootMPSProxy(LoadoutShootMPSProxy.Get());
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutPreviewShoot] Real loadout shoot invoked. Gun=%s PreparedContext=%d PreparedCharacterProxy=%d MPSProxy=%s CharacterProxy=%s RecoilBypassUntil=%.2f"),
+			*GetName(),
+			bPreparedContext ? 1 : 0,
+			bPreparedCharacterProxy ? 1 : 0,
+			LoadoutShootMPSProxy.IsValid() ? *LoadoutShootMPSProxy->GetPathName() : TEXT("None"),
+			LoadoutShootPlayerCharacterProxy.IsValid() ? *LoadoutShootPlayerCharacterProxy->GetPathName() : TEXT("None"),
+			LoadoutRecoilBypassUntilTime);
+	}
+	else
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[TMLoadoutPreviewShoot] Real loadout shoot failed. Gun=%s PreparedContext=%d PreparedCharacterProxy=%d MPSProxy=%s CharacterProxy=%s RecoilBypassUntil=%.2f"),
+			*GetName(),
+			bPreparedContext ? 1 : 0,
+			bPreparedCharacterProxy ? 1 : 0,
+			LoadoutShootMPSProxy.IsValid() ? *LoadoutShootMPSProxy->GetPathName() : TEXT("None"),
+			LoadoutShootPlayerCharacterProxy.IsValid() ? *LoadoutShootPlayerCharacterProxy->GetPathName() : TEXT("None"),
+			LoadoutRecoilBypassUntilTime);
+	}
+
+	bLoadoutRecoilTriggeredThisShot = false;
+	return bInvoked;
+}
+
+bool AGun::PrepareLoadoutShootContext(APlayerController* PlayerController)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	FObjectPropertyBase* MPSProperty = FindMutableObjectPropertyByName(this, TEXT("MPS"));
+	if (!MPSProperty)
+	{
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutPreviewShoot] %s has no MPS property; invoking shoot without MPS proxy."),
+			*GetName());
+		return false;
+	}
+
+	UObject* CurrentMPS = MPSProperty->GetObjectPropertyValue_InContainer(this);
+	AActor* MPSActor = Cast<AActor>(CurrentMPS);
+	if (!MPSActor)
+	{
+		UClass* ProxyClass = MPSProperty->PropertyClass;
+		if (!ProxyClass || !ProxyClass->IsChildOf(AActor::StaticClass()))
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutPreviewShoot] %s MPS property class is not an actor. Class=%s"),
+				*GetName(),
+				ProxyClass ? *ProxyClass->GetPathName() : TEXT("None"));
+			return false;
+		}
+
+		MPSActor = LoadoutShootMPSProxy.Get();
+		if (!IsValid(MPSActor) || !MPSActor->IsA(ProxyClass))
+		{
+			if (IsValid(MPSActor))
+			{
+				MPSActor->Destroy();
+			}
+
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.Owner = PlayerController ? Cast<AActor>(PlayerController) : this;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			MPSActor = World->SpawnActor<AActor>(
+				ProxyClass,
+				GetActorLocation(),
+				GetActorRotation(),
+				SpawnParams);
+			if (!MPSActor)
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("[TMLoadoutPreviewShoot] Failed to spawn MPS proxy. Gun=%s Class=%s"),
+					*GetName(),
+					*ProxyClass->GetPathName());
+				return false;
+			}
+
+			MPSActor->SetActorHiddenInGame(true);
+			MPSActor->SetActorEnableCollision(false);
+			ConfigureLoadoutShootMPSProxy(MPSActor);
+			LoadoutShootMPSProxy = MPSActor;
+		}
+
+		MPSProperty->SetObjectPropertyValue_InContainer(this, MPSActor);
+	}
+
+	if (MPSActor)
+	{
+		MPSActor->SetActorLocation(GetActorLocation());
+		MPSActor->SetActorRotation(GetActorRotation());
+		ConfigureLoadoutShootMPSProxy(MPSActor);
+		if (PlayerController)
+		{
+			MPSActor->SetOwner(PlayerController);
+		}
+
+		static const TCHAR* const WeaponPropertyNames[] =
+		{
+			TEXT("ActiveWeapon"),
+			TEXT("CurrentWeapon"),
+			TEXT("EquippedWeapon"),
+			TEXT("SelectedWeapon"),
+			TEXT("Weapon"),
+			TEXT("Gun"),
+			TEXT("Item")
+		};
+		static const TCHAR* const ControllerPropertyNames[] =
+		{
+			TEXT("MPS Controller"),
+			TEXT("MPS_Controller"),
+			TEXT("MPSController"),
+			TEXT("PlayerController"),
+			TEXT("OwningPlayerController")
+		};
+
+		TryWriteObjectPropertyAliases(MPSActor, WeaponPropertyNames, this);
+		if (PlayerController)
+		{
+			TryWriteObjectPropertyAliases(MPSActor, ControllerPropertyNames, PlayerController);
+			TryWriteObjectPropertyAliases(this, ControllerPropertyNames, PlayerController);
+		}
+	}
+
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMLoadoutPreviewShoot] Prepared real shoot context. Gun=%s MPS=%s MPSClass=%s PlayerController=%s"),
+		*GetName(),
+		MPSActor ? *MPSActor->GetPathName() : TEXT("None"),
+		MPSActor ? *MPSActor->GetClass()->GetPathName() : TEXT("None"),
+		PlayerController ? *PlayerController->GetPathName() : TEXT("None"));
+	return MPSActor != nullptr;
+}
+
+void AGun::ConfigureLoadoutShootMPSProxy(AActor* MPSActor) const
+{
+	if (!IsValid(MPSActor))
+	{
+		return;
+	}
+
+	MPSActor->SetActorHiddenInGame(true);
+	MPSActor->SetActorEnableCollision(false);
+	MPSActor->SetActorTickEnabled(false);
+	MPSActor->PrimaryActorTick.SetTickFunctionEnable(false);
+
+	TInlineComponentArray<UActorComponent*> Components(MPSActor);
+	for (UActorComponent* Component : Components)
+	{
+		if (!IsValid(Component))
+		{
+			continue;
+		}
+
+		Component->SetComponentTickEnabled(false);
+		Component->PrimaryComponentTick.SetTickFunctionEnable(false);
+
+		if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(Component))
+		{
+			PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			PrimitiveComponent->SetGenerateOverlapEvents(false);
+			PrimitiveComponent->SetVisibility(false, true);
+		}
+
+		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Component))
+		{
+			SkeletalMeshComponent->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered;
+			SkeletalMeshComponent->bPauseAnims = true;
+		}
+	}
+}
+
+bool AGun::PrepareLoadoutPlayerCharacterProxy(
+	APlayerController* PlayerController,
+	APawn*& OutPreviousPawn,
+	FRotator& OutPreviousControlRotation,
+	AActor*& OutPreviousViewTarget,
+	bool& bOutRestoreLookInput,
+	bool& bOutPossessedProxy)
+{
+	OutPreviousPawn = nullptr;
+	OutPreviousControlRotation = FRotator::ZeroRotator;
+	OutPreviousViewTarget = nullptr;
+	bOutRestoreLookInput = false;
+	bOutPossessedProxy = false;
+
+	if (!PlayerController)
+	{
+		return false;
+	}
+
+	OutPreviousPawn = PlayerController->GetPawn();
+	OutPreviousControlRotation = PlayerController->GetControlRotation();
+	OutPreviousViewTarget = PlayerController->GetViewTarget();
+
+	if (!PlayerController->IsLookInputIgnored())
+	{
+		PlayerController->SetIgnoreLookInput(true);
+		bOutRestoreLookInput = true;
+	}
+
+	if (Cast<ACharacter>(OutPreviousPawn))
+	{
+		return true;
+	}
+
+	ACharacter* ProxyCharacter = ResolveLoadoutPlayerCharacterProxy(PlayerController);
+	if (!IsValid(ProxyCharacter))
+	{
+		return false;
+	}
+
+	if (PlayerController->GetPawn() != ProxyCharacter)
+	{
+		PlayerController->Possess(ProxyCharacter);
+		bOutPossessedProxy = PlayerController->GetPawn() == ProxyCharacter;
+	}
+
+	if (IsValid(OutPreviousViewTarget) && PlayerController->GetViewTarget() != OutPreviousViewTarget)
+	{
+		PlayerController->SetViewTarget(OutPreviousViewTarget);
+	}
+	PlayerController->SetControlRotation(OutPreviousControlRotation);
+	ConfigureLoadoutShootPlayerCharacterProxy(ProxyCharacter);
+
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMLoadoutPreviewShoot] Prepared temporary player character. Gun=%s PreviousPawn=%s Proxy=%s PossessedProxy=%d ViewTarget=%s"),
+		*GetName(),
+		OutPreviousPawn ? *OutPreviousPawn->GetPathName() : TEXT("None"),
+		*ProxyCharacter->GetPathName(),
+		bOutPossessedProxy ? 1 : 0,
+		OutPreviousViewTarget ? *OutPreviousViewTarget->GetPathName() : TEXT("None"));
+
+	return PlayerController->GetPawn() && Cast<ACharacter>(PlayerController->GetPawn()) != nullptr;
+}
+
+ACharacter* AGun::ResolveLoadoutPlayerCharacterProxy(APlayerController* PlayerController)
+{
+	UWorld* World = GetWorld();
+	if (!World || !PlayerController)
+	{
+		return nullptr;
+	}
+
+	ACharacter* ProxyCharacter = LoadoutShootPlayerCharacterProxy.Get();
+	if (IsValid(ProxyCharacter) && ProxyCharacter->GetWorld() != World)
+	{
+		ProxyCharacter->Destroy();
+		LoadoutShootPlayerCharacterProxy.Reset();
+		ProxyCharacter = nullptr;
+	}
+
+	if (!IsValid(ProxyCharacter))
+	{
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = PlayerController;
+		SpawnParams.Instigator = PlayerController->GetPawn();
+		SpawnParams.ObjectFlags |= RF_Transient;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		ProxyCharacter = World->SpawnActor<ACharacter>(
+			ACharacter::StaticClass(),
+			GetActorLocation(),
+			GetActorRotation(),
+			SpawnParams);
+		if (!ProxyCharacter)
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutPreviewShoot] Failed to spawn player character proxy. Gun=%s PlayerController=%s"),
+				*GetName(),
+				*PlayerController->GetPathName());
+			return nullptr;
+		}
+
+		ProxyCharacter->SetReplicates(false);
+		LoadoutShootPlayerCharacterProxy = ProxyCharacter;
+	}
+
+	ProxyCharacter->SetActorLocation(GetActorLocation());
+	ProxyCharacter->SetActorRotation(GetActorRotation());
+	ProxyCharacter->SetOwner(PlayerController);
+	ConfigureLoadoutShootPlayerCharacterProxy(ProxyCharacter);
+	return ProxyCharacter;
+}
+
+void AGun::ConfigureLoadoutShootPlayerCharacterProxy(ACharacter* ProxyCharacter) const
+{
+	if (!IsValid(ProxyCharacter))
+	{
+		return;
+	}
+
+	ProxyCharacter->SetActorHiddenInGame(true);
+	ProxyCharacter->SetActorEnableCollision(false);
+	ProxyCharacter->SetActorTickEnabled(false);
+	ProxyCharacter->PrimaryActorTick.SetTickFunctionEnable(false);
+
+	TInlineComponentArray<UActorComponent*> Components(ProxyCharacter);
+	for (UActorComponent* Component : Components)
+	{
+		if (!IsValid(Component))
+		{
+			continue;
+		}
+
+		Component->SetComponentTickEnabled(false);
+		Component->PrimaryComponentTick.SetTickFunctionEnable(false);
+
+		if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(Component))
+		{
+			PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			PrimitiveComponent->SetGenerateOverlapEvents(false);
+			PrimitiveComponent->SetVisibility(false, true);
+		}
+
+		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Component))
+		{
+			SkeletalMeshComponent->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered;
+			SkeletalMeshComponent->bPauseAnims = true;
+		}
+	}
+}
+
+void AGun::RestoreLoadoutPlayerController(
+	APlayerController* PlayerController,
+	APawn* PreviousPawn,
+	const FRotator& PreviousControlRotation,
+	AActor* PreviousViewTarget,
+	const bool bRestoreLookInput,
+	const bool bPossessedProxy) const
+{
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	ACharacter* ProxyCharacter = LoadoutShootPlayerCharacterProxy.Get();
+	if (bPossessedProxy)
+	{
+		if (IsValid(PreviousPawn) && PlayerController->GetPawn() != PreviousPawn)
+		{
+			PlayerController->Possess(PreviousPawn);
+		}
+		else if (!PreviousPawn && IsValid(ProxyCharacter) && PlayerController->GetPawn() == ProxyCharacter)
+		{
+			PlayerController->UnPossess();
+		}
+	}
+
+	if (IsValid(PreviousViewTarget) && PlayerController->GetViewTarget() != PreviousViewTarget)
+	{
+		PlayerController->SetViewTarget(PreviousViewTarget);
+	}
+	PlayerController->SetControlRotation(PreviousControlRotation);
+
+	if (bRestoreLookInput)
+	{
+		PlayerController->SetIgnoreLookInput(false);
+	}
+
+	ConfigureLoadoutShootPlayerCharacterProxy(ProxyCharacter);
+}
+
+bool AGun::InvokeLoadoutShootFunction(const FName FunctionName)
+{
+	if (FunctionName.IsNone())
+	{
+		return false;
+	}
+
+	UFunction* Function = FindFunction(FunctionName);
+	if (!Function || Function->NumParms != 0)
+	{
+		return false;
+	}
+
+	ProcessEvent(Function, nullptr);
+	return true;
+}
+
+void AGun::ScheduleLoadoutStopShooting()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	TWeakObjectPtr<AGun> WeakGun(this);
+	World->GetTimerManager().ClearTimer(LoadoutStopShootingTimerHandle);
+	World->GetTimerManager().SetTimer(
+		LoadoutStopShootingTimerHandle,
+		FTimerDelegate::CreateLambda([WeakGun]()
+		{
+			if (AGun* Gun = WeakGun.Get())
+			{
+				TGuardValue<bool> LoadoutShootGuard(Gun->bLoadoutShootContextActive, true);
+				Gun->InvokeLoadoutShootFunction(StopShootingFunctionName);
+			}
+		}),
+		LoadoutShootStopDelaySeconds,
+		false);
+}
+
+bool AGun::IsLoadoutRecoilFunction(const UFunction* Function) const
+{
+	if (!Function)
+	{
+		return false;
+	}
+
+	const FString FunctionName = Function->GetName();
+	const FString FunctionPath = Function->GetPathName();
+	return FunctionName.Equals(TEXT("Recoil"), ESearchCase::IgnoreCase)
+		|| FunctionName.Contains(TEXT("Recoil"), ESearchCase::IgnoreCase)
+		|| FunctionPath.Contains(TEXT(".Recoil"), ESearchCase::IgnoreCase);
+}
+
+bool AGun::IsLoadoutRecoilBypassActive() const
+{
+	if (bLoadoutShootContextActive)
+	{
+		return true;
+	}
+
+	const UWorld* World = GetWorld();
+	return World && World->GetTimeSeconds() <= LoadoutRecoilBypassUntilTime;
+}
+
+USkeletalMeshComponent* AGun::ResolveLoadoutRecoilMesh() const
+{
+	if (IsValid(FakeSkeletalMeshComponent)
+		&& FakeSkeletalMeshComponent->IsVisible()
+		&& FakeSkeletalMeshComponent->GetSkeletalMeshAsset())
+	{
+		return FakeSkeletalMeshComponent;
+	}
+
+	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
+	if (IsValid(MainMesh) && MainMesh->IsVisible() && MainMesh->GetSkeletalMeshAsset())
+	{
+		return MainMesh;
+	}
+
+	return IsValid(FakeSkeletalMeshComponent) && FakeSkeletalMeshComponent->GetSkeletalMeshAsset()
+		? FakeSkeletalMeshComponent.Get()
+		: MainMesh;
+}
+
+void AGun::PlayLoadoutSpecialRecoil()
+{
+	USkeletalMeshComponent* RecoilMesh = ResolveLoadoutRecoilMesh();
+	if (!IsValid(RecoilMesh))
+	{
+		return;
+	}
+
+	if (LoadoutRecoilMesh.Get() != RecoilMesh || !bLoadoutRecoilTickActive)
+	{
+		LoadoutRecoilBaseRelativeTransform = RecoilMesh->GetRelativeTransform();
+		LoadoutRecoilMesh = RecoilMesh;
+	}
+
+	FTransform RecoilTransform = LoadoutRecoilBaseRelativeTransform;
+	RecoilTransform.ConcatenateRotation(LoadoutRecoilRotation.Quaternion());
+	RecoilTransform.AddToTranslation(LoadoutRecoilOffset);
+	RecoilMesh->SetRelativeTransform(RecoilTransform);
+	RecoilMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+
+	LoadoutRecoilElapsedSeconds = 0.0f;
+	bLoadoutRecoilTickActive = true;
+	RefreshActorTickEnabled();
+
+	UE_LOG(
+		LogTemp,
+		Display,
+		TEXT("[TMLoadoutPreviewShoot] Applied special loadout recoil. Gun=%s Mesh=%s Offset=%s Rotation=%s Duration=%.3f"),
+		*GetName(),
+		*RecoilMesh->GetName(),
+		*LoadoutRecoilOffset.ToCompactString(),
+		*LoadoutRecoilRotation.ToCompactString(),
+		LoadoutRecoilDuration);
+}
+
+void AGun::UpdateLoadoutSpecialRecoil(const float DeltaSeconds)
+{
+	if (!bLoadoutRecoilTickActive)
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* RecoilMesh = LoadoutRecoilMesh.Get();
+	if (!IsValid(RecoilMesh))
+	{
+		bLoadoutRecoilTickActive = false;
+		RefreshActorTickEnabled();
+		return;
+	}
+
+	LoadoutRecoilElapsedSeconds += FMath::Max(0.0f, DeltaSeconds);
+	const float Duration = FMath::Max(0.01f, LoadoutRecoilDuration);
+	const float Alpha = FMath::Clamp(LoadoutRecoilElapsedSeconds / Duration, 0.0f, 1.0f);
+	const float Remaining = 1.0f - FMath::InterpEaseOut(0.0f, 1.0f, Alpha, 2.0f);
+
+	FTransform RecoilTransform = LoadoutRecoilBaseRelativeTransform;
+	RecoilTransform.ConcatenateRotation(FQuat::Slerp(FQuat::Identity, LoadoutRecoilRotation.Quaternion(), Remaining));
+	RecoilTransform.AddToTranslation(LoadoutRecoilOffset * Remaining);
+	RecoilMesh->SetRelativeTransform(RecoilTransform);
+
+	if (Alpha >= 1.0f)
+	{
+		RecoilMesh->SetRelativeTransform(LoadoutRecoilBaseRelativeTransform);
+		LoadoutRecoilMesh.Reset();
+		bLoadoutRecoilTickActive = false;
+		RefreshActorTickEnabled();
+	}
+}
+
 UFakeGunAnimInstance* AGun::GetFakeAnimInstance() const
 {
 	return FakeSkeletalMeshComponent
@@ -882,6 +1700,19 @@ UFakeGunAnimInstance* AGun::GetFakeAnimInstance() const
 
 void AGun::ProcessEvent(UFunction* Function, void* Parameters)
 {
+	if (IsLoadoutRecoilBypassActive() && IsLoadoutRecoilFunction(Function))
+	{
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutPreviewShoot] Bypassed BP recoil for loadout shoot. Gun=%s Function=%s"),
+			*GetName(),
+			Function ? *Function->GetPathName() : TEXT("None"));
+		PlayLoadoutSpecialRecoil();
+		bLoadoutRecoilTriggeredThisShot = true;
+		return;
+	}
+
 	const bool bTrace = ShouldTraceGunFunction(Function);
 	if (bTrace)
 	{
@@ -1555,6 +2386,67 @@ FTransform AGun::ResolveWeaponSpawnFeedbackTransform() const
 	return GetActorTransform();
 }
 
+FTransform AGun::ResolveLoadoutShootFeedbackTransform() const
+{
+	static const TCHAR* MuzzleComponentPropertyNames[] =
+	{
+		TEXT("MuzzleLocation"),
+		TEXT("MuzzleComponent")
+	};
+
+	for (const TCHAR* PropertyName : MuzzleComponentPropertyNames)
+	{
+		USceneComponent* MuzzleComponent = Cast<USceneComponent>(ReadObjectPropertyByName(this, PropertyName));
+		if (MuzzleComponent && MuzzleComponent->IsRegistered())
+		{
+			return MuzzleComponent->GetComponentTransform();
+		}
+	}
+
+	if (USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh())
+	{
+		if (!WeaponSpawnFeedbackSocketName.IsNone() && MainMesh->DoesSocketExist(WeaponSpawnFeedbackSocketName))
+		{
+			return MainMesh->GetSocketTransform(WeaponSpawnFeedbackSocketName, RTS_World);
+		}
+
+		static const FName CandidateSocketNames[] =
+		{
+			MuzzleSocketName,
+			SilencercoMuzzleSocketName,
+			TEXT("ST_Muzzle"),
+			TEXT("MuzzleLocation"),
+			TEXT("MuzzleFlash")
+		};
+
+		for (const FName CandidateSocketName : CandidateSocketNames)
+		{
+			if (MainMesh->DoesSocketExist(CandidateSocketName))
+			{
+				return MainMesh->GetSocketTransform(CandidateSocketName, RTS_World);
+			}
+		}
+	}
+
+	TInlineComponentArray<USceneComponent*> SceneComponents(this);
+	for (USceneComponent* SceneComponent : SceneComponents)
+	{
+		if (!IsValid(SceneComponent) || !SceneComponent->IsRegistered() || SceneComponent == GetRootComponent())
+		{
+			continue;
+		}
+
+		const FString ComponentName = SceneComponent->GetName();
+		if (ComponentName.Contains(TEXT("Muzzle"), ESearchCase::IgnoreCase)
+			|| ComponentName.Contains(TEXT("Flash"), ESearchCase::IgnoreCase))
+		{
+			return SceneComponent->GetComponentTransform();
+		}
+	}
+
+	return ResolveWeaponSpawnFeedbackTransform();
+}
+
 FName AGun::ResolveAttachmentFeedbackPreferredSocket(const UFunction* Function) const
 {
 	if (!Function)
@@ -2168,7 +3060,7 @@ void AGun::UpdateAcogMaterialParameterCollection() const
 
 void AGun::RefreshActorTickEnabled()
 {
-	SetActorTickEnabled(bAcogRenderTickActive);
+	SetActorTickEnabled(bAcogRenderTickActive || bLoadoutRecoilTickActive);
 }
 
 void AGun::StartCustomizationSkinPreviewCycle()

@@ -53,6 +53,7 @@
 #include "DVRStreaming.h"
 #include "PlatformFeatures.h"
 #include "GameFramework/Character.h"
+#include "InputCoreTypes.h"
 #include "Sound/DialogueWave.h"
 #include "GameFramework/SaveGame.h"
 #include "GameFramework/GameStateBase.h"
@@ -77,9 +78,11 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectIterator.h"
+#include "TimerManager.h"
 #include "TMFoliageCollisionPushTester.h"
 #include "TMFoliageExplosionCollisionTester.h"
 #include "TMFoliageImpulseSubsystem.h"
+#include "Framework/Application/SlateApplication.h"
 
 #if WITH_EDITOR
 #include "AnimGraphNode_CopyBone.h"
@@ -2812,10 +2815,545 @@ namespace
 			IsViewerProperty->SetPropertyValue_InContainer(LoadoutWidget, false);
 		}
 	}
+
+	constexpr float TMLoadoutPreviewShootCooldownSeconds = 1.5f;
+	constexpr float TMLoadoutPreviewShootTraceDistance = 100000.0f;
+	constexpr float TMLoadoutPreviewShootOcclusionTolerance = 1.0f;
+	const FName TMLoadoutActiveWeaponPropertyName(TEXT("ActiveWeapon"));
+
+	struct FTMLoadoutPreviewShootState
+	{
+		TWeakObjectPtr<UUserWidget> LoadoutWidget;
+		double NextAllowedShootTime = 0.0;
+	};
+
+	TArray<FTMLoadoutPreviewShootState> TMLoadoutPreviewShootStates;
+	FTSTicker::FDelegateHandle TMLoadoutPreviewShootTickerHandle;
+	bool bTMLoadoutPreviewLeftMouseWasDown = false;
+
+	bool TMIsLoadoutPreviewLeftMouseDown(const APlayerController* PlayerController)
+	{
+		if (PlayerController && PlayerController->IsInputKeyDown(EKeys::LeftMouseButton))
+		{
+			return true;
+		}
+
+		return FSlateApplication::IsInitialized()
+			&& FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::LeftMouseButton);
+	}
+
+	AActor* TMGetLoadoutActiveWeapon(UUserWidget* LoadoutWidget)
+	{
+		if (!LoadoutWidget)
+		{
+			return nullptr;
+		}
+
+		FObjectPropertyBase* ActiveWeaponProperty =
+			FindFProperty<FObjectPropertyBase>(LoadoutWidget->GetClass(), TMLoadoutActiveWeaponPropertyName);
+		return ActiveWeaponProperty
+			? Cast<AActor>(ActiveWeaponProperty->GetObjectPropertyValue_InContainer(LoadoutWidget))
+			: nullptr;
+	}
+
+	bool TMIsWidgetVisibleForLoadoutPreviewShoot(const UUserWidget* Widget)
+	{
+		return Widget
+			&& !Widget->HasAnyFlags(RF_ClassDefaultObject)
+			&& Widget->GetWorld()
+			&& Widget->IsVisible();
+	}
+
+	bool TMIsWidgetPaintedForLoadoutPreviewShoot(const UWidget* Widget)
+	{
+		if (!Widget || !Widget->IsVisible())
+		{
+			return false;
+		}
+
+		const FVector2D AbsoluteSize = Widget->GetCachedGeometry().GetAbsoluteSize();
+		return AbsoluteSize.X > 1.0f && AbsoluteSize.Y > 1.0f;
+	}
+
+	bool TMIsLoadoutAttachmentsWidgetVisible(const UUserWidget* LoadoutWidget)
+	{
+		if (!LoadoutWidget)
+		{
+			return false;
+		}
+
+		UWorld* LoadoutWorld = LoadoutWidget->GetWorld();
+		for (TObjectIterator<UUserWidget> It; It; ++It)
+		{
+			UUserWidget* CandidateWidget = *It;
+			if (!CandidateWidget
+				|| CandidateWidget == LoadoutWidget
+				|| CandidateWidget->HasAnyFlags(RF_ClassDefaultObject))
+			{
+				continue;
+			}
+
+			if (LoadoutWorld && CandidateWidget->GetWorld() != LoadoutWorld)
+			{
+				continue;
+			}
+
+			const UClass* CandidateClass = CandidateWidget->GetClass();
+			if (CandidateClass
+				&& CandidateClass->GetPathName().Contains(TEXT("W_Attachments"))
+				&& TMIsWidgetPaintedForLoadoutPreviewShoot(CandidateWidget))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	APlayerController* TMResolveLoadoutPlayerController(UUserWidget* LoadoutWidget)
+	{
+		if (!LoadoutWidget)
+		{
+			return nullptr;
+		}
+
+		if (APlayerController* OwningPlayer = LoadoutWidget->GetOwningPlayer())
+		{
+			return OwningPlayer;
+		}
+
+		return UGameplayStatics::GetPlayerController(LoadoutWidget, 0);
+	}
+
+	bool TMIsActorRelatedToLoadoutWeapon(const AActor* CandidateActor, const AActor* WeaponActor)
+	{
+		if (!CandidateActor || !WeaponActor)
+		{
+			return false;
+		}
+
+		for (const AActor* Actor = CandidateActor; Actor; Actor = Actor->GetAttachParentActor())
+		{
+			if (Actor == WeaponActor)
+			{
+				return true;
+			}
+		}
+
+		for (const AActor* Actor = CandidateActor; Actor; Actor = Actor->GetOwner())
+		{
+			if (Actor == WeaponActor)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMIsHitPartOfLoadoutWeapon(const FHitResult& HitResult, const AActor* WeaponActor)
+	{
+		if (!WeaponActor)
+		{
+			return false;
+		}
+
+		if (TMIsActorRelatedToLoadoutWeapon(HitResult.GetActor(), WeaponActor))
+		{
+			return true;
+		}
+
+		const UPrimitiveComponent* HitComponent = HitResult.GetComponent();
+		if (HitComponent && TMIsActorRelatedToLoadoutWeapon(HitComponent->GetOwner(), WeaponActor))
+		{
+			return true;
+		}
+
+		for (const USceneComponent* SceneComponent = HitComponent; SceneComponent; SceneComponent = SceneComponent->GetAttachParent())
+		{
+			if (TMIsActorRelatedToLoadoutWeapon(SceneComponent->GetOwner(), WeaponActor))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	float TMResolveTraceHitDistance(const FHitResult& HitResult, const FVector& TraceStart)
+	{
+		if (HitResult.Distance > KINDA_SMALL_NUMBER)
+		{
+			return HitResult.Distance;
+		}
+
+		const FVector HitLocation = HitResult.ImpactPoint.IsNearlyZero()
+			? HitResult.Location
+			: HitResult.ImpactPoint;
+		return FVector::Dist(TraceStart, HitLocation);
+	}
+
+	bool TMLineBoxIntersection(
+		const FBox& Box,
+		const FVector& TraceStart,
+		const FVector& TraceEnd,
+		float& OutTime)
+	{
+		OutTime = 0.0f;
+		if (!Box.IsValid)
+		{
+			return false;
+		}
+
+		const FVector Segment = TraceEnd - TraceStart;
+		float MinTime = 0.0f;
+		float MaxTime = 1.0f;
+
+		for (int32 Axis = 0; Axis < 3; ++Axis)
+		{
+			const float Start = TraceStart[Axis];
+			const float Direction = Segment[Axis];
+			const float Min = Box.Min[Axis];
+			const float Max = Box.Max[Axis];
+
+			if (FMath::IsNearlyZero(Direction))
+			{
+				if (Start < Min || Start > Max)
+				{
+					return false;
+				}
+
+				continue;
+			}
+
+			float AxisMinTime = (Min - Start) / Direction;
+			float AxisMaxTime = (Max - Start) / Direction;
+			if (AxisMinTime > AxisMaxTime)
+			{
+				Swap(AxisMinTime, AxisMaxTime);
+			}
+
+			MinTime = FMath::Max(MinTime, AxisMinTime);
+			MaxTime = FMath::Min(MaxTime, AxisMaxTime);
+			if (MinTime > MaxTime)
+			{
+				return false;
+			}
+		}
+
+		OutTime = MinTime;
+		return true;
+	}
+
+	bool TMTraceLoadoutWeaponComponents(
+		AGun* Gun,
+		const FVector& TraceStart,
+		const FVector& TraceEnd,
+		FHitResult& OutHitResult)
+	{
+		if (!IsValid(Gun) || Gun->IsHidden())
+		{
+			return false;
+		}
+
+		bool bFoundHit = false;
+		float BestDistance = TNumericLimits<float>::Max();
+		FCollisionQueryParams ComponentTraceParams(SCENE_QUERY_STAT(TMLoadoutPreviewShoot_ComponentTrace), true);
+		ComponentTraceParams.bReturnPhysicalMaterial = true;
+
+		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(Gun);
+		for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+		{
+			if (!IsValid(PrimitiveComponent)
+				|| !PrimitiveComponent->IsRegistered()
+				|| !PrimitiveComponent->IsVisible())
+			{
+				continue;
+			}
+
+			FHitResult ComponentHitResult;
+			if (!PrimitiveComponent->LineTraceComponent(
+				ComponentHitResult,
+				TraceStart,
+				TraceEnd,
+				ComponentTraceParams))
+			{
+				continue;
+			}
+
+			ComponentHitResult.Component = PrimitiveComponent;
+			const float HitDistance = TMResolveTraceHitDistance(ComponentHitResult, TraceStart);
+			if (HitDistance < BestDistance)
+			{
+				BestDistance = HitDistance;
+				OutHitResult = ComponentHitResult;
+				bFoundHit = true;
+			}
+		}
+
+		if (!bFoundHit)
+		{
+			const float SegmentLength = FVector::Dist(TraceStart, TraceEnd);
+			for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+			{
+				if (!IsValid(PrimitiveComponent)
+					|| !PrimitiveComponent->IsRegistered()
+					|| !PrimitiveComponent->IsVisible())
+				{
+					continue;
+				}
+
+				float HitTime = 0.0f;
+				if (!TMLineBoxIntersection(
+					PrimitiveComponent->Bounds.GetBox(),
+					TraceStart,
+					TraceEnd,
+					HitTime))
+				{
+					continue;
+				}
+
+				const float HitDistance = SegmentLength * HitTime;
+				if (HitDistance < BestDistance)
+				{
+					BestDistance = HitDistance;
+					OutHitResult = FHitResult();
+					OutHitResult.Component = PrimitiveComponent;
+					OutHitResult.Distance = HitDistance;
+					OutHitResult.Location = FMath::Lerp(TraceStart, TraceEnd, HitTime);
+					OutHitResult.ImpactPoint = OutHitResult.Location;
+					OutHitResult.bBlockingHit = true;
+					bFoundHit = true;
+				}
+			}
+		}
+
+		return bFoundHit;
+	}
+
+	bool TMTraceLoadoutPreviewWeaponUnderCursor(APlayerController* PlayerController, AGun* Gun)
+	{
+		if (!PlayerController || !IsValid(Gun))
+		{
+			return false;
+		}
+
+		UWorld* World = Gun->GetWorld();
+		if (!World)
+		{
+			return false;
+		}
+
+		FVector CursorWorldLocation;
+		FVector CursorWorldDirection;
+		if (!PlayerController->DeprojectMousePositionToWorld(CursorWorldLocation, CursorWorldDirection))
+		{
+			return false;
+		}
+
+		const FVector TraceDirection = CursorWorldDirection.GetSafeNormal();
+		if (TraceDirection.IsNearlyZero())
+		{
+			return false;
+		}
+
+		const FVector TraceEnd = CursorWorldLocation + TraceDirection * TMLoadoutPreviewShootTraceDistance;
+		FCollisionQueryParams WorldTraceParams(SCENE_QUERY_STAT(TMLoadoutPreviewShoot_WorldTrace), true);
+		WorldTraceParams.bReturnPhysicalMaterial = true;
+
+		FHitResult WorldHitResult;
+		const bool bWorldHit = World->LineTraceSingleByChannel(
+			WorldHitResult,
+			CursorWorldLocation,
+			TraceEnd,
+			ECC_Visibility,
+			WorldTraceParams);
+		if (bWorldHit && TMIsHitPartOfLoadoutWeapon(WorldHitResult, Gun))
+		{
+			return true;
+		}
+
+		FHitResult ComponentHitResult;
+		if (!TMTraceLoadoutWeaponComponents(Gun, CursorWorldLocation, TraceEnd, ComponentHitResult))
+		{
+			return false;
+		}
+
+		if (bWorldHit && !TMIsHitPartOfLoadoutWeapon(WorldHitResult, Gun))
+		{
+			const float WorldHitDistance = TMResolveTraceHitDistance(WorldHitResult, CursorWorldLocation);
+			const float ComponentHitDistance = TMResolveTraceHitDistance(ComponentHitResult, CursorWorldLocation);
+			if (WorldHitDistance + TMLoadoutPreviewShootOcclusionTolerance < ComponentHitDistance)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	bool TMInvokeLoadoutPreviewShoot(AGun* Gun, APlayerController* PlayerController)
+	{
+		return IsValid(Gun) && Gun->TriggerLoadoutShoot(PlayerController);
+	}
+
+	bool TMTryLoadoutPreviewShoot(FTMLoadoutPreviewShootState& State, const bool bClickJustPressed)
+	{
+		UUserWidget* LoadoutWidget = State.LoadoutWidget.Get();
+		if (!TMIsWidgetVisibleForLoadoutPreviewShoot(LoadoutWidget)
+			|| !TMIsLoadoutPreviewWidget(LoadoutWidget))
+		{
+			return false;
+		}
+
+		AGun* Gun = Cast<AGun>(TMGetLoadoutActiveWeapon(LoadoutWidget));
+		if (!IsValid(Gun) || !Gun->CanLoadoutShoot())
+		{
+			return false;
+		}
+
+		UWorld* World = Gun->GetWorld();
+		if (!World)
+		{
+			return false;
+		}
+
+		const double CurrentTime = World->GetTimeSeconds();
+		if (CurrentTime < State.NextAllowedShootTime)
+		{
+			return false;
+		}
+
+		APlayerController* PlayerController = TMResolveLoadoutPlayerController(LoadoutWidget);
+		if (!PlayerController || !bClickJustPressed)
+		{
+			return false;
+		}
+
+		if (TMIsLoadoutAttachmentsWidgetVisible(LoadoutWidget))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMLoadoutPreviewShoot] Click detected on loadout weapon %s, but attachments widget is active."),
+				*Gun->GetName());
+			return false;
+		}
+
+		if (!TMTraceLoadoutPreviewWeaponUnderCursor(PlayerController, Gun))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMLoadoutPreviewShoot] Click detected, but cursor trace did not hit %s."),
+				*Gun->GetName());
+			return false;
+		}
+
+		if (!TMInvokeLoadoutPreviewShoot(Gun, PlayerController))
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[TMLoadoutPreviewShoot] %s can loadout shoot, but no real Shoot/StartShooting function was found."),
+				*Gun->GetName());
+			return false;
+		}
+
+		State.NextAllowedShootTime = CurrentTime + TMLoadoutPreviewShootCooldownSeconds;
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMLoadoutPreviewShoot] Fired loadout weapon %s. NextAllowedShootTime=%.2f"),
+			*Gun->GetName(),
+			State.NextAllowedShootTime);
+		return true;
+	}
+
+	bool TMTickLoadoutPreviewShoot(float DeltaTime)
+	{
+		APlayerController* InputPlayerController = nullptr;
+		for (int32 Index = TMLoadoutPreviewShootStates.Num() - 1; Index >= 0; --Index)
+		{
+			FTMLoadoutPreviewShootState& State = TMLoadoutPreviewShootStates[Index];
+			if (!State.LoadoutWidget.IsValid())
+			{
+				TMLoadoutPreviewShootStates.RemoveAtSwap(Index);
+				continue;
+			}
+
+			if (!InputPlayerController)
+			{
+				InputPlayerController = TMResolveLoadoutPlayerController(State.LoadoutWidget.Get());
+			}
+		}
+
+		const bool bLeftMouseDown = TMIsLoadoutPreviewLeftMouseDown(InputPlayerController);
+		const bool bClickJustPressed = bLeftMouseDown && !bTMLoadoutPreviewLeftMouseWasDown;
+		bTMLoadoutPreviewLeftMouseWasDown = bLeftMouseDown;
+		if (!bClickJustPressed)
+		{
+			if (TMLoadoutPreviewShootStates.Num() == 0)
+			{
+				TMLoadoutPreviewShootTickerHandle.Reset();
+				return false;
+			}
+
+			return true;
+		}
+
+		for (FTMLoadoutPreviewShootState& State : TMLoadoutPreviewShootStates)
+		{
+			if (TMTryLoadoutPreviewShoot(State, bClickJustPressed))
+			{
+				break;
+			}
+		}
+
+		if (TMLoadoutPreviewShootStates.Num() == 0)
+		{
+			TMLoadoutPreviewShootTickerHandle.Reset();
+			return false;
+		}
+
+		return true;
+	}
+
+	void TMRegisterLoadoutPreviewShoot(UUserWidget* OwnerWidget)
+	{
+		TArray<UUserWidget*> LoadoutWidgets;
+		TMCollectLoadoutPreviewWidgets(OwnerWidget, LoadoutWidgets);
+		for (UUserWidget* LoadoutWidget : LoadoutWidgets)
+		{
+			if (!LoadoutWidget)
+			{
+				continue;
+			}
+
+			const bool bAlreadyRegistered = TMLoadoutPreviewShootStates.ContainsByPredicate(
+				[LoadoutWidget](const FTMLoadoutPreviewShootState& State)
+				{
+					return State.LoadoutWidget.Get() == LoadoutWidget;
+				});
+			if (!bAlreadyRegistered)
+			{
+				FTMLoadoutPreviewShootState& State = TMLoadoutPreviewShootStates.AddDefaulted_GetRef();
+				State.LoadoutWidget = LoadoutWidget;
+			}
+		}
+
+		if (TMLoadoutPreviewShootStates.Num() > 0 && !TMLoadoutPreviewShootTickerHandle.IsValid())
+		{
+			TMLoadoutPreviewShootTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateStatic(&TMTickLoadoutPreviewShoot));
+		}
+	}
 }
 
 void UTMGameplayStatics::CleanupLoadoutPreview(UUserWidget* OwnerWidget)
 {
+	TMRegisterLoadoutPreviewShoot(OwnerWidget);
+
 	TArray<UUserWidget*> LoadoutWidgets;
 	TMCollectLoadoutPreviewWidgets(OwnerWidget, LoadoutWidgets);
 	for (UUserWidget* LoadoutWidget : LoadoutWidgets)
@@ -2830,6 +3368,8 @@ bool UTMGameplayStatics::ApplyLoadoutWeaponLayerIcon(UUserWidget* WeaponLayerWid
 	{
 		return false;
 	}
+
+	TMRegisterLoadoutPreviewShoot(WeaponLayerWidget);
 
 	if (TMGameplayStatics::ShouldHideLoadoutWeaponLayer(WeaponLayerWidget))
 	{
@@ -2943,6 +3483,8 @@ void UTMGameplayStatics::StartLoadoutGearShimmer(UUserWidget* OwnerWidget)
 	{
 		return;
 	}
+
+	TMRegisterLoadoutPreviewShoot(OwnerWidget);
 
 	if (UButton* GearButton = Cast<UButton>(OwnerWidget->GetWidgetFromName(TEXT("B_Gear"))))
 	{
