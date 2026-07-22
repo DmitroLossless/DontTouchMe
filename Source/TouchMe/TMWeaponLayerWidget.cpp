@@ -8,65 +8,14 @@
 #include "Components/ScaleBox.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
-#include "Engine/DataTable.h"
-#include "Engine/StaticMesh.h"
 #include "Engine/Texture2D.h"
-#include "Engine/UserDefinedStruct.h"
-#include "Engine/SkeletalMesh.h"
+#include "UI/TMWeaponIconResolver.h"
 
 namespace
 {
 const FVector2D WeaponIconBrushSize(512.0f, 128.0f);
 const FVector2D WeaponIconWidgetSize(288.0f, 72.0f);
 const FLinearColor WeaponSelectionFrameColor = FLinearColor::FromSRGBColor(FColor(255, 212, 32, 255));
-
-FString NormalizeWeaponIconToken(const FString& Token)
-{
-	FString Normalized = Token;
-	Normalized.TrimStartAndEndInline();
-	Normalized.ReplaceInline(TEXT(" "), TEXT(""));
-	Normalized.ReplaceInline(TEXT("_"), TEXT(""));
-	Normalized.ReplaceInline(TEXT("-"), TEXT(""));
-	return Normalized;
-}
-
-bool IsWeaponMeshObject(const UObject* Object)
-{
-	return Object && (Object->IsA<USkeletalMesh>() || Object->IsA<UStaticMesh>());
-}
-
-void CollectWeaponMeshesFromProperty(const FProperty* Property, const void* ValuePtr, TArray<UObject*>& OutMeshes)
-{
-	if (!Property || !ValuePtr)
-	{
-		return;
-	}
-
-	if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
-	{
-		UObject* ObjectValue = ObjectProperty->GetObjectPropertyValue(ValuePtr);
-		if (IsWeaponMeshObject(ObjectValue))
-		{
-			OutMeshes.AddUnique(ObjectValue);
-		}
-		return;
-	}
-
-	if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
-	{
-		if (!StructProperty->Struct)
-		{
-			return;
-		}
-
-		for (TFieldIterator<FProperty> ChildPropertyIt(StructProperty->Struct); ChildPropertyIt; ++ChildPropertyIt)
-		{
-			const FProperty* ChildProperty = *ChildPropertyIt;
-			const void* ChildValuePtr = ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr);
-			CollectWeaponMeshesFromProperty(ChildProperty, ChildValuePtr, OutMeshes);
-		}
-	}
-}
 
 FSlateBrush MakeWeaponIconBrush(UTexture2D* Texture)
 {
@@ -95,17 +44,6 @@ FSlateBrush MakeWeaponFrameBrush(const bool bVisible)
 			TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture")));
 	}
 	return Brush;
-}
-
-FString MakeWeaponIconObjectPath(const UObject* Mesh, const bool bSelected)
-{
-	if (!Mesh)
-	{
-		return FString();
-	}
-
-	const FString IconName = FString::Printf(TEXT("T_%s_Icon%s"), *Mesh->GetName(), bSelected ? TEXT("_Active") : TEXT(""));
-	return FString::Printf(TEXT("/Game/UI/Generated/Icons/%s.%s"), *IconName, *IconName);
 }
 }
 
@@ -199,88 +137,18 @@ void UTMWeaponLayerWidget::SetWeaponIconSelected(const bool bSelected)
 
 FString UTMWeaponLayerWidget::GetWeaponLookupToken() const
 {
-	const UClass* WidgetClass = GetClass();
-	if (!WidgetClass)
-	{
-		return FString();
-	}
-
-	if (const FNameProperty* NameProperty = FindFProperty<FNameProperty>(WidgetClass, TEXT("Name")))
-	{
-		return NameProperty->GetPropertyValue_InContainer(this).ToString();
-	}
-
-	if (const FStrProperty* StringProperty = FindFProperty<FStrProperty>(WidgetClass, TEXT("Name")))
-	{
-		return StringProperty->GetPropertyValue_InContainer(this);
-	}
-
-	if (const FTextProperty* TextProperty = FindFProperty<FTextProperty>(WidgetClass, TEXT("Name")))
-	{
-		return TextProperty->GetPropertyValue_InContainer(this).ToString();
-	}
-
-	return FString();
+	return TMWeaponIconResolver::GetWidgetWeaponLookupToken(this);
 }
 
 UTexture2D* UTMWeaponLayerWidget::ResolveWeaponIconTexture(const FString& LookupToken, const bool bSelected) const
 {
-	const FString NormalizedLookupToken = NormalizeWeaponIconToken(LookupToken);
-	if (NormalizedLookupToken.IsEmpty())
-	{
-		return nullptr;
-	}
-
-	UDataTable* WeaponTable = LoadObject<UDataTable>(
-		nullptr,
-		TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons"));
-	if (!WeaponTable || !WeaponTable->GetRowStruct())
-	{
-		return nullptr;
-	}
-
-	for (const TPair<FName, uint8*>& RowPair : WeaponTable->GetRowMap())
-	{
-		if (!NormalizeWeaponIconToken(RowPair.Key.ToString()).Equals(NormalizedLookupToken, ESearchCase::IgnoreCase))
-		{
-			continue;
-		}
-
-		TArray<UObject*> RowMeshes;
-		for (TFieldIterator<FProperty> PropertyIt(WeaponTable->GetRowStruct()); PropertyIt; ++PropertyIt)
-		{
-			const FProperty* Property = *PropertyIt;
-			const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(RowPair.Value);
-			CollectWeaponMeshesFromProperty(Property, ValuePtr, RowMeshes);
-		}
-
-		for (UObject* Mesh : RowMeshes)
-		{
-			if (bSelected)
-			{
-				const FString ActiveIconObjectPath = MakeWeaponIconObjectPath(Mesh, true);
-				if (UTexture2D* ActiveIconTexture = LoadObject<UTexture2D>(nullptr, *ActiveIconObjectPath))
-				{
-					return ActiveIconTexture;
-				}
-			}
-
-			const FString IconObjectPath = MakeWeaponIconObjectPath(Mesh, false);
-			if (UTexture2D* IconTexture = LoadObject<UTexture2D>(nullptr, *IconObjectPath))
-			{
-				return IconTexture;
-			}
-		}
-	}
-
-	return nullptr;
+	return TMWeaponIconResolver::ResolveIconTexture(this, LookupToken, bSelected);
 }
 
 bool UTMWeaponLayerWidget::ShouldCollapseWeaponRow(const FString& LookupToken) const
 {
-	const FString NormalizedLookupToken = NormalizeWeaponIconToken(LookupToken);
-	return NormalizedLookupToken.Equals(TEXT("Sniper"), ESearchCase::IgnoreCase)
-		|| NormalizedLookupToken.Equals(TEXT("BPSniper"), ESearchCase::IgnoreCase);
+	return TMWeaponIconResolver::ShouldCollapseWeaponRow(LookupToken)
+		|| TMWeaponIconResolver::ShouldCollapseWeaponRow(this);
 }
 
 void UTMWeaponLayerWidget::ResolveIconWidgets()
@@ -326,6 +194,7 @@ void UTMWeaponLayerWidget::ApplyWeaponIconBrush() const
 	UTexture2D* IconTexture = ResolveWeaponIconTexture(GetWeaponLookupToken(), bWeaponIconSelected);
 	if (!IconTexture)
 	{
+		Image->SetBrush(MakeWeaponIconBrush(nullptr));
 		return;
 	}
 

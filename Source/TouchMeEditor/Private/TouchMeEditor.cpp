@@ -5,6 +5,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "ContentBrowserModule.h"
+#include "Engine/DataTable.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture2D.h"
@@ -36,7 +37,10 @@
 #include "StaticMeshResources.h"
 #include "Styling/AppStyle.h"
 #include "ThumbnailRendering/SceneThumbnailInfo.h"
+#include "UObject/ObjectRedirector.h"
 #include "UObject/SavePackage.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UnrealType.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
 
@@ -48,8 +52,221 @@ namespace
 	constexpr int32 TMIconHeight = 128;
 	constexpr int32 TMThumbnailRenderSize = 1024;
 	const TCHAR* TMIconOutputPath = TEXT("/Game/UI/Generated/Icons");
+	const TCHAR* TMLoadoutWeaponDataTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons");
 	bool bTMGenerateLoadoutWeaponMaterialOnly = false;
 	bool bTMGenerateLoadoutWeaponActiveOnly = false;
+
+	UObject* TMResolveObjectRedirector(UObject* Object)
+	{
+		while (UObjectRedirector* Redirector = Cast<UObjectRedirector>(Object))
+		{
+			UObject* DestinationObject = Redirector->DestinationObject;
+			if (!DestinationObject || DestinationObject == Object)
+			{
+				break;
+			}
+
+			Object = DestinationObject;
+		}
+
+		return Object;
+	}
+
+	bool TMIsSupportedIconMeshObject(const UObject* Object)
+	{
+		if (!Object || (!Object->IsA<UStaticMesh>() && !Object->IsA<USkeletalMesh>()))
+		{
+			return false;
+		}
+
+		const FString MeshName = Object->GetName();
+		return !MeshName.EndsWith(TEXT("_NR"), ESearchCase::IgnoreCase)
+			&& !MeshName.Contains(TEXT("NoRender"), ESearchCase::IgnoreCase)
+			&& !MeshName.Contains(TEXT("No_Render"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMIsLoadoutCoreDataProperty(const FProperty* Property)
+	{
+		if (!Property)
+		{
+			return false;
+		}
+
+		const auto IsCoreDataPropertyName = [](const FString& Name)
+		{
+			return Name.Equals(TEXT("CoreData"), ESearchCase::IgnoreCase)
+				|| Name.StartsWith(TEXT("CoreData_"), ESearchCase::IgnoreCase);
+		};
+
+		return IsCoreDataPropertyName(Property->GetName())
+			|| IsCoreDataPropertyName(Property->GetAuthoredName())
+			|| IsCoreDataPropertyName(Property->GetDisplayNameText().ToString());
+	}
+
+	bool TMIsLoadoutMeshProperty(const FProperty* Property)
+	{
+		if (!Property)
+		{
+			return false;
+		}
+
+		const auto IsMeshPropertyName = [](const FString& Name)
+		{
+			return Name.Equals(TEXT("Mesh"), ESearchCase::IgnoreCase)
+				|| Name.StartsWith(TEXT("Mesh_"), ESearchCase::IgnoreCase)
+				|| Name.Equals(TEXT("DT_Mesh"), ESearchCase::IgnoreCase)
+				|| Name.StartsWith(TEXT("DT_Mesh_"), ESearchCase::IgnoreCase);
+		};
+
+		return IsMeshPropertyName(Property->GetName())
+			|| IsMeshPropertyName(Property->GetAuthoredName())
+			|| IsMeshPropertyName(Property->GetDisplayNameText().ToString());
+	}
+
+	void TMAddLoadoutWeaponMeshObject(UObject* Object, TArray<UObject*>& OutMeshes)
+	{
+		Object = TMResolveObjectRedirector(Object);
+		if (TMIsSupportedIconMeshObject(Object))
+		{
+			OutMeshes.AddUnique(Object);
+		}
+	}
+
+	void TMCollectLoadoutWeaponMeshesFromMeshProperty(
+		const FProperty* Property,
+		const void* ValuePtr,
+		TArray<UObject*>& OutMeshes)
+	{
+		if (!Property || !ValuePtr)
+		{
+			return;
+		}
+
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			TMAddLoadoutWeaponMeshObject(ObjectProperty->GetObjectPropertyValue(ValuePtr), OutMeshes);
+			return;
+		}
+
+		if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+		{
+			const FSoftObjectPtr SoftObject = SoftObjectProperty->GetPropertyValue(ValuePtr);
+			TMAddLoadoutWeaponMeshObject(SoftObject.LoadSynchronous(), OutMeshes);
+			return;
+		}
+
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+			for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+			{
+				TMCollectLoadoutWeaponMeshesFromMeshProperty(
+					ArrayProperty->Inner,
+					ArrayHelper.GetRawPtr(Index),
+					OutMeshes);
+			}
+			return;
+		}
+
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (!StructProperty->Struct)
+			{
+				return;
+			}
+
+			for (TFieldIterator<FProperty> ChildPropertyIt(StructProperty->Struct); ChildPropertyIt; ++ChildPropertyIt)
+			{
+				const FProperty* ChildProperty = *ChildPropertyIt;
+				const void* ChildValuePtr = ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr);
+				TMCollectLoadoutWeaponMeshesFromMeshProperty(ChildProperty, ChildValuePtr, OutMeshes);
+			}
+		}
+	}
+
+	void TMCollectLoadoutWeaponMeshesFromProperty(
+		const FProperty* Property,
+		const void* ValuePtr,
+		const int32 CoreDataDepth,
+		TArray<UObject*>& OutMeshes)
+	{
+		if (!Property || !ValuePtr)
+		{
+			return;
+		}
+
+		if (CoreDataDepth == 1 && TMIsLoadoutMeshProperty(Property))
+		{
+			TMCollectLoadoutWeaponMeshesFromMeshProperty(Property, ValuePtr, OutMeshes);
+			return;
+		}
+
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (!StructProperty->Struct)
+			{
+				return;
+			}
+
+			const int32 ChildCoreDataDepth = TMIsLoadoutCoreDataProperty(Property) ? 1 : (CoreDataDepth > 0 ? CoreDataDepth + 1 : 0);
+			for (TFieldIterator<FProperty> ChildPropertyIt(StructProperty->Struct); ChildPropertyIt; ++ChildPropertyIt)
+			{
+				const FProperty* ChildProperty = *ChildPropertyIt;
+				const void* ChildValuePtr = ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr);
+				TMCollectLoadoutWeaponMeshesFromProperty(ChildProperty, ChildValuePtr, ChildCoreDataDepth, OutMeshes);
+			}
+		}
+	}
+
+	TArray<FAssetData> TMCollectLoadoutWeaponMeshAssetsFromDataTable()
+	{
+		TArray<FAssetData> SourceAssets;
+		UDataTable* WeaponTable = LoadObject<UDataTable>(nullptr, TMLoadoutWeaponDataTablePath);
+		if (!WeaponTable || !WeaponTable->GetRowStruct())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMIconGenerator] Failed to load weapon data table: %s."), TMLoadoutWeaponDataTablePath);
+			return SourceAssets;
+		}
+
+		TSet<FString> AddedMeshPaths;
+		for (const TPair<FName, uint8*>& RowPair : WeaponTable->GetRowMap())
+		{
+			TArray<UObject*> RowMeshes;
+			for (TFieldIterator<FProperty> PropertyIt(WeaponTable->GetRowStruct()); PropertyIt; ++PropertyIt)
+			{
+				const FProperty* Property = *PropertyIt;
+				const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(RowPair.Value);
+				TMCollectLoadoutWeaponMeshesFromProperty(Property, ValuePtr, 0, RowMeshes);
+			}
+
+			if (RowMeshes.IsEmpty())
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("[TMIconGenerator] Weapon data row %s has no supported CoreData.Mesh."),
+					*RowPair.Key.ToString());
+				continue;
+			}
+
+			UObject* Mesh = RowMeshes[0];
+			const FString MeshPath = Mesh->GetPathName();
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[TMIconGenerator] Weapon data row %s CoreData.Mesh resolves to %s."),
+				*RowPair.Key.ToString(),
+				*MeshPath);
+
+			if (!AddedMeshPaths.Contains(MeshPath))
+			{
+				AddedMeshPaths.Add(MeshPath);
+				SourceAssets.Add(FAssetData(Mesh));
+			}
+		}
+
+		return SourceAssets;
+	}
 
 	uint32 TMHashRaggedValue(uint32 Value)
 	{
@@ -1061,7 +1278,7 @@ namespace
 
 		if (TMIsSkeletalVisualMeshPath(SkeletalMesh, TEXT("/Game/Modular_AR_Pack/Mesh/SCAL/SKM_SCAL_Complete.SKM_SCAL_Complete")))
 		{
-			OutWeaponName = TEXT("M4");
+			OutWeaponName = TEXT("Scar");
 			return TEXT("/Game/Modular_AR_Pack/Texture/SCAL/T_SCAL_Diffuse.T_SCAL_Diffuse");
 		}
 
@@ -1121,6 +1338,80 @@ namespace
 			static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(static_cast<float>(BaseColor.B) * Shade + 8.0f), 0, 255)),
 			255);
 		return Color;
+	}
+
+	void TMRasterizeTexturedProjectedTriangle(
+		TArray<uint8>& Pixels,
+		TArray<float>& DepthBuffer,
+		const int32 Width,
+		const int32 Height,
+		const FVector2D& A,
+		const FVector2D& B,
+		const FVector2D& C,
+		const float DepthA,
+		const float DepthB,
+		const float DepthC,
+		const FVector2f& UVA,
+		const FVector2f& UVB,
+		const FVector2f& UVC,
+		const TArray<uint8>& DiffusePixels,
+		const int32 DiffuseWidth,
+		const int32 DiffuseHeight,
+		const float Light,
+		const float Facing)
+	{
+		const float Area = TMTriangleEdge(A, B, C);
+		if (FMath::IsNearlyZero(Area, 0.01f))
+		{
+			return;
+		}
+
+		const float Sign = Area >= 0.0f ? 1.0f : -1.0f;
+		const float AbsArea = FMath::Abs(Area);
+		const int32 MinX = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.X, B.X, C.X)), 0, Width - 1);
+		const int32 MaxX = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.X, B.X, C.X)), 0, Width - 1);
+		const int32 MinY = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.Y, B.Y, C.Y)), 0, Height - 1);
+		const int32 MaxY = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.Y, B.Y, C.Y)), 0, Height - 1);
+
+		for (int32 Y = MinY; Y <= MaxY; ++Y)
+		{
+			for (int32 X = MinX; X <= MaxX; ++X)
+			{
+				const FVector2D Sample(static_cast<float>(X) + 0.5f, static_cast<float>(Y) + 0.5f);
+				const float Edge0 = TMTriangleEdge(B, C, Sample) * Sign;
+				const float Edge1 = TMTriangleEdge(C, A, Sample) * Sign;
+				const float Edge2 = TMTriangleEdge(A, B, Sample) * Sign;
+				if (Edge0 < -0.001f || Edge1 < -0.001f || Edge2 < -0.001f)
+				{
+					continue;
+				}
+
+				const float WeightA = Edge0 / AbsArea;
+				const float WeightB = Edge1 / AbsArea;
+				const float WeightC = Edge2 / AbsArea;
+				const float Depth = (DepthA * WeightA) + (DepthB * WeightB) + (DepthC * WeightC);
+				const int32 PixelIndex = (Y * Width) + X;
+				if (Depth < DepthBuffer[PixelIndex])
+				{
+					continue;
+				}
+
+				DepthBuffer[PixelIndex] = Depth;
+				const FVector2f UV(
+					(UVA.X * WeightA) + (UVB.X * WeightB) + (UVC.X * WeightC),
+					(UVA.Y * WeightA) + (UVB.Y * WeightB) + (UVC.Y * WeightC));
+				const FColor Color = TMShadeMaterialColor(
+					TMSampleBgraTextureWrapped(DiffusePixels, DiffuseWidth, DiffuseHeight, UV),
+					Light,
+					Facing);
+
+				const int32 DataIndex = PixelIndex * 4;
+				Pixels[DataIndex] = Color.B;
+				Pixels[DataIndex + 1] = Color.G;
+				Pixels[DataIndex + 2] = Color.R;
+				Pixels[DataIndex + 3] = Color.A;
+			}
+		}
 	}
 
 	bool TMBuildSkeletalMeshProjectedIconPixels(USkeletalMesh* SkeletalMesh, TArray<uint8>& OutPixels)
@@ -1245,27 +1536,36 @@ namespace
 				CenteredVertices[IndexC] - CenteredVertices[IndexA]).GetSafeNormal();
 			const float Light = FMath::Abs(FVector::DotProduct(TriangleNormal, LightDirection));
 			const float Facing = FMath::Abs(FVector::DotProduct(TriangleNormal, ViewForward));
-			FColor TriangleColor;
 			if (!DiffusePixels.IsEmpty())
 			{
-				const FVector2f UV = (
-					LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexA, 0)
-					+ LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexB, 0)
-					+ LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexC, 0)) / 3.0f;
-				TriangleColor = TMShadeMaterialColor(
-					TMSampleBgraTextureWrapped(DiffusePixels, DiffuseWidth, DiffuseHeight, UV),
+				TMRasterizeTexturedProjectedTriangle(
+					OutPixels,
+					DepthBuffer,
+					TMIconWidth,
+					TMIconHeight,
+					ProjectedVertices[IndexA],
+					ProjectedVertices[IndexB],
+					ProjectedVertices[IndexC],
+					ProjectedDepths[IndexA],
+					ProjectedDepths[IndexB],
+					ProjectedDepths[IndexC],
+					LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexA, 0),
+					LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexB, 0),
+					LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexC, 0),
+					DiffusePixels,
+					DiffuseWidth,
+					DiffuseHeight,
 					Light,
 					Facing);
+				continue;
 			}
-			else
-			{
-				const float Shade = FMath::Clamp(0.24f + Light * 0.32f + Facing * 0.10f, 0.22f, 0.68f);
-				TriangleColor = FColor(
-					static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(145.0f * Shade), 0, 255)),
-					static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(149.0f * Shade), 0, 255)),
-					static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(156.0f * Shade), 0, 255)),
-					255);
-			}
+
+			const float Shade = FMath::Clamp(0.24f + Light * 0.32f + Facing * 0.10f, 0.22f, 0.68f);
+			const FColor TriangleColor(
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(145.0f * Shade), 0, 255)),
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(149.0f * Shade), 0, 255)),
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(156.0f * Shade), 0, 255)),
+				255);
 
 			TMRasterizeLitProjectedTriangle(
 				OutPixels,
@@ -1494,7 +1794,7 @@ namespace
 		TMLeftAlignIconForeground(PixelData, TMIconWidth, TMIconHeight);
 
 		const FString ObjectPath = AssetData.GetObjectPathString();
-		if (ObjectPath.Contains(TEXT("SMG_M4"), ESearchCase::IgnoreCase))
+		if (ObjectPath.Contains(TEXT("SMG_Scar"), ESearchCase::IgnoreCase))
 		{
 			TMShiftIconForegroundRight(PixelData, TMIconWidth, TMIconHeight, 16);
 		}
@@ -2250,10 +2550,6 @@ namespace
 				TEXT("/Game/Weapons/Textures/UI/T_V014_HUD.T_V014_HUD")
 			},
 			{
-				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_M4.SMG_M4"),
-				TEXT("/Game/Weapons/Textures/UI/T_M4_HUD.T_M4_HUD")
-			},
-			{
 				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_ACWI.SMG_ACWI"),
 				TEXT("/Game/Weapons/Textures/UI/T_ACWI_HUD.T_ACWI_HUD")
 			},
@@ -2309,10 +2605,6 @@ namespace
 			},
 			{
 				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_Kriss.SMG_Kriss"),
-				{ 25.0f, 0.98f, 0.98f, 1.0f }
-			},
-			{
-				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_M4.SMG_M4"),
 				{ 25.0f, 0.98f, 0.98f, 1.0f }
 			},
 			{
@@ -2518,6 +2810,20 @@ namespace
 			bBuiltPixels = TMBuildRealMaterialSceneCaptureIconPixels(RenderSourceObject, OutPixels);
 			if (!bBuiltPixels)
 			{
+				if (TMIsWeaponDataTableMeshSourceWithVisualOverride(AssetData)
+					&& TMBuildSkeletalMeshProjectedIconPixels(Cast<USkeletalMesh>(RenderSourceObject), OutPixels))
+				{
+					bBuiltPixels = true;
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMIconGenerator] Applied loadout weapon projection fallback for %s."),
+						*AssetData.GetObjectPathString());
+				}
+			}
+
+			if (!bBuiltPixels)
+			{
 				return false;
 			}
 		}
@@ -2673,7 +2979,7 @@ namespace
 			|| AssetName.Equals(TEXT("SMG_Kriss"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("SMG_ACWI"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("SMG_TAR"), ESearchCase::IgnoreCase)
-			|| AssetName.Equals(TEXT("SMG_M4"), ESearchCase::IgnoreCase);
+			|| AssetName.Equals(TEXT("SMG_Scar"), ESearchCase::IgnoreCase);
 	}
 
 	bool TMIsTARDataTableMeshSource(const FAssetData& SourceAsset)
@@ -2683,10 +2989,10 @@ namespace
 			ESearchCase::IgnoreCase);
 	}
 
-	bool TMIsM4DataTableMeshSource(const FAssetData& SourceAsset)
+	bool TMIsScarDataTableMeshSource(const FAssetData& SourceAsset)
 	{
 		return SourceAsset.GetObjectPathString().Equals(
-			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_M4.SMG_M4"),
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_Scar.SMG_Scar"),
 			ESearchCase::IgnoreCase);
 	}
 
@@ -2735,7 +3041,7 @@ namespace
 	bool TMIsWeaponDataTableMeshSourceWithVisualOverride(const FAssetData& SourceAsset)
 	{
 		return TMIsTARDataTableMeshSource(SourceAsset)
-			|| TMIsM4DataTableMeshSource(SourceAsset)
+			|| TMIsScarDataTableMeshSource(SourceAsset)
 			|| TMIsShotgunDataTableMeshSource(SourceAsset)
 			|| TMIsKrissDataTableMeshSource(SourceAsset)
 			|| TMIsACWIDataTableMeshSource(SourceAsset);
@@ -2837,11 +3143,11 @@ namespace
 				TEXT("/Game/Modular_AR_Pack/Mesh/T21/SKM_T21.SKM_T21"));
 		}
 
-		if (TMIsM4DataTableMeshSource(SourceAsset))
+		if (TMIsScarDataTableMeshSource(SourceAsset))
 		{
 			return TMResolveWeaponVisualIconSourceObject(
-				TEXT("M4"),
-				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/M4/BP_M4.BP_M4_C"),
+				TEXT("Scar"),
+				TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Scar/BP_Scar.BP_Scar_C"),
 				TEXT("/Game/Modular_AR_Pack/Mesh/SCAL/SKM_SCAL_Complete.SKM_SCAL_Complete"));
 		}
 
@@ -3227,40 +3533,13 @@ void FTouchMeEditorModule::BuildAssetSelectionMenu(
 
 void FTouchMeEditorModule::GenerateLoadoutWeaponActiveIcons() const
 {
-	static const TCHAR* LoadoutWeaponIconSourcePaths[] =
+	TArray<FAssetData> SourceAssets = TMCollectLoadoutWeaponMeshAssetsFromDataTable();
+	if (SourceAssets.IsEmpty())
 	{
-		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Shotgun/Meshes/Shotgun.Shotgun"),
-		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_Kriss.SMG_Kriss"),
-		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_M4.SMG_M4"),
-		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_TAR.SMG_TAR"),
-		TEXT("/Game/MP_System_V3/Game/Weapons/Primary/SMG/Meshes/SMG_ACWI.SMG_ACWI"),
-		TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/DE/Meshes/DE.DE"),
-		TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/Pistol/Meshes/M9.M9"),
-		TEXT("/Game/MP_System_V3/Game/Weapons/Special/Syringe/Meshes/SciFi_Syringe.SciFi_Syringe"),
-		TEXT("/Game/Weapons/Mesh/Knife/SK_Knife1.SK_Knife1"),
-		TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/Meshes/Frag.Frag")
-	};
-
-	TArray<FAssetData> SourceAssets;
-	SourceAssets.Reserve(UE_ARRAY_COUNT(LoadoutWeaponIconSourcePaths));
-	for (const TCHAR* SourcePath : LoadoutWeaponIconSourcePaths)
-	{
-		UObject* SourceAsset = LoadObject<UObject>(nullptr, SourcePath);
-		if (!SourceAsset)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[TMIconGenerator] Loadout active source asset not found: %s."), SourcePath);
-			continue;
-		}
-
-		const FAssetData AssetData(SourceAsset);
-		if (IsSupportedMeshAsset(AssetData))
-		{
-			SourceAssets.Add(AssetData);
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[TMIconGenerator] Loadout active source asset is not a supported mesh: %s."), SourcePath);
-		}
+		TMShowNotification(
+			LOCTEXT("GeneratedNoLoadoutWeaponIcons", "No loadout weapon meshes were found in DT_Weapons CoreData.Mesh. Check the Output Log."),
+			SNotificationItem::CS_Fail);
+		return;
 	}
 
 	const bool bPreviousMaterialOnly = bTMGenerateLoadoutWeaponMaterialOnly;

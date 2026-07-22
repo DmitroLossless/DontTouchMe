@@ -83,6 +83,7 @@
 #include "TMFoliageExplosionCollisionTester.h"
 #include "TMFoliageImpulseSubsystem.h"
 #include "Framework/Application/SlateApplication.h"
+#include "UI/TMWeaponIconResolver.h"
 
 #if WITH_EDITOR
 #include "AnimGraphNode_CopyBone.h"
@@ -835,88 +836,12 @@ namespace TMGameplayStatics
 
 	bool ShouldHideLoadoutWeaponLayer(const UUserWidget* WeaponLayerWidget)
 	{
-		return IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("Sniper"), TEXT("BP_Sniper"));
+		return TMWeaponIconResolver::ShouldCollapseWeaponRow(WeaponLayerWidget);
 	}
 
 	UTexture2D* GetLoadoutWeaponLayerIconTexture(const UUserWidget* WeaponLayerWidget)
 	{
-		static TWeakObjectPtr<UTexture2D> CachedShotgunIcon;
-		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("Shotgun"), TEXT("Rem 870"))
-			|| IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("Rem 870")))
-		{
-			if (CachedShotgunIcon.IsValid())
-			{
-				return CachedShotgunIcon.Get();
-			}
-
-			UTexture2D* ShotgunIcon = LoadObject<UTexture2D>(
-				nullptr,
-				TEXT("/Game/UI/Generated/Icons/T_Shotgun_Icon.T_Shotgun_Icon"));
-			CachedShotgunIcon = ShotgunIcon;
-			return ShotgunIcon;
-		}
-
-		static TWeakObjectPtr<UTexture2D> CachedKrissIcon;
-		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("Kriss")))
-		{
-			if (CachedKrissIcon.IsValid())
-			{
-				return CachedKrissIcon.Get();
-			}
-
-			UTexture2D* KrissIcon = LoadObject<UTexture2D>(
-				nullptr,
-				TEXT("/Game/UI/Generated/Icons/T_SMG_Kriss_Icon.T_SMG_Kriss_Icon"));
-			CachedKrissIcon = KrissIcon;
-			return KrissIcon;
-		}
-
-		static TWeakObjectPtr<UTexture2D> CachedTarIcon;
-		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("TAR")))
-		{
-			if (CachedTarIcon.IsValid())
-			{
-				return CachedTarIcon.Get();
-			}
-
-			UTexture2D* TarIcon = LoadObject<UTexture2D>(
-				nullptr,
-				TEXT("/Game/UI/Generated/Icons/T_SMG_TAR_Icon.T_SMG_TAR_Icon"));
-			CachedTarIcon = TarIcon;
-			return TarIcon;
-		}
-
-		static TWeakObjectPtr<UTexture2D> CachedM4Icon;
-		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("M4"), TEXT("SCAR")))
-		{
-			if (CachedM4Icon.IsValid())
-			{
-				return CachedM4Icon.Get();
-			}
-
-			UTexture2D* M4Icon = LoadObject<UTexture2D>(
-				nullptr,
-				TEXT("/Game/UI/Generated/Icons/T_SMG_M4_Icon.T_SMG_M4_Icon"));
-			CachedM4Icon = M4Icon;
-			return M4Icon;
-		}
-
-		static TWeakObjectPtr<UTexture2D> CachedAcwiIcon;
-		if (IsLoadoutWeaponLayerIdentity(WeaponLayerWidget, TEXT("ACWI")))
-		{
-			if (CachedAcwiIcon.IsValid())
-			{
-				return CachedAcwiIcon.Get();
-			}
-
-			UTexture2D* AcwiIcon = LoadObject<UTexture2D>(
-				nullptr,
-				TEXT("/Game/UI/Generated/Icons/T_SMG_ACWI_Icon.T_SMG_ACWI_Icon"));
-			CachedAcwiIcon = AcwiIcon;
-			return AcwiIcon;
-		}
-
-		return nullptr;
+		return TMWeaponIconResolver::ResolveIconTexture(WeaponLayerWidget, false);
 	}
 
 	FLinearColor GetLoadoutWeaponLayerIconTint(const UTextBlock* NameText)
@@ -939,8 +864,11 @@ namespace TMGameplayStatics
 	FSlateBrush MakeLoadoutWeaponLayerIconBrush(UTexture2D* IconTexture)
 	{
 		FSlateBrush Brush;
-		Brush.DrawAs = ESlateBrushDrawType::Image;
-		Brush.SetResourceObject(IconTexture);
+		Brush.DrawAs = IconTexture ? ESlateBrushDrawType::Image : ESlateBrushDrawType::NoDrawType;
+		if (IconTexture)
+		{
+			Brush.SetResourceObject(IconTexture);
+		}
 		Brush.SetImageSize(FVector2D(LoadoutWeaponLayerIconWidth, LoadoutWeaponLayerIconHeight));
 		return Brush;
 	}
@@ -3378,10 +3306,7 @@ bool UTMGameplayStatics::ApplyLoadoutWeaponLayerIcon(UUserWidget* WeaponLayerWid
 	}
 
 	UTexture2D* IconTexture = TMGameplayStatics::GetLoadoutWeaponLayerIconTexture(WeaponLayerWidget);
-	if (!IconTexture)
-	{
-		return false;
-	}
+	const bool bHasIconTexture = IconTexture != nullptr;
 
 	UButton* WeaponButton = Cast<UButton>(WeaponLayerWidget->GetWidgetFromName(TEXT("B_Weapon")));
 	UTextBlock* NameText = Cast<UTextBlock>(WeaponLayerWidget->GetWidgetFromName(TEXT("NameText")));
@@ -3474,7 +3399,7 @@ bool UTMGameplayStatics::ApplyLoadoutWeaponLayerIcon(UUserWidget* WeaponLayerWid
 			});
 	}
 
-	return true;
+	return bHasIconTexture;
 }
 
 void UTMGameplayStatics::StartLoadoutGearShimmer(UUserWidget* OwnerWidget)

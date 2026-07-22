@@ -165,13 +165,16 @@ protected:
 	bool bCanLoadoutShoot = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (DisplayName = "Loadout Recoil Offset"))
-	FVector LoadoutRecoilOffset = FVector(-1.35f, 0.0f, 0.25f);
+	FVector LoadoutRecoilOffset = FVector(-3.25f, 0.0f, 0.55f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (DisplayName = "Loadout Recoil Rotation"))
-	FRotator LoadoutRecoilRotation = FRotator(-0.9f, 0.0f, 0.0f);
+	FRotator LoadoutRecoilRotation = FRotator(4.0f, 0.0f, 0.0f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (ClampMin = "0.01", DisplayName = "Loadout Recoil Duration"))
-	float LoadoutRecoilDuration = 0.12f;
+	float LoadoutRecoilDuration = 0.18f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (ClampMin = "0.05", ClampMax = "2.0", DisplayName = "Loadout Recoil Spring Damping"))
+	float LoadoutRecoilSpringDampingRatio = 0.58f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gun", meta = (DisplayName = "Display Name"))
 	FText WeaponDisplayName;
@@ -290,7 +293,9 @@ private:
 	bool IsLoadoutRecoilBypassActive() const;
 	void PlayLoadoutSpecialRecoil();
 	void UpdateLoadoutSpecialRecoil(float DeltaSeconds);
-	USkeletalMeshComponent* ResolveLoadoutRecoilMesh() const;
+	void ResetLoadoutSpecialRecoil();
+	USceneComponent* ResolveLoadoutRecoilComponent() const;
+	FVector ResolveLoadoutRecoilOffsetInParentSpace(const USceneComponent* RecoilComponent) const;
 	FName ResolveAttachmentFeedbackPreferredSocket(const UFunction* Function) const;
 	FName ResolveAttachmentFeedbackSocketFromContext(const FString& Context, FName SocketName) const;
 	FName ResolveChangedAttachmentFeedbackSocket(
@@ -346,12 +351,14 @@ private:
 	TMap<FName, FName> LastAttachmentFeedbackStateSockets;
 	double AttachmentFeedbackSuppressUntilTime = 0.0;
 	double LoadoutRecoilBypassUntilTime = 0.0;
-	float LoadoutRecoilElapsedSeconds = 0.0f;
+	float LoadoutRecoilAlpha = 0.0f;
+	float LoadoutRecoilVelocity = 0.0f;
 	FTransform LoadoutRecoilBaseRelativeTransform = FTransform::Identity;
+	FVector LoadoutRecoilResolvedOffset = FVector::ZeroVector;
 	FTimerHandle AttachmentFeedbackMonitorTimerHandle;
 	FTimerHandle LoadoutStopShootingTimerHandle;
 	TWeakObjectPtr<AActor> LoadoutShootMPSProxy;
 	TWeakObjectPtr<ACharacter> LoadoutShootPlayerCharacterProxy;
-	TWeakObjectPtr<USkeletalMeshComponent> LoadoutRecoilMesh;
+	TWeakObjectPtr<USceneComponent> LoadoutRecoilComponent;
 	uint8 MainMeshPreviousAnimTickOption = 0;
 };

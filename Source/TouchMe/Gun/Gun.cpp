@@ -57,6 +57,12 @@ namespace
 	constexpr float AttachmentFeedbackStartupSuppressSeconds = 0.35f;
 	constexpr float LoadoutShootStopDelaySeconds = 0.08f;
 	constexpr float LoadoutRecoilBypassWindowSeconds = 0.75f;
+	constexpr float LoadoutRecoilAngularFrequencyScale = 4.0f;
+	constexpr float LoadoutRecoilMaxSpringStepSeconds = 1.0f / 120.0f;
+	constexpr float LoadoutRecoilMaxAlpha = 1.15f;
+	constexpr float LoadoutRecoilMinAlpha = -0.18f;
+	constexpr float LoadoutRecoilStopAlphaThreshold = 0.006f;
+	constexpr float LoadoutRecoilStopVelocityThreshold = 0.08f;
 	const FName UnderbarrelDataPropertyName(TEXT("UnderbarrelData"));
 	const FName UnderbarrelSocketName(TEXT("Underbarrel"));
 	const FName MuzzleSocketName(TEXT("Muzzle"));
@@ -869,6 +875,25 @@ namespace
 		const UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
 		return AnimInstance ? AnimInstance->GetClass()->GetPathName() : TEXT("None");
 	}
+
+	FTransform MakeLoadoutRecoilTransform(
+		const FTransform& BaseTransform,
+		const FVector& ParentSpaceOffset,
+		const FRotator& LocalRotation,
+		const float Alpha)
+	{
+		const float ClampedAlpha = FMath::Clamp(Alpha, LoadoutRecoilMinAlpha, LoadoutRecoilMaxAlpha);
+		const FQuat BaseRotation = BaseTransform.GetRotation();
+		const FRotator ScaledRotation(
+			LocalRotation.Pitch * ClampedAlpha,
+			LocalRotation.Yaw * ClampedAlpha,
+			LocalRotation.Roll * ClampedAlpha);
+
+		FTransform RecoilTransform = BaseTransform;
+		RecoilTransform.SetRotation((BaseRotation * ScaledRotation.Quaternion()).GetNormalized());
+		RecoilTransform.SetTranslation(BaseTransform.GetTranslation() + ParentSpaceOffset * ClampedAlpha);
+		return RecoilTransform;
+	}
 }
 
 AGun::AGun()
@@ -979,8 +1004,7 @@ void AGun::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 	LoadoutShootPlayerCharacterProxy.Reset();
 
-	LoadoutRecoilMesh.Reset();
-	bLoadoutRecoilTickActive = false;
+	ResetLoadoutSpecialRecoil();
 
 	if (bFakeModeApplied)
 	{
@@ -1040,13 +1064,24 @@ void AGun::SetFakeMode(const bool bEnabled)
 
 void AGun::SetCanLoadoutShoot(const bool bEnabled)
 {
+	if (bCanLoadoutShoot == bEnabled)
+	{
+		return;
+	}
+
 	bCanLoadoutShoot = bEnabled;
+	if (!bCanLoadoutShoot)
+	{
+		LoadoutRecoilBypassUntilTime = 0.0;
+		bLoadoutRecoilTriggeredThisShot = false;
+		ResetLoadoutSpecialRecoil();
+	}
 }
 
 bool AGun::PlayLoadoutShootFeedback()
 {
 	UWorld* World = GetWorld();
-	if (!World || HasAnyFlags(RF_ClassDefaultObject))
+	if (!bCanLoadoutShoot || !World || HasAnyFlags(RF_ClassDefaultObject))
 	{
 		return false;
 	}
@@ -1108,7 +1143,7 @@ bool AGun::PlayLoadoutShootFeedback()
 bool AGun::TriggerLoadoutShoot(APlayerController* PlayerController)
 {
 	UWorld* World = GetWorld();
-	if (!World || HasAnyFlags(RF_ClassDefaultObject))
+	if (!bCanLoadoutShoot || !World || HasAnyFlags(RF_ClassDefaultObject))
 	{
 		return false;
 	}
@@ -1593,6 +1628,11 @@ bool AGun::IsLoadoutRecoilFunction(const UFunction* Function) const
 
 bool AGun::IsLoadoutRecoilBypassActive() const
 {
+	if (!bCanLoadoutShoot)
+	{
+		return false;
+	}
+
 	if (bLoadoutShootContextActive)
 	{
 		return true;
@@ -1602,59 +1642,82 @@ bool AGun::IsLoadoutRecoilBypassActive() const
 	return World && World->GetTimeSeconds() <= LoadoutRecoilBypassUntilTime;
 }
 
-USkeletalMeshComponent* AGun::ResolveLoadoutRecoilMesh() const
+USceneComponent* AGun::ResolveLoadoutRecoilComponent() const
 {
-	if (IsValid(FakeSkeletalMeshComponent)
-		&& FakeSkeletalMeshComponent->IsVisible()
-		&& FakeSkeletalMeshComponent->GetSkeletalMeshAsset())
+	return GetRootComponent();
+}
+
+FVector AGun::ResolveLoadoutRecoilOffsetInParentSpace(const USceneComponent* RecoilComponent) const
+{
+	if (!IsValid(RecoilComponent))
 	{
-		return FakeSkeletalMeshComponent;
+		return FVector::ZeroVector;
 	}
 
-	USkeletalMeshComponent* MainMesh = ResolveMainSkeletalMesh();
-	if (IsValid(MainMesh) && MainMesh->IsVisible() && MainMesh->GetSkeletalMeshAsset())
+	const FTransform MuzzleTransform = ResolveLoadoutShootFeedbackTransform();
+	FVector BarrelForward = MuzzleTransform.GetLocation() - RecoilComponent->GetComponentLocation();
+	if (!BarrelForward.Normalize())
 	{
-		return MainMesh;
+		BarrelForward = MuzzleTransform.GetUnitAxis(EAxis::X);
 	}
 
-	return IsValid(FakeSkeletalMeshComponent) && FakeSkeletalMeshComponent->GetSkeletalMeshAsset()
-		? FakeSkeletalMeshComponent.Get()
-		: MainMesh;
+	const float BackDistance = FMath::Abs(LoadoutRecoilOffset.X);
+	FVector WorldOffset = -BarrelForward * BackDistance;
+	WorldOffset += MuzzleTransform.GetUnitAxis(EAxis::Y) * LoadoutRecoilOffset.Y;
+	WorldOffset += RecoilComponent->GetUpVector() * LoadoutRecoilOffset.Z;
+
+	if (const USceneComponent* AttachParentComponent = RecoilComponent->GetAttachParent())
+	{
+		return AttachParentComponent->GetComponentTransform().InverseTransformVectorNoScale(WorldOffset);
+	}
+
+	return WorldOffset;
 }
 
 void AGun::PlayLoadoutSpecialRecoil()
 {
-	USkeletalMeshComponent* RecoilMesh = ResolveLoadoutRecoilMesh();
-	if (!IsValid(RecoilMesh))
+	if (!bCanLoadoutShoot || HasAnyFlags(RF_ClassDefaultObject))
 	{
 		return;
 	}
 
-	if (LoadoutRecoilMesh.Get() != RecoilMesh || !bLoadoutRecoilTickActive)
+	USceneComponent* RecoilComponent = ResolveLoadoutRecoilComponent();
+	if (!IsValid(RecoilComponent))
 	{
-		LoadoutRecoilBaseRelativeTransform = RecoilMesh->GetRelativeTransform();
-		LoadoutRecoilMesh = RecoilMesh;
+		return;
 	}
 
-	FTransform RecoilTransform = LoadoutRecoilBaseRelativeTransform;
-	RecoilTransform.ConcatenateRotation(LoadoutRecoilRotation.Quaternion());
-	RecoilTransform.AddToTranslation(LoadoutRecoilOffset);
-	RecoilMesh->SetRelativeTransform(RecoilTransform);
-	RecoilMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	if (LoadoutRecoilComponent.Get() != RecoilComponent || !bLoadoutRecoilTickActive)
+	{
+		LoadoutRecoilBaseRelativeTransform = RecoilComponent->GetRelativeTransform();
+		LoadoutRecoilComponent = RecoilComponent;
+	}
+	LoadoutRecoilResolvedOffset = ResolveLoadoutRecoilOffsetInParentSpace(RecoilComponent);
+	LoadoutRecoilAlpha = LoadoutRecoilAlpha > 0.0f
+		? FMath::Min(LoadoutRecoilAlpha + 1.0f, LoadoutRecoilMaxAlpha)
+		: 1.0f;
+	LoadoutRecoilVelocity = FMath::Min(LoadoutRecoilVelocity, 0.0f);
 
-	LoadoutRecoilElapsedSeconds = 0.0f;
+	const FTransform RecoilTransform = MakeLoadoutRecoilTransform(
+		LoadoutRecoilBaseRelativeTransform,
+		LoadoutRecoilResolvedOffset,
+		LoadoutRecoilRotation,
+		LoadoutRecoilAlpha);
+	RecoilComponent->SetRelativeTransform(RecoilTransform);
+
 	bLoadoutRecoilTickActive = true;
 	RefreshActorTickEnabled();
 
 	UE_LOG(
 		LogTemp,
 		Display,
-		TEXT("[TMLoadoutPreviewShoot] Applied special loadout recoil. Gun=%s Mesh=%s Offset=%s Rotation=%s Duration=%.3f"),
+		TEXT("[TMLoadoutPreviewShoot] Applied special loadout recoil. Gun=%s Component=%s Offset=%s Rotation=%s Duration=%.3f Damping=%.2f"),
 		*GetName(),
-		*RecoilMesh->GetName(),
-		*LoadoutRecoilOffset.ToCompactString(),
+		*RecoilComponent->GetName(),
+		*LoadoutRecoilResolvedOffset.ToCompactString(),
 		*LoadoutRecoilRotation.ToCompactString(),
-		LoadoutRecoilDuration);
+		LoadoutRecoilDuration,
+		LoadoutRecoilSpringDampingRatio);
 }
 
 void AGun::UpdateLoadoutSpecialRecoil(const float DeltaSeconds)
@@ -1664,31 +1727,73 @@ void AGun::UpdateLoadoutSpecialRecoil(const float DeltaSeconds)
 		return;
 	}
 
-	USkeletalMeshComponent* RecoilMesh = LoadoutRecoilMesh.Get();
-	if (!IsValid(RecoilMesh))
+	USceneComponent* RecoilComponent = LoadoutRecoilComponent.Get();
+	if (!bCanLoadoutShoot || !IsValid(RecoilComponent))
 	{
-		bLoadoutRecoilTickActive = false;
-		RefreshActorTickEnabled();
+		ResetLoadoutSpecialRecoil();
 		return;
 	}
 
-	LoadoutRecoilElapsedSeconds += FMath::Max(0.0f, DeltaSeconds);
-	const float Duration = FMath::Max(0.01f, LoadoutRecoilDuration);
-	const float Alpha = FMath::Clamp(LoadoutRecoilElapsedSeconds / Duration, 0.0f, 1.0f);
-	const float Remaining = 1.0f - FMath::InterpEaseOut(0.0f, 1.0f, Alpha, 2.0f);
+	float RemainingTime = FMath::Clamp(DeltaSeconds, 0.0f, 0.1f);
+	const float Duration = FMath::Max(0.04f, LoadoutRecoilDuration);
+	const float AngularFrequency = LoadoutRecoilAngularFrequencyScale / Duration;
+	const float SpringStiffness = AngularFrequency * AngularFrequency;
+	const float SpringDamping = 2.0f
+		* FMath::Clamp(LoadoutRecoilSpringDampingRatio, 0.05f, 2.0f)
+		* AngularFrequency;
 
-	FTransform RecoilTransform = LoadoutRecoilBaseRelativeTransform;
-	RecoilTransform.ConcatenateRotation(FQuat::Slerp(FQuat::Identity, LoadoutRecoilRotation.Quaternion(), Remaining));
-	RecoilTransform.AddToTranslation(LoadoutRecoilOffset * Remaining);
-	RecoilMesh->SetRelativeTransform(RecoilTransform);
-
-	if (Alpha >= 1.0f)
+	while (RemainingTime > UE_SMALL_NUMBER)
 	{
-		RecoilMesh->SetRelativeTransform(LoadoutRecoilBaseRelativeTransform);
-		LoadoutRecoilMesh.Reset();
-		bLoadoutRecoilTickActive = false;
-		RefreshActorTickEnabled();
+		const float StepSeconds = FMath::Min(RemainingTime, LoadoutRecoilMaxSpringStepSeconds);
+		RemainingTime -= StepSeconds;
+
+		const float SpringAcceleration = (-SpringStiffness * LoadoutRecoilAlpha)
+			- (SpringDamping * LoadoutRecoilVelocity);
+		LoadoutRecoilVelocity += SpringAcceleration * StepSeconds;
+		LoadoutRecoilAlpha += LoadoutRecoilVelocity * StepSeconds;
+
+		if (LoadoutRecoilAlpha <= LoadoutRecoilMinAlpha && LoadoutRecoilVelocity < 0.0f)
+		{
+			LoadoutRecoilAlpha = LoadoutRecoilMinAlpha;
+			LoadoutRecoilVelocity = 0.0f;
+		}
+		else if (LoadoutRecoilAlpha >= LoadoutRecoilMaxAlpha && LoadoutRecoilVelocity > 0.0f)
+		{
+			LoadoutRecoilAlpha = LoadoutRecoilMaxAlpha;
+			LoadoutRecoilVelocity = 0.0f;
+		}
 	}
+
+	const FTransform RecoilTransform = MakeLoadoutRecoilTransform(
+		LoadoutRecoilBaseRelativeTransform,
+		LoadoutRecoilResolvedOffset,
+		LoadoutRecoilRotation,
+		LoadoutRecoilAlpha);
+	RecoilComponent->SetRelativeTransform(RecoilTransform);
+
+	if (FMath::Abs(LoadoutRecoilAlpha) <= LoadoutRecoilStopAlphaThreshold
+		&& FMath::Abs(LoadoutRecoilVelocity) <= LoadoutRecoilStopVelocityThreshold)
+	{
+		ResetLoadoutSpecialRecoil();
+	}
+}
+
+void AGun::ResetLoadoutSpecialRecoil()
+{
+	if (USceneComponent* RecoilComponent = LoadoutRecoilComponent.Get())
+	{
+		if (IsValid(RecoilComponent))
+		{
+			RecoilComponent->SetRelativeTransform(LoadoutRecoilBaseRelativeTransform);
+		}
+	}
+
+	LoadoutRecoilComponent.Reset();
+	LoadoutRecoilAlpha = 0.0f;
+	LoadoutRecoilVelocity = 0.0f;
+	LoadoutRecoilResolvedOffset = FVector::ZeroVector;
+	bLoadoutRecoilTickActive = false;
+	RefreshActorTickEnabled();
 }
 
 UFakeGunAnimInstance* AGun::GetFakeAnimInstance() const
