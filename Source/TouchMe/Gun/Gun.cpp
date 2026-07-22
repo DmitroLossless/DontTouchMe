@@ -1674,6 +1674,46 @@ FVector AGun::ResolveLoadoutRecoilOffsetInParentSpace(const USceneComponent* Rec
 	return WorldOffset;
 }
 
+void AGun::ConfigureLoadoutRecoilShotProfile(const USceneComponent* RecoilComponent)
+{
+	const float StrengthMin = FMath::Max(
+		0.0f,
+		FMath::Min(LoadoutRecoilStrengthRange.X, LoadoutRecoilStrengthRange.Y));
+	const float StrengthMax = FMath::Max(
+		StrengthMin,
+		FMath::Max(LoadoutRecoilStrengthRange.X, LoadoutRecoilStrengthRange.Y));
+	const bool bWideShot = FMath::FRand() <= FMath::Clamp(LoadoutRecoilWideShotChance, 0.0f, 1.0f);
+	const float WideShotMultiplier = bWideShot
+		? FMath::Max(1.0f, LoadoutRecoilWideShotStrengthMultiplier)
+		: 1.0f;
+	const float Strength = FMath::FRandRange(StrengthMin, StrengthMax) * WideShotMultiplier;
+	const float RotationJitterScale = bWideShot ? 1.25f : 1.0f;
+
+	LoadoutRecoilResolvedOffset = ResolveLoadoutRecoilOffsetInParentSpace(RecoilComponent) * Strength;
+	LoadoutRecoilResolvedRotation = FRotator(
+		LoadoutRecoilRotation.Pitch * Strength
+			+ FMath::FRandRange(-LoadoutRecoilRotationJitter.Pitch, LoadoutRecoilRotationJitter.Pitch) * RotationJitterScale,
+		LoadoutRecoilRotation.Yaw * Strength
+			+ FMath::FRandRange(-LoadoutRecoilRotationJitter.Yaw, LoadoutRecoilRotationJitter.Yaw) * RotationJitterScale,
+		LoadoutRecoilRotation.Roll * Strength
+			+ FMath::FRandRange(-LoadoutRecoilRotationJitter.Roll, LoadoutRecoilRotationJitter.Roll) * RotationJitterScale);
+
+	const float DurationBias = bWideShot ? LoadoutRecoilDuration * 0.14f : -LoadoutRecoilDuration * 0.04f;
+	LoadoutRecoilResolvedDuration = FMath::Max(
+		0.04f,
+		LoadoutRecoilDuration
+			+ FMath::FRandRange(-LoadoutRecoilDurationJitter, LoadoutRecoilDurationJitter)
+			+ DurationBias);
+
+	const float DampingBias = bWideShot ? -0.08f : 0.04f;
+	LoadoutRecoilResolvedDampingRatio = FMath::Clamp(
+		LoadoutRecoilSpringDampingRatio
+			+ FMath::FRandRange(-LoadoutRecoilDampingJitter, LoadoutRecoilDampingJitter)
+			+ DampingBias,
+		0.05f,
+		2.0f);
+}
+
 void AGun::PlayLoadoutSpecialRecoil()
 {
 	if (!bCanLoadoutShoot || HasAnyFlags(RF_ClassDefaultObject))
@@ -1692,7 +1732,7 @@ void AGun::PlayLoadoutSpecialRecoil()
 		LoadoutRecoilBaseRelativeTransform = RecoilComponent->GetRelativeTransform();
 		LoadoutRecoilComponent = RecoilComponent;
 	}
-	LoadoutRecoilResolvedOffset = ResolveLoadoutRecoilOffsetInParentSpace(RecoilComponent);
+	ConfigureLoadoutRecoilShotProfile(RecoilComponent);
 	LoadoutRecoilAlpha = LoadoutRecoilAlpha > 0.0f
 		? FMath::Min(LoadoutRecoilAlpha + 1.0f, LoadoutRecoilMaxAlpha)
 		: 1.0f;
@@ -1701,7 +1741,7 @@ void AGun::PlayLoadoutSpecialRecoil()
 	const FTransform RecoilTransform = MakeLoadoutRecoilTransform(
 		LoadoutRecoilBaseRelativeTransform,
 		LoadoutRecoilResolvedOffset,
-		LoadoutRecoilRotation,
+		LoadoutRecoilResolvedRotation,
 		LoadoutRecoilAlpha);
 	RecoilComponent->SetRelativeTransform(RecoilTransform);
 
@@ -1715,9 +1755,9 @@ void AGun::PlayLoadoutSpecialRecoil()
 		*GetName(),
 		*RecoilComponent->GetName(),
 		*LoadoutRecoilResolvedOffset.ToCompactString(),
-		*LoadoutRecoilRotation.ToCompactString(),
-		LoadoutRecoilDuration,
-		LoadoutRecoilSpringDampingRatio);
+		*LoadoutRecoilResolvedRotation.ToCompactString(),
+		LoadoutRecoilResolvedDuration,
+		LoadoutRecoilResolvedDampingRatio);
 }
 
 void AGun::UpdateLoadoutSpecialRecoil(const float DeltaSeconds)
@@ -1735,11 +1775,18 @@ void AGun::UpdateLoadoutSpecialRecoil(const float DeltaSeconds)
 	}
 
 	float RemainingTime = FMath::Clamp(DeltaSeconds, 0.0f, 0.1f);
-	const float Duration = FMath::Max(0.04f, LoadoutRecoilDuration);
+	const float Duration = FMath::Max(
+		0.04f,
+		LoadoutRecoilResolvedDuration > 0.0f ? LoadoutRecoilResolvedDuration : LoadoutRecoilDuration);
 	const float AngularFrequency = LoadoutRecoilAngularFrequencyScale / Duration;
 	const float SpringStiffness = AngularFrequency * AngularFrequency;
 	const float SpringDamping = 2.0f
-		* FMath::Clamp(LoadoutRecoilSpringDampingRatio, 0.05f, 2.0f)
+		* FMath::Clamp(
+			LoadoutRecoilResolvedDampingRatio > 0.0f
+				? LoadoutRecoilResolvedDampingRatio
+				: LoadoutRecoilSpringDampingRatio,
+			0.05f,
+			2.0f)
 		* AngularFrequency;
 
 	while (RemainingTime > UE_SMALL_NUMBER)
@@ -1767,7 +1814,7 @@ void AGun::UpdateLoadoutSpecialRecoil(const float DeltaSeconds)
 	const FTransform RecoilTransform = MakeLoadoutRecoilTransform(
 		LoadoutRecoilBaseRelativeTransform,
 		LoadoutRecoilResolvedOffset,
-		LoadoutRecoilRotation,
+		LoadoutRecoilResolvedRotation,
 		LoadoutRecoilAlpha);
 	RecoilComponent->SetRelativeTransform(RecoilTransform);
 
@@ -1791,7 +1838,10 @@ void AGun::ResetLoadoutSpecialRecoil()
 	LoadoutRecoilComponent.Reset();
 	LoadoutRecoilAlpha = 0.0f;
 	LoadoutRecoilVelocity = 0.0f;
+	LoadoutRecoilResolvedDuration = 0.0f;
+	LoadoutRecoilResolvedDampingRatio = 0.0f;
 	LoadoutRecoilResolvedOffset = FVector::ZeroVector;
+	LoadoutRecoilResolvedRotation = FRotator::ZeroRotator;
 	bLoadoutRecoilTickActive = false;
 	RefreshActorTickEnabled();
 }

@@ -176,6 +176,24 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (ClampMin = "0.05", ClampMax = "2.0", DisplayName = "Loadout Recoil Spring Damping"))
 	float LoadoutRecoilSpringDampingRatio = 0.58f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (DisplayName = "Loadout Recoil Strength Range"))
+	FVector2D LoadoutRecoilStrengthRange = FVector2D(0.82f, 1.12f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (ClampMin = "0.0", ClampMax = "1.0", DisplayName = "Loadout Recoil Wide Shot Chance"))
+	float LoadoutRecoilWideShotChance = 0.24f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (ClampMin = "1.0", DisplayName = "Loadout Recoil Wide Shot Strength Multiplier"))
+	float LoadoutRecoilWideShotStrengthMultiplier = 1.34f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (DisplayName = "Loadout Recoil Rotation Jitter"))
+	FRotator LoadoutRecoilRotationJitter = FRotator(0.65f, 0.75f, 0.35f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (ClampMin = "0.0", DisplayName = "Loadout Recoil Duration Jitter"))
+	float LoadoutRecoilDurationJitter = 0.035f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (ClampMin = "0.0", DisplayName = "Loadout Recoil Damping Jitter"))
+	float LoadoutRecoilDampingJitter = 0.12f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gun", meta = (DisplayName = "Display Name"))
 	FText WeaponDisplayName;
 
@@ -296,6 +314,7 @@ private:
 	void ResetLoadoutSpecialRecoil();
 	USceneComponent* ResolveLoadoutRecoilComponent() const;
 	FVector ResolveLoadoutRecoilOffsetInParentSpace(const USceneComponent* RecoilComponent) const;
+	void ConfigureLoadoutRecoilShotProfile(const USceneComponent* RecoilComponent);
 	FName ResolveAttachmentFeedbackPreferredSocket(const UFunction* Function) const;
 	FName ResolveAttachmentFeedbackSocketFromContext(const FString& Context, FName SocketName) const;
 	FName ResolveChangedAttachmentFeedbackSocket(
@@ -353,8 +372,11 @@ private:
 	double LoadoutRecoilBypassUntilTime = 0.0;
 	float LoadoutRecoilAlpha = 0.0f;
 	float LoadoutRecoilVelocity = 0.0f;
+	float LoadoutRecoilResolvedDuration = 0.0f;
+	float LoadoutRecoilResolvedDampingRatio = 0.0f;
 	FTransform LoadoutRecoilBaseRelativeTransform = FTransform::Identity;
 	FVector LoadoutRecoilResolvedOffset = FVector::ZeroVector;
+	FRotator LoadoutRecoilResolvedRotation = FRotator::ZeroRotator;
 	FTimerHandle AttachmentFeedbackMonitorTimerHandle;
 	FTimerHandle LoadoutStopShootingTimerHandle;
 	TWeakObjectPtr<AActor> LoadoutShootMPSProxy;
