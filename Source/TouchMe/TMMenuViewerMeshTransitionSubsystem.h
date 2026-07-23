@@ -9,6 +9,7 @@
 
 class AActor;
 class APlayerCameraManager;
+class UAudioComponent;
 class UButton;
 class UCameraComponent;
 class UImage;
@@ -18,6 +19,9 @@ class UOverlay;
 class UParticleSystemComponent;
 class UPrimitiveComponent;
 class UScaleBox;
+class USoundBase;
+class USoundClass;
+class USoundMix;
 class USizeBox;
 class USkeletalMesh;
 class USkeletalMeshComponent;
@@ -126,6 +130,14 @@ private:
 		float OriginalLabelRenderOpacity = 1.0f;
 	};
 
+	struct FLoadoutMusicDuckComponentState
+	{
+		float OriginalVolumeMultiplier = 1.0f;
+		float OriginalLowPassFilterFrequency = 0.0f;
+		bool bCapturedOriginalVolume = false;
+		bool bOriginalLowPassFilterEnabled = false;
+	};
+
 	void TrackMenuViewer(AActor* Actor, float DeltaTime, bool bLoadoutPreviewVisible);
 	void NoteMeshChanged(const FMenuViewerState& State, USkeletalMeshComponent* VestComponent, USkeletalMesh* PreviousMesh) const;
 	void CaptureStableState(FMenuViewerState& State, USkeletalMeshComponent* VestComponent);
@@ -143,6 +155,8 @@ private:
 	static bool IsMainMenuVisible(UWorld* World);
 	static bool IsLoadoutPreviewVisible(UWorld* World);
 	static bool IsVisibleLoadoutPreviewWeaponActor(AActor* Actor);
+	static bool IsLoadoutMusicAudioComponent(const UAudioComponent* AudioComponent);
+	static bool IsLoadoutMusicSound(const USoundBase* Sound, const USoundClass* OverrideSoundClass);
 	static bool IsLoadoutBackGlowLight(const ULightComponent* LightComponent);
 	static bool IsLoadoutBackGlowVisual(const UPrimitiveComponent* PrimitiveComponent);
 	static APlayerCameraManager* ResolvePlayerCameraManager(UWorld* World);
@@ -172,6 +186,9 @@ private:
 	bool IsReadyForBeatSyncedCycle(FMenuViewerState& State, const FBeatSyncSnapshot& BeatSync, float WorldTimeSeconds) const;
 	void UpdateMenuFOV(UWorld* World, bool bMainMenuVisible, bool bLoadoutVisible);
 	void UpdateLoadoutFOV(UWorld* World, bool bLoadoutVisible);
+	void UpdateLoadoutMusicDucking(UWorld* World, bool bLoadoutVisible, bool bAttachmentsVisible, float DeltaTime);
+	void RestoreLoadoutMusicDucking();
+	USoundMix* ResolveLoadoutMusicMuffleSoundMix(bool bAttachmentsMode);
 	void UpdateLoadoutPostProcess(UWorld* World, bool bPostProcessVisible, bool bLoadoutVisible, bool bAttachmentsVisible);
 	void ApplyLoadoutPostProcess(UWorld* World, UCameraComponent* CameraComponent, bool bLoadoutVisible, bool bAttachmentsVisible);
 	void RestoreLoadoutPostProcess();
@@ -195,6 +212,9 @@ private:
 	void RestoreWeaponSelectionHighlight();
 	void UpdateAttachmentsCameraFocus(UWorld* World, bool bAttachmentsVisible, float DeltaTime, UCameraComponent* CameraComponent);
 	void ResetAttachmentsCameraFocus();
+	void StartAttachmentsCameraFocusLoopSound(UWorld* World);
+	void StopAttachmentsCameraFocusLoopSound();
+	USoundBase* ResolveAttachmentsCameraFocusLoopSound();
 	AActor* ResolveLoadoutPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
 	AActor* ResolveAttachmentsPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
 	FLoadoutPostProcessFocus ResolveLoadoutPostProcessFocus(UWorld* World, const UCameraComponent* CameraComponent, bool bPreferAttachmentsWeapon) const;
@@ -242,6 +262,17 @@ private:
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FBackGlowVisualState> MainMenuBackGlowVisualStates;
 	TMap<TWeakObjectPtr<UTextBlock>, FAttachmentSelectionLabelStyle> AttachmentSelectionLabelStyles;
 	TMap<TWeakObjectPtr<UTextBlock>, FGeneratedAttachmentIconStyle> GeneratedAttachmentIconStyles;
+	TMap<TWeakObjectPtr<UAudioComponent>, FLoadoutMusicDuckComponentState> LoadoutMusicDuckComponentStates;
+	UPROPERTY(Transient)
+	TObjectPtr<USoundMix> LoadoutMusicMuffleSoundMix;
+	UPROPERTY(Transient)
+	TObjectPtr<USoundMix> LoadoutMusicAttachmentsMuffleSoundMix;
+	UPROPERTY(Transient)
+	TObjectPtr<USoundMix> ActiveLoadoutMusicMuffleSoundMix;
+	UPROPERTY(Transient)
+	TObjectPtr<USoundBase> AttachmentsCameraFocusLoopSound;
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> AttachmentsCameraFocusLoopAudioComponent;
 	TWeakObjectPtr<UCameraComponent> MainMenuCameraDriftCamera;
 	FPostProcessSettings SavedLoadoutPostProcessSettings;
 	FVector MainMenuCameraDriftBaseRelativeLocation = FVector::ZeroVector;
@@ -265,6 +296,8 @@ private:
 	float AttachmentsPreviewBrightnessElapsedSeconds = 0.0f;
 	float AttachmentsPreviewBrightnessTransitionStartAlpha = 0.0f;
 	float AttachmentsPreviewBrightnessCurrentAlpha = 0.0f;
+	float LoadoutMusicDuckingAlpha = 0.0f;
+	float LoadoutMusicAttachmentsDuckingAlpha = 0.0f;
 	float MainMenuBackGlowElapsedSeconds = 0.0f;
 	float MainMenuBackGlowCurrentScale = 0.0f;
 	float MainMenuCameraDriftElapsedSeconds = 0.0f;
@@ -289,4 +322,5 @@ private:
 	bool bMainMenuCameraDriftLoadoutMode = false;
 	bool bAttachmentsCameraFocusWaitingForDelay = false;
 	bool bAttachmentsCameraFocusTransitionActive = false;
+	bool bLoadoutMusicMuffleSoundMixActive = false;
 };

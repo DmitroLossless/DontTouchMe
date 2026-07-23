@@ -310,16 +310,24 @@ private:
 	bool IsLoadoutRecoilFunction(const UFunction* Function) const;
 	bool IsLoadoutRecoilBypassActive() const;
 	void PlayLoadoutSpecialRecoil();
+	void PlayLoadoutSpecialRecoilFromWorldLocation(const FVector& SourceWorldLocation, const FTransform& SourceWorldTransform);
+	void PlayLoadoutSpecialRecoilWithOffset(USceneComponent* RecoilComponent, const FVector& ParentSpaceOffset, const TCHAR* LogPrefix);
 	void UpdateLoadoutSpecialRecoil(float DeltaSeconds);
 	void ResetLoadoutSpecialRecoil();
 	USceneComponent* ResolveLoadoutRecoilComponent() const;
 	FVector ResolveLoadoutRecoilOffsetInParentSpace(const USceneComponent* RecoilComponent) const;
+	FVector ResolveLoadoutRecoilOffsetInParentSpace(
+		const USceneComponent* RecoilComponent,
+		const FVector& SourceWorldLocation,
+		const FTransform& SourceWorldTransform) const;
+	void ConfigureLoadoutRecoilProfile(const FVector& ParentSpaceOffset);
 	void ConfigureLoadoutRecoilShotProfile(const USceneComponent* RecoilComponent);
 	FName ResolveAttachmentFeedbackPreferredSocket(const UFunction* Function) const;
 	FName ResolveAttachmentFeedbackSocketFromContext(const FString& Context, FName SocketName) const;
 	FName ResolveChangedAttachmentFeedbackSocket(
 		const TMap<FName, FString>& CurrentStateSignatures,
 		const TMap<FName, FName>& CurrentStateSockets) const;
+	bool DoesAttachmentStateContainSocket(const TMap<FName, FName>& CurrentStateSockets, FName SocketName) const;
 	void MonitorAttachmentFeedbackState();
 	void UpdateAttachmentFeedbackStateSnapshot();
 	uint32 BuildAttachmentFeedbackStateHash(

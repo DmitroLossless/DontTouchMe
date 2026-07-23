@@ -6,6 +6,7 @@
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/ActorComponent.h"
+#include "Components/AudioComponent.h"
 #include "Components/Button.h"
 #include "Components/ContentWidget.h"
 #include "Components/Image.h"
@@ -36,6 +37,9 @@
 #include "Materials/MaterialInterface.h"
 #include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
+#include "Sound/SoundBase.h"
+#include "Sound/SoundClass.h"
+#include "Sound/SoundMix.h"
 #include "TMAudioEnvelopeFollower.h"
 #include "TouchMe.h"
 #include "UObject/SoftObjectPath.h"
@@ -46,6 +50,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogTMMenuViewerMeshTransition, Log, All);
 
 namespace
 {
+const TCHAR* AttachmentsCameraFocusLoopSoundPath = TEXT("/Game/AGLS/Audio/Vehicle/Engine_Loop_Cue.Engine_Loop_Cue");
+
 static TAutoConsoleVariable<int32> CVarMenuViewerMeshTransition(
 	TEXT("tm.MenuViewerMeshTransition"),
 	1,
@@ -110,6 +116,54 @@ static TAutoConsoleVariable<int32> CVarLoadoutFOV(
 	TEXT("tm.LoadoutFOV"),
 	1,
 	TEXT("Locks the player camera FOV while W_Loadout or W_Attachments is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarLoadoutMusicDucking(
+	TEXT("tm.LoadoutMusicDucking"),
+	1,
+	TEXT("Ducks the main menu music while W_Loadout or W_Attachments is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingVolume(
+	TEXT("tm.LoadoutMusicDucking.Volume"),
+	0.35f,
+	TEXT("Target volume multiplier for main menu music while loadout is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingLowPassFrequency(
+	TEXT("tm.LoadoutMusicDucking.LowPassFrequency"),
+	250.0f,
+	TEXT("Low-pass cutoff frequency for the muffled barrel-like main menu music while loadout is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingAttachmentsVolume(
+	TEXT("tm.LoadoutMusicDucking.AttachmentsVolume"),
+	0.6f,
+	TEXT("Target volume multiplier for main menu music while attachments customization is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingAttachmentsLowPassFrequency(
+	TEXT("tm.LoadoutMusicDucking.AttachmentsLowPassFrequency"),
+	700.0f,
+	TEXT("Low-pass cutoff frequency for the weaker music muffle while attachments customization is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingAttachmentsBlendTime(
+	TEXT("tm.LoadoutMusicDucking.AttachmentsBlendTime"),
+	0.35f,
+	TEXT("Seconds used to blend between loadout and attachments music muffle strength."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingFadeIn(
+	TEXT("tm.LoadoutMusicDucking.FadeIn"),
+	0.35f,
+	TEXT("Seconds used to fade main menu music down on loadout entry."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingFadeOut(
+	TEXT("tm.LoadoutMusicDucking.FadeOut"),
+	0.45f,
+	TEXT("Seconds used to restore main menu music after leaving loadout."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarLoadoutFOVAngle(
@@ -302,6 +356,24 @@ static TAutoConsoleVariable<int32> CVarAttachmentsCameraFocus(
 	TEXT("tm.AttachmentsCameraFocus"),
 	1,
 	TEXT("Enables delayed smooth camera focus moves for W_Attachments slot tabs."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarAttachmentsCameraFocusLoopSound(
+	TEXT("tm.AttachmentsCameraFocus.LoopSound"),
+	1,
+	TEXT("Plays a loop while the W_Attachments camera focus move is active."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusLoopSoundVolume(
+	TEXT("tm.AttachmentsCameraFocus.LoopSound.Volume"),
+	0.75f,
+	TEXT("Volume multiplier for the W_Attachments camera focus movement loop."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusLoopSoundPitch(
+	TEXT("tm.AttachmentsCameraFocus.LoopSound.Pitch"),
+	1.0f,
+	TEXT("Pitch multiplier for the W_Attachments camera focus movement loop."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarAttachmentsCameraFocusDelay(
@@ -1346,6 +1418,7 @@ void UTMMenuViewerMeshTransitionSubsystem::Deinitialize()
 	RestoreMenuFOV();
 	RestoreAttachmentSelectionHighlight();
 	RestoreWeaponSelectionHighlight();
+	RestoreLoadoutMusicDucking();
 	MenuViewerStates.Empty();
 	Super::Deinitialize();
 }
@@ -1371,6 +1444,7 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 		&& (bMainMenuVisible || bLoadoutFOVVisible);
 	UpdateMenuFOV(World, bMainMenuVisible, bLoadoutFOVVisible);
 	UpdateLoadoutFOV(World, bLoadoutFOVEnabled);
+	UpdateLoadoutMusicDucking(World, bLoadoutFOVVisible, bAttachmentsVisible, DeltaTime);
 	UpdateLoadoutBackGlowTiming(bLoadoutFOVVisible, DeltaTime);
 	UpdateAttachmentsPreviewBrightnessTiming(bAttachmentsVisible, bLoadoutFOVVisible, DeltaTime);
 	UpdateLoadoutAttachmentsPostProcessBlend(bAttachmentsVisible, bLoadoutFOVVisible, DeltaTime);
@@ -1783,6 +1857,67 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutPreviewVisible(UWorld* World
 	}
 
 	return false;
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutMusicAudioComponent(const UAudioComponent* AudioComponent)
+{
+	if (!IsValid(AudioComponent)
+		|| AudioComponent->HasAnyFlags(RF_ClassDefaultObject)
+		|| !AudioComponent->IsPlaying())
+	{
+		return false;
+	}
+
+	return IsLoadoutMusicSound(AudioComponent->Sound, AudioComponent->SoundClassOverride);
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutMusicSound(
+	const USoundBase* Sound,
+	const USoundClass* OverrideSoundClass)
+{
+	const auto IsMusicSoundClass = [](const USoundClass* SoundClass)
+	{
+		for (const USoundClass* CurrentClass = SoundClass; CurrentClass; CurrentClass = CurrentClass->ParentClass)
+		{
+			const FString ClassPath = CurrentClass->GetPathName();
+			if (ClassPath.Contains(TEXT("SC_Music_MPS"), ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	};
+
+	if (IsMusicSoundClass(OverrideSoundClass))
+	{
+		return true;
+	}
+
+	if (!Sound)
+	{
+		return false;
+	}
+
+	if (IsMusicSoundClass(Sound->GetSoundClass()))
+	{
+		return true;
+	}
+
+	const FString SoundPath = Sound->GetPathName();
+	if (SoundPath.Contains(TEXT("/Game/Sound/Main"), ESearchCase::IgnoreCase)
+		|| SoundPath.Contains(TEXT("/Game/Sound/TouchMe_OST"), ESearchCase::IgnoreCase)
+		|| SoundPath.Contains(TEXT("/Game/MP_System_V3/Game/Sounds/Cue/MainMenu_Cue"), ESearchCase::IgnoreCase)
+		|| SoundPath.Contains(TEXT("/Game/MP_System_V3/Game/Sounds/Wave/MainMenu"), ESearchCase::IgnoreCase))
+	{
+		return true;
+	}
+
+	const float Duration = Sound->GetDuration();
+	return Duration > 20.0f
+		&& (SoundPath.Contains(TEXT("/Music/"), ESearchCase::IgnoreCase)
+			|| SoundPath.Contains(TEXT("/Game/Sound/"), ESearchCase::IgnoreCase)
+			|| SoundPath.Contains(TEXT("MainMenu"), ESearchCase::IgnoreCase));
 }
 
 bool UTMMenuViewerMeshTransitionSubsystem::IsVisibleLoadoutPreviewWeaponActor(AActor* Actor)
@@ -2308,6 +2443,305 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutFOV()
 
 	LoadoutFOVCameraManager.Reset();
 	bLoadoutFOVApplied = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutMusicDucking(
+	UWorld* World,
+	const bool bLoadoutVisible,
+	const bool bAttachmentsVisible,
+	const float DeltaTime)
+{
+	const bool bShouldDuck = World
+		&& CVarLoadoutMusicDucking.GetValueOnGameThread() != 0
+		&& bLoadoutVisible;
+	const float TargetAlpha = bShouldDuck ? 1.0f : 0.0f;
+	const float FadeDuration = bShouldDuck
+		? FMath::Max(0.01f, CVarLoadoutMusicDuckingFadeIn.GetValueOnGameThread())
+		: FMath::Max(0.01f, CVarLoadoutMusicDuckingFadeOut.GetValueOnGameThread());
+	LoadoutMusicDuckingAlpha = FMath::FInterpConstantTo(
+		LoadoutMusicDuckingAlpha,
+		TargetAlpha,
+		FMath::Max(0.0f, DeltaTime),
+		1.0f / FadeDuration);
+
+	const float AttachmentsTargetAlpha = bShouldDuck && bAttachmentsVisible ? 1.0f : 0.0f;
+	LoadoutMusicAttachmentsDuckingAlpha = FMath::FInterpConstantTo(
+		LoadoutMusicAttachmentsDuckingAlpha,
+		AttachmentsTargetAlpha,
+		FMath::Max(0.0f, DeltaTime),
+		1.0f / FMath::Max(0.01f, CVarLoadoutMusicDuckingAttachmentsBlendTime.GetValueOnGameThread()));
+
+	const float LoadoutDuckedVolume = FMath::Clamp(CVarLoadoutMusicDuckingVolume.GetValueOnGameThread(), 0.0f, 1.0f);
+	const float AttachmentsDuckedVolume = FMath::Clamp(
+		CVarLoadoutMusicDuckingAttachmentsVolume.GetValueOnGameThread(),
+		0.0f,
+		1.0f);
+	const float DuckedVolume = FMath::Lerp(
+		LoadoutDuckedVolume,
+		AttachmentsDuckedVolume,
+		LoadoutMusicAttachmentsDuckingAlpha);
+	const float VolumeScale = FMath::Lerp(1.0f, DuckedVolume, LoadoutMusicDuckingAlpha);
+	const float LoadoutLowPassFrequency = FMath::Clamp(
+		CVarLoadoutMusicDuckingLowPassFrequency.GetValueOnGameThread(),
+		20.0f,
+		20000.0f);
+	const float AttachmentsLowPassFrequency = FMath::Clamp(
+		CVarLoadoutMusicDuckingAttachmentsLowPassFrequency.GetValueOnGameThread(),
+		20.0f,
+		20000.0f);
+	const float TargetLowPassFrequency = FMath::Lerp(
+		LoadoutLowPassFrequency,
+		AttachmentsLowPassFrequency,
+		LoadoutMusicAttachmentsDuckingAlpha);
+	TSet<TWeakObjectPtr<UAudioComponent>> UpdatedComponents;
+
+	if (bShouldDuck)
+	{
+		if (USoundMix* DesiredMuffleSoundMix = ResolveLoadoutMusicMuffleSoundMix(bAttachmentsVisible))
+		{
+			if (ActiveLoadoutMusicMuffleSoundMix != DesiredMuffleSoundMix)
+			{
+				if (USoundMix* PreviousMuffleSoundMix = ActiveLoadoutMusicMuffleSoundMix)
+				{
+					UGameplayStatics::PopSoundMixModifier(World, PreviousMuffleSoundMix);
+				}
+
+				UGameplayStatics::PushSoundMixModifier(World, DesiredMuffleSoundMix);
+				ActiveLoadoutMusicMuffleSoundMix = DesiredMuffleSoundMix;
+				bLoadoutMusicMuffleSoundMixActive = true;
+				UE_LOG(
+					LogTMMenuViewerMeshTransition,
+					Display,
+					TEXT("[TMLoadoutMusicMuffle] Pushed %s music muffle sound mix. Volume=%.2f LPF=%.1f"),
+					bAttachmentsVisible ? TEXT("attachments") : TEXT("loadout"),
+					DuckedVolume,
+					TargetLowPassFrequency);
+			}
+		}
+	}
+	else if (!bShouldDuck && bLoadoutMusicMuffleSoundMixActive)
+	{
+		if (USoundMix* MuffleSoundMix = LoadoutMusicMuffleSoundMix)
+		{
+			UGameplayStatics::PopSoundMixModifier(World, MuffleSoundMix);
+		}
+		if (USoundMix* AttachmentsMuffleSoundMix = LoadoutMusicAttachmentsMuffleSoundMix)
+		{
+			UGameplayStatics::PopSoundMixModifier(World, AttachmentsMuffleSoundMix);
+		}
+		ActiveLoadoutMusicMuffleSoundMix = nullptr;
+		bLoadoutMusicMuffleSoundMixActive = false;
+	}
+
+	const auto ApplyComponentMuffle = [VolumeScale, TargetLowPassFrequency, this](
+		UAudioComponent* AudioComponent,
+		const FLoadoutMusicDuckComponentState& DuckState)
+	{
+		const float OriginalLowPassFrequency = DuckState.bOriginalLowPassFilterEnabled
+			? FMath::Clamp(DuckState.OriginalLowPassFilterFrequency, 20.0f, 20000.0f)
+			: 20000.0f;
+		const float CurrentLowPassFrequency = FMath::Lerp(
+			OriginalLowPassFrequency,
+			TargetLowPassFrequency,
+			LoadoutMusicDuckingAlpha);
+		AudioComponent->SetVolumeMultiplier(DuckState.OriginalVolumeMultiplier * VolumeScale);
+		AudioComponent->SetLowPassFilterEnabled(true);
+		AudioComponent->SetLowPassFilterFrequency(CurrentLowPassFrequency);
+	};
+
+	const auto RestoreComponentMuffle = [](
+		UAudioComponent* AudioComponent,
+		const FLoadoutMusicDuckComponentState& DuckState)
+	{
+		AudioComponent->SetVolumeMultiplier(DuckState.OriginalVolumeMultiplier);
+		AudioComponent->SetLowPassFilterEnabled(DuckState.bOriginalLowPassFilterEnabled);
+		AudioComponent->SetLowPassFilterFrequency(DuckState.OriginalLowPassFilterFrequency);
+	};
+
+	if (World && (bShouldDuck || LoadoutMusicDuckingAlpha > KINDA_SMALL_NUMBER))
+	{
+		for (TObjectIterator<UAudioComponent> It; It; ++It)
+		{
+			UAudioComponent* AudioComponent = *It;
+			if (!IsLoadoutMusicAudioComponent(AudioComponent) || AudioComponent->GetWorld() != World)
+			{
+				continue;
+			}
+
+			TWeakObjectPtr<UAudioComponent> ComponentKey(AudioComponent);
+			FLoadoutMusicDuckComponentState& DuckState = LoadoutMusicDuckComponentStates.FindOrAdd(ComponentKey);
+			if (!DuckState.bCapturedOriginalVolume)
+			{
+				DuckState.OriginalVolumeMultiplier = AudioComponent->VolumeMultiplier;
+				DuckState.bOriginalLowPassFilterEnabled = AudioComponent->bEnableLowPassFilter;
+				DuckState.OriginalLowPassFilterFrequency = AudioComponent->LowPassFilterFrequency;
+				DuckState.bCapturedOriginalVolume = true;
+			}
+
+			ApplyComponentMuffle(AudioComponent, DuckState);
+			UpdatedComponents.Add(ComponentKey);
+		}
+	}
+
+	for (auto It = LoadoutMusicDuckComponentStates.CreateIterator(); It; ++It)
+	{
+		UAudioComponent* AudioComponent = It.Key().Get();
+		if (!IsValid(AudioComponent))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+
+		FLoadoutMusicDuckComponentState& DuckState = It.Value();
+		if (!UpdatedComponents.Contains(It.Key()))
+		{
+			if (LoadoutMusicDuckingAlpha > KINDA_SMALL_NUMBER && AudioComponent->GetWorld() == World)
+			{
+				ApplyComponentMuffle(AudioComponent, DuckState);
+				continue;
+			}
+
+			RestoreComponentMuffle(AudioComponent, DuckState);
+			It.RemoveCurrent();
+			continue;
+		}
+
+		if (LoadoutMusicDuckingAlpha <= KINDA_SMALL_NUMBER)
+		{
+			RestoreComponentMuffle(AudioComponent, DuckState);
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutMusicDucking()
+{
+	if (bLoadoutMusicMuffleSoundMixActive)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			if (USoundMix* MuffleSoundMix = LoadoutMusicMuffleSoundMix)
+			{
+				UGameplayStatics::PopSoundMixModifier(World, MuffleSoundMix);
+			}
+			if (USoundMix* AttachmentsMuffleSoundMix = LoadoutMusicAttachmentsMuffleSoundMix)
+			{
+				UGameplayStatics::PopSoundMixModifier(World, AttachmentsMuffleSoundMix);
+			}
+		}
+		ActiveLoadoutMusicMuffleSoundMix = nullptr;
+		bLoadoutMusicMuffleSoundMixActive = false;
+	}
+
+	for (auto It = LoadoutMusicDuckComponentStates.CreateIterator(); It; ++It)
+	{
+		if (UAudioComponent* AudioComponent = It.Key().Get())
+		{
+			AudioComponent->SetVolumeMultiplier(It.Value().OriginalVolumeMultiplier);
+			AudioComponent->SetLowPassFilterEnabled(It.Value().bOriginalLowPassFilterEnabled);
+			AudioComponent->SetLowPassFilterFrequency(It.Value().OriginalLowPassFilterFrequency);
+		}
+	}
+
+	LoadoutMusicDuckComponentStates.Empty();
+	LoadoutMusicDuckingAlpha = 0.0f;
+	LoadoutMusicAttachmentsDuckingAlpha = 0.0f;
+}
+
+USoundMix* UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutMusicMuffleSoundMix(const bool bAttachmentsMode)
+{
+	if (bAttachmentsMode && LoadoutMusicAttachmentsMuffleSoundMix)
+	{
+		return LoadoutMusicAttachmentsMuffleSoundMix;
+	}
+	if (!bAttachmentsMode && LoadoutMusicMuffleSoundMix)
+	{
+		return LoadoutMusicMuffleSoundMix;
+	}
+
+	USoundMix* SoundMix = NewObject<USoundMix>(
+		this,
+		bAttachmentsMode
+			? TEXT("TM_AttachmentsMusicMuffleSoundMix")
+			: TEXT("TM_LoadoutMusicMuffleSoundMix"));
+	SoundMix->InitialDelay = 0.0f;
+	SoundMix->FadeInTime = FMath::Max(0.01f, CVarLoadoutMusicDuckingFadeIn.GetValueOnGameThread());
+	SoundMix->Duration = -1.0f;
+	SoundMix->FadeOutTime = FMath::Max(0.01f, CVarLoadoutMusicDuckingFadeOut.GetValueOnGameThread());
+	SoundMix->SoundClassEffects.Empty();
+
+	const float DuckedVolume = FMath::Clamp(
+		bAttachmentsMode
+			? CVarLoadoutMusicDuckingAttachmentsVolume.GetValueOnGameThread()
+			: CVarLoadoutMusicDuckingVolume.GetValueOnGameThread(),
+		0.0f,
+		1.0f);
+	const float TargetLowPassFrequency = FMath::Clamp(
+		bAttachmentsMode
+			? CVarLoadoutMusicDuckingAttachmentsLowPassFrequency.GetValueOnGameThread()
+			: CVarLoadoutMusicDuckingLowPassFrequency.GetValueOnGameThread(),
+		20.0f,
+		20000.0f);
+
+	auto AddSoundClassAdjuster = [SoundMix, TargetLowPassFrequency](
+		const TCHAR* SoundClassPath,
+		const float VolumeAdjuster)
+	{
+		USoundClass* SoundClass = LoadObject<USoundClass>(nullptr, SoundClassPath);
+		if (!SoundClass)
+		{
+			return false;
+		}
+
+		FSoundClassAdjuster Adjuster;
+		Adjuster.SoundClassObject = SoundClass;
+		Adjuster.VolumeAdjuster = VolumeAdjuster;
+		Adjuster.PitchAdjuster = 1.0f;
+		Adjuster.LowPassFilterFrequency = TargetLowPassFrequency;
+		Adjuster.bApplyToChildren = true;
+		Adjuster.VoiceCenterChannelVolumeAdjuster = 1.0f;
+		SoundMix->SoundClassEffects.Add(Adjuster);
+		return true;
+	};
+
+	const bool bAddedProjectMaster = AddSoundClassAdjuster(
+		TEXT("/Game/MP_System_V3/Game/Sounds/SC_Master_MPS.SC_Master_MPS"),
+		DuckedVolume);
+	AddSoundClassAdjuster(
+		TEXT("/Game/MP_System_V3/Game/Sounds/SC_Music_MPS.SC_Music_MPS"),
+		bAddedProjectMaster ? 1.0f : DuckedVolume);
+	AddSoundClassAdjuster(
+		TEXT("/Game/MP_System_V3/Game/Sounds/SC_Menu_MPS.SC_Menu_MPS"),
+		bAddedProjectMaster ? 1.0f : DuckedVolume);
+	AddSoundClassAdjuster(TEXT("/Engine/EngineSounds/Master.Master"), DuckedVolume);
+
+	if (SoundMix->SoundClassEffects.IsEmpty())
+	{
+		UE_LOG(
+			LogTMMenuViewerMeshTransition,
+			Warning,
+			TEXT("[TMLoadoutMusicMuffle] Missing target sound classes; cannot apply loadout muffle sound mix."));
+		return nullptr;
+	}
+
+	UE_LOG(
+		LogTMMenuViewerMeshTransition,
+		Display,
+		TEXT("[TMLoadoutMusicMuffle] Created %s music muffle sound mix. Adjusters=%d Volume=%.2f LPF=%.1f"),
+		bAttachmentsMode ? TEXT("attachments") : TEXT("loadout"),
+		SoundMix->SoundClassEffects.Num(),
+		DuckedVolume,
+		TargetLowPassFrequency);
+
+	if (bAttachmentsMode)
+	{
+		LoadoutMusicAttachmentsMuffleSoundMix = SoundMix;
+	}
+	else
+	{
+		LoadoutMusicMuffleSoundMix = SoundMix;
+	}
+	return SoundMix;
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutPostProcess(
@@ -3510,6 +3944,7 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
 		bAttachmentsCameraFocusWaitingForDelay = FocusGroup != EAttachmentCameraFocusGroup::None
 			&& CVarAttachmentsCameraFocusDelay.GetValueOnGameThread() > 0.0f;
 		bAttachmentsCameraFocusTransitionActive = true;
+		StopAttachmentsCameraFocusLoopSound();
 
 		UE_LOG(
 			LogTMMenuViewerMeshTransition,
@@ -3544,6 +3979,18 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
 		AttachmentsCameraFocusBlendElapsedSeconds = 0.0f;
 	}
 
+	const bool bHasCameraFocusMotion =
+		!AttachmentsCameraFocusStartLocationOffset.Equals(AttachmentsCameraFocusTargetLocationOffset, 0.01f)
+		|| !AttachmentsCameraFocusStartRotationOffset.Equals(AttachmentsCameraFocusTargetRotationOffset, 0.01f);
+	if (bHasCameraFocusMotion)
+	{
+		StartAttachmentsCameraFocusLoopSound(World);
+	}
+	else
+	{
+		StopAttachmentsCameraFocusLoopSound();
+	}
+
 	AttachmentsCameraFocusBlendElapsedSeconds += FMath::Max(0.0f, DeltaTime);
 	const float Duration = FMath::Max(0.01f, CVarAttachmentsCameraFocusDuration.GetValueOnGameThread());
 	const float Alpha = SmoothStep01(AttachmentsCameraFocusBlendElapsedSeconds / Duration);
@@ -3562,11 +4009,13 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsCameraFocus(
 		AttachmentsCameraFocusCurrentRotationOffset = AttachmentsCameraFocusTargetRotationOffset;
 
 		bAttachmentsCameraFocusTransitionActive = false;
+		StopAttachmentsCameraFocusLoopSound();
 	}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::ResetAttachmentsCameraFocus()
 {
+	StopAttachmentsCameraFocusLoopSound();
 	AttachmentsCameraFocusCurrentLocationOffset = FVector::ZeroVector;
 	AttachmentsCameraFocusStartLocationOffset = FVector::ZeroVector;
 	AttachmentsCameraFocusTargetLocationOffset = FVector::ZeroVector;
@@ -3581,6 +4030,69 @@ void UTMMenuViewerMeshTransitionSubsystem::ResetAttachmentsCameraFocus()
 	bAttachmentsCameraFocusObservedInstalled = false;
 	bAttachmentsCameraFocusWaitingForDelay = false;
 	bAttachmentsCameraFocusTransitionActive = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::StartAttachmentsCameraFocusLoopSound(UWorld* World)
+{
+	if (!World || CVarAttachmentsCameraFocusLoopSound.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+
+	if (UAudioComponent* ExistingAudioComponent = AttachmentsCameraFocusLoopAudioComponent)
+	{
+		if (ExistingAudioComponent->IsPlaying())
+		{
+			return;
+		}
+
+		ExistingAudioComponent->DestroyComponent();
+		AttachmentsCameraFocusLoopAudioComponent = nullptr;
+	}
+
+	USoundBase* LoopSound = ResolveAttachmentsCameraFocusLoopSound();
+	if (!LoopSound)
+	{
+		return;
+	}
+
+	AttachmentsCameraFocusLoopAudioComponent = UGameplayStatics::SpawnSound2D(
+		this,
+		LoopSound,
+		FMath::Max(0.0f, CVarAttachmentsCameraFocusLoopSoundVolume.GetValueOnGameThread()),
+		FMath::Max(0.01f, CVarAttachmentsCameraFocusLoopSoundPitch.GetValueOnGameThread()),
+		0.0f,
+		nullptr,
+		false,
+		false);
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::StopAttachmentsCameraFocusLoopSound()
+{
+	if (UAudioComponent* AudioComponent = AttachmentsCameraFocusLoopAudioComponent)
+	{
+		AudioComponent->Stop();
+		AudioComponent->DestroyComponent();
+		AttachmentsCameraFocusLoopAudioComponent = nullptr;
+	}
+}
+
+USoundBase* UTMMenuViewerMeshTransitionSubsystem::ResolveAttachmentsCameraFocusLoopSound()
+{
+	if (!AttachmentsCameraFocusLoopSound)
+	{
+		AttachmentsCameraFocusLoopSound = LoadObject<USoundBase>(nullptr, AttachmentsCameraFocusLoopSoundPath);
+		if (!AttachmentsCameraFocusLoopSound)
+		{
+			UE_LOG(
+				LogTMMenuViewerMeshTransition,
+				Warning,
+				TEXT("[TMAttachmentsCameraFocus] Missing camera focus loop sound: %s"),
+				AttachmentsCameraFocusLoopSoundPath);
+		}
+	}
+
+	return AttachmentsCameraFocusLoopSound;
 }
 
 UTMMenuViewerMeshTransitionSubsystem::EAttachmentCameraFocusGroup

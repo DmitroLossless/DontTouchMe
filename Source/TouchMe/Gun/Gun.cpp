@@ -47,7 +47,7 @@ namespace
 	const TCHAR* OpticsTablePath = TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Optics.DT_Optics");
 	const TCHAR* DefaultAttachmentFeedbackFXPath = TEXT("/Game/BallisticsVFX/Particles/Impacts/LegacyFX/Small-Medium-Large/Paper/NS_Paper_impact_small.NS_Paper_impact_small");
 	const TCHAR* AdditionalAttachmentSmokeFXPath = TEXT("/Game/Realistic_Starter_VFX_Pack_Vol2/Particles/Smoke/P_Smoke_F.P_Smoke_F");
-	const TCHAR* DefaultAttachmentFeedbackSoundPath = nullptr;
+	const TCHAR* DefaultAttachmentFeedbackSoundPath = TEXT("/Game/Battle_Royale_Game/Cues/Gun_Foley/Foley/Weapon_Foley_Knife_Small_Pull_Out_Unshealte_1_Cue.Weapon_Foley_Knife_Small_Pull_Out_Unshealte_1_Cue");
 	const TCHAR* DefaultWeaponSpawnFeedbackFXPath = TEXT("/Game/MP_System_V3/Game/Commons/Particles/P_Dust_Dark.P_Dust_Dark");
 	const TCHAR* DefaultWeaponSpawnFeedbackSoundPath = nullptr;
 	const TCHAR* DefaultBodyHitSoundPath = TEXT("/Game/Battle_Royale_Game/Cues/Gun_Foley/Foley/Weapon_Foley_Fist_Punch_Body_Hit_Bass_Single_Cloth_1_Cue.Weapon_Foley_Fist_Punch_Body_Hit_Bass_Single_Cloth_1_Cue");
@@ -1655,15 +1655,32 @@ FVector AGun::ResolveLoadoutRecoilOffsetInParentSpace(const USceneComponent* Rec
 	}
 
 	const FTransform MuzzleTransform = ResolveLoadoutShootFeedbackTransform();
-	FVector BarrelForward = MuzzleTransform.GetLocation() - RecoilComponent->GetComponentLocation();
-	if (!BarrelForward.Normalize())
+	return ResolveLoadoutRecoilOffsetInParentSpace(RecoilComponent, MuzzleTransform.GetLocation(), MuzzleTransform);
+}
+
+FVector AGun::ResolveLoadoutRecoilOffsetInParentSpace(
+	const USceneComponent* RecoilComponent,
+	const FVector& SourceWorldLocation,
+	const FTransform& SourceWorldTransform) const
+{
+	if (!IsValid(RecoilComponent))
 	{
-		BarrelForward = MuzzleTransform.GetUnitAxis(EAxis::X);
+		return FVector::ZeroVector;
+	}
+
+	FVector DirectionToRoot = RecoilComponent->GetComponentLocation() - SourceWorldLocation;
+	if (!DirectionToRoot.Normalize())
+	{
+		DirectionToRoot = -SourceWorldTransform.GetUnitAxis(EAxis::X);
+		if (!DirectionToRoot.Normalize())
+		{
+			DirectionToRoot = -RecoilComponent->GetForwardVector();
+		}
 	}
 
 	const float BackDistance = FMath::Abs(LoadoutRecoilOffset.X);
-	FVector WorldOffset = -BarrelForward * BackDistance;
-	WorldOffset += MuzzleTransform.GetUnitAxis(EAxis::Y) * LoadoutRecoilOffset.Y;
+	FVector WorldOffset = DirectionToRoot * BackDistance;
+	WorldOffset += SourceWorldTransform.GetUnitAxis(EAxis::Y) * LoadoutRecoilOffset.Y;
 	WorldOffset += RecoilComponent->GetUpVector() * LoadoutRecoilOffset.Z;
 
 	if (const USceneComponent* AttachParentComponent = RecoilComponent->GetAttachParent())
@@ -1674,7 +1691,7 @@ FVector AGun::ResolveLoadoutRecoilOffsetInParentSpace(const USceneComponent* Rec
 	return WorldOffset;
 }
 
-void AGun::ConfigureLoadoutRecoilShotProfile(const USceneComponent* RecoilComponent)
+void AGun::ConfigureLoadoutRecoilProfile(const FVector& ParentSpaceOffset)
 {
 	const float StrengthMin = FMath::Max(
 		0.0f,
@@ -1689,7 +1706,7 @@ void AGun::ConfigureLoadoutRecoilShotProfile(const USceneComponent* RecoilCompon
 	const float Strength = FMath::FRandRange(StrengthMin, StrengthMax) * WideShotMultiplier;
 	const float RotationJitterScale = bWideShot ? 1.25f : 1.0f;
 
-	LoadoutRecoilResolvedOffset = ResolveLoadoutRecoilOffsetInParentSpace(RecoilComponent) * Strength;
+	LoadoutRecoilResolvedOffset = ParentSpaceOffset * Strength;
 	LoadoutRecoilResolvedRotation = FRotator(
 		LoadoutRecoilRotation.Pitch * Strength
 			+ FMath::FRandRange(-LoadoutRecoilRotationJitter.Pitch, LoadoutRecoilRotationJitter.Pitch) * RotationJitterScale,
@@ -1714,6 +1731,11 @@ void AGun::ConfigureLoadoutRecoilShotProfile(const USceneComponent* RecoilCompon
 		2.0f);
 }
 
+void AGun::ConfigureLoadoutRecoilShotProfile(const USceneComponent* RecoilComponent)
+{
+	ConfigureLoadoutRecoilProfile(ResolveLoadoutRecoilOffsetInParentSpace(RecoilComponent));
+}
+
 void AGun::PlayLoadoutSpecialRecoil()
 {
 	if (!bCanLoadoutShoot || HasAnyFlags(RF_ClassDefaultObject))
@@ -1727,12 +1749,49 @@ void AGun::PlayLoadoutSpecialRecoil()
 		return;
 	}
 
+	PlayLoadoutSpecialRecoilWithOffset(
+		RecoilComponent,
+		ResolveLoadoutRecoilOffsetInParentSpace(RecoilComponent),
+		TEXT("TMLoadoutPreviewShoot"));
+}
+
+void AGun::PlayLoadoutSpecialRecoilFromWorldLocation(
+	const FVector& SourceWorldLocation,
+	const FTransform& SourceWorldTransform)
+{
+	if (!bCanLoadoutShoot || HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return;
+	}
+
+	USceneComponent* RecoilComponent = ResolveLoadoutRecoilComponent();
+	if (!IsValid(RecoilComponent))
+	{
+		return;
+	}
+
+	PlayLoadoutSpecialRecoilWithOffset(
+		RecoilComponent,
+		ResolveLoadoutRecoilOffsetInParentSpace(RecoilComponent, SourceWorldLocation, SourceWorldTransform),
+		TEXT("TMAttachmentFeedback"));
+}
+
+void AGun::PlayLoadoutSpecialRecoilWithOffset(
+	USceneComponent* RecoilComponent,
+	const FVector& ParentSpaceOffset,
+	const TCHAR* LogPrefix)
+{
+	if (!IsValid(RecoilComponent))
+	{
+		return;
+	}
+
 	if (LoadoutRecoilComponent.Get() != RecoilComponent || !bLoadoutRecoilTickActive)
 	{
 		LoadoutRecoilBaseRelativeTransform = RecoilComponent->GetRelativeTransform();
 		LoadoutRecoilComponent = RecoilComponent;
 	}
-	ConfigureLoadoutRecoilShotProfile(RecoilComponent);
+	ConfigureLoadoutRecoilProfile(ParentSpaceOffset);
 	LoadoutRecoilAlpha = LoadoutRecoilAlpha > 0.0f
 		? FMath::Min(LoadoutRecoilAlpha + 1.0f, LoadoutRecoilMaxAlpha)
 		: 1.0f;
@@ -1751,7 +1810,8 @@ void AGun::PlayLoadoutSpecialRecoil()
 	UE_LOG(
 		LogTemp,
 		Display,
-		TEXT("[TMLoadoutPreviewShoot] Applied special loadout recoil. Gun=%s Component=%s Offset=%s Rotation=%s Duration=%.3f Damping=%.2f"),
+		TEXT("[%s] Applied special loadout recoil. Gun=%s Component=%s Offset=%s Rotation=%s Duration=%.3f Damping=%.2f"),
+		LogPrefix ? LogPrefix : TEXT("TMLoadoutRecoil"),
 		*GetName(),
 		*RecoilComponent->GetName(),
 		*LoadoutRecoilResolvedOffset.ToCompactString(),
@@ -2075,32 +2135,29 @@ void AGun::SpawnAttachmentFeedbackAtLocation(const FVector Location, const FRota
 	}
 
 	UFXSystemAsset* FeedbackFX = AttachmentFeedbackFX;
+
 	if (!FeedbackFX)
 	{
 		FeedbackFX = LoadObject<UFXSystemAsset>(nullptr, DefaultAttachmentFeedbackFXPath);
 	}
 
-	SpawnLoadoutFeedbackFX(this, World, FeedbackFX, Location, Rotation, AttachmentFeedbackScale);
+	if (FeedbackFX)
+	{
+		SpawnLoadoutFeedbackFX(this, World, FeedbackFX, Location, Rotation, AttachmentFeedbackScale);
+	}
 	// SpawnAdditionalLoadoutFeedbackFX(this, World, AdditionalAttachmentSmokeFXPath, Location, Rotation, AdditionalAttachmentSmokeScale);
 
 	USoundBase* FeedbackSound = ResolveLoadoutFeedbackSound(AttachmentFeedbackSound, DefaultAttachmentFeedbackSoundPath);
 
 	if (FeedbackSound)
 	{
-		if (bAttachmentFeedbackPlaySound2D)
-		{
-			UGameplayStatics::PlaySound2D(this, FeedbackSound, AttachmentFeedbackVolume, AttachmentFeedbackPitch);
-		}
-		else
-		{
-			UGameplayStatics::PlaySoundAtLocation(
-				this,
-				FeedbackSound,
-				Location,
-				Rotation,
-				AttachmentFeedbackVolume,
-				AttachmentFeedbackPitch);
-		}
+		UGameplayStatics::PlaySoundAtLocation(
+			this,
+			FeedbackSound,
+			Location,
+			Rotation,
+			AttachmentFeedbackVolume,
+			AttachmentFeedbackPitch);
 	}
 }
 
@@ -2231,11 +2288,11 @@ void AGun::RunDeferredAttachmentSanitize()
 	if (bShouldPlayAttachmentFeedback)
 	{
 		bool bDetectedStateChange = bDetectedStateChangeBeforeSanitize;
+		TMap<FName, FString> CurrentStateSignatures;
+		TMap<FName, FName> CurrentStateSockets;
+		const uint32 CurrentHash = BuildAttachmentFeedbackStateHash(&CurrentStateSignatures, &CurrentStateSockets);
 		if (!bDetectedStateChange)
 		{
-			TMap<FName, FString> CurrentStateSignatures;
-			TMap<FName, FName> CurrentStateSockets;
-			const uint32 CurrentHash = BuildAttachmentFeedbackStateHash(&CurrentStateSignatures, &CurrentStateSockets);
 			if (bAttachmentFeedbackStateInitialized && CurrentHash != LastAttachmentFeedbackStateHash)
 			{
 				bDetectedStateChange = true;
@@ -2250,7 +2307,9 @@ void AGun::RunDeferredAttachmentSanitize()
 			}
 		}
 
-		if (bDetectedStateChange && !AttachmentFeedbackPreferredSocketName.IsNone())
+		if (bDetectedStateChange
+			&& !AttachmentFeedbackPreferredSocketName.IsNone()
+			&& DoesAttachmentStateContainSocket(CurrentStateSockets, AttachmentFeedbackPreferredSocketName))
 		{
 			PlayAttachmentFeedback();
 		}
@@ -2264,6 +2323,7 @@ void AGun::PlayAttachmentFeedback()
 {
 	const FTransform FeedbackTransform = ResolveAttachmentFeedbackTransform();
 	SpawnAttachmentFeedbackAtLocation(FeedbackTransform.GetLocation(), FeedbackTransform.Rotator());
+	PlayLoadoutSpecialRecoilFromWorldLocation(FeedbackTransform.GetLocation(), FeedbackTransform);
 }
 
 FTransform AGun::ResolveAttachmentFeedbackTransform() const
@@ -2723,25 +2783,29 @@ FName AGun::ResolveChangedAttachmentFeedbackSocket(
 		}
 	}
 
-	TArray<FName> PreviousKeys;
-	LastAttachmentFeedbackStateSignatures.GetKeys(PreviousKeys);
-	SortNames(PreviousKeys);
+	return NAME_None;
+}
 
-	for (const FName Key : PreviousKeys)
+bool AGun::DoesAttachmentStateContainSocket(
+	const TMap<FName, FName>& CurrentStateSockets,
+	const FName SocketName) const
+{
+	if (SocketName.IsNone())
 	{
-		if (CurrentStateSignatures.Contains(Key))
-		{
-			continue;
-		}
+		return false;
+	}
 
-		const FName RemovedSocketName = LastAttachmentFeedbackStateSockets.FindRef(Key);
-		if (!RemovedSocketName.IsNone())
+	const USceneComponent* MainMesh = ResolveMainSkeletalMesh();
+	const FName ResolvedSocketName = ResolveCompatibleWeaponAttachmentSocketName(MainMesh, SocketName);
+	for (const TPair<FName, FName>& StateSocket : CurrentStateSockets)
+	{
+		if (ResolveCompatibleWeaponAttachmentSocketName(MainMesh, StateSocket.Value) == ResolvedSocketName)
 		{
-			return RemovedSocketName;
+			return true;
 		}
 	}
 
-	return NAME_None;
+	return false;
 }
 
 void AGun::MonitorAttachmentFeedbackState()
@@ -2817,7 +2881,10 @@ uint32 AGun::BuildAttachmentFeedbackStateHash(
 				TEXT("Mesh=%s;Socket=%s"),
 				*MeshPath,
 				*FeedbackSocketName.ToString()));
-		StateSockets.Add(Key, FeedbackSocketName);
+		if (!MeshPath.IsEmpty() && !FeedbackSocketName.IsNone())
+		{
+			StateSockets.Add(Key, FeedbackSocketName);
+		}
 	};
 
 	TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents(this);
