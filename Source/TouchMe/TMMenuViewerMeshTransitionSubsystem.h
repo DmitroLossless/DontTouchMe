@@ -157,6 +157,7 @@ private:
 	static bool IsVisibleLoadoutPreviewWeaponActor(AActor* Actor);
 	static bool IsLoadoutMusicAudioComponent(const UAudioComponent* AudioComponent);
 	static bool IsLoadoutMusicSound(const USoundBase* Sound, const USoundClass* OverrideSoundClass);
+	static bool IsLoadoutBackgroundShootingSound(const USoundBase* Sound);
 	static bool IsLoadoutBackGlowLight(const ULightComponent* LightComponent);
 	static bool IsLoadoutBackGlowVisual(const UPrimitiveComponent* PrimitiveComponent);
 	static APlayerCameraManager* ResolvePlayerCameraManager(UWorld* World);
@@ -189,6 +190,9 @@ private:
 	void UpdateLoadoutMusicDucking(UWorld* World, bool bLoadoutVisible, bool bAttachmentsVisible, float DeltaTime);
 	void RestoreLoadoutMusicDucking();
 	USoundMix* ResolveLoadoutMusicMuffleSoundMix(bool bAttachmentsMode);
+	void StartLoadoutBackgroundShootingLoopSound(UWorld* World);
+	void StopLoadoutBackgroundShootingLoopSound();
+	USoundBase* ResolveLoadoutBackgroundShootingLoopSound();
 	void UpdateLoadoutPostProcess(UWorld* World, bool bPostProcessVisible, bool bLoadoutVisible, bool bAttachmentsVisible);
 	void ApplyLoadoutPostProcess(UWorld* World, UCameraComponent* CameraComponent, bool bLoadoutVisible, bool bAttachmentsVisible);
 	void RestoreLoadoutPostProcess();
@@ -269,6 +273,10 @@ private:
 	TObjectPtr<USoundMix> LoadoutMusicAttachmentsMuffleSoundMix;
 	UPROPERTY(Transient)
 	TObjectPtr<USoundMix> ActiveLoadoutMusicMuffleSoundMix;
+	UPROPERTY(Transient)
+	TObjectPtr<USoundBase> LoadoutBackgroundShootingLoopSound;
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> LoadoutBackgroundShootingLoopAudioComponent;
 	UPROPERTY(Transient)
 	TObjectPtr<USoundBase> AttachmentsCameraFocusLoopSound;
 	UPROPERTY(Transient)

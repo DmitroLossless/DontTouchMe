@@ -37,9 +37,8 @@ namespace
 		TEXT("/Game/Battle_Royale_Game/Cues/Foley/Foley_Consume_Apple_Use_5_Fruit_Health_Wet_Slime_Goo_Crunch_Cue.Foley_Consume_Apple_Use_5_Fruit_Health_Wet_Slime_Goo_Crunch_Cue")
 	};
 	constexpr float MainMenuSoundtrackScanInterval = 0.05f;
-	constexpr float LoadoutSoundtrackDuckingVolumeScale = 0.28f;
-	constexpr float LoadoutSoundtrackLowPassFrequency = 650.0f;
-	constexpr float MainMenuSoundtrackRestoredLowPassFrequency = 10000.0f;
+	constexpr float LoadoutSoundtrackDuckingVolumeScale = 0.35f;
+	constexpr float LoadoutSoundtrackLowPassFrequency = 250.0f;
 	const FLinearColor MainMenuArrowRed(1.0f, 0.0f, 0.0f, 1.0f);
 	constexpr float MainMenuReturnArrowFallbackSize = 28.0f;
 
@@ -184,7 +183,7 @@ void UTMMainMenuSoundtrackSubsystem::Deinitialize()
 	bHasObservedLoadoutVisibility = false;
 	bLastLoadoutVisible = false;
 	bSoundtrackDuckingActive = false;
-	SoundtrackBaseVolumes.Reset();
+	SoundtrackDuckStates.Reset();
 	IntroExitSoundComponent = nullptr;
 
 	Super::Deinitialize();
@@ -439,6 +438,15 @@ USoundBase* UTMMainMenuSoundtrackSubsystem::ResolveMainMenuSoundtrack(const UUse
 		{
 			return Soundtrack;
 		}
+
+		if (UAudioComponent* SoundtrackComponent =
+			Cast<UAudioComponent>(ObjectProperty->GetObjectPropertyValue_InContainer(Widget)))
+		{
+			if (USoundBase* Soundtrack = SoundtrackComponent->GetSound())
+			{
+				return Soundtrack;
+			}
+		}
 	}
 
 	return LoadObject<USoundBase>(nullptr, DefaultMainMenuSoundtrackPath);
@@ -451,7 +459,8 @@ USoundBase* UTMMainMenuSoundtrackSubsystem::ResolveLoadoutToggleSound()
 
 bool UTMMainMenuSoundtrackSubsystem::IsMainMenuSoundtrackComponent(
 	UAudioComponent* AudioComponent,
-	UWorld* World)
+	UWorld* World,
+	const TSet<TWeakObjectPtr<USoundBase>>& SoundtrackSounds)
 {
 	if (!IsValid(AudioComponent) || AudioComponent->GetWorld() != World || !AudioComponent->IsPlaying())
 	{
@@ -464,8 +473,19 @@ bool UTMMainMenuSoundtrackSubsystem::IsMainMenuSoundtrackComponent(
 		return false;
 	}
 
+	for (const TWeakObjectPtr<USoundBase>& SoundtrackSound : SoundtrackSounds)
+	{
+		if (SoundtrackSound.Get() == Sound)
+		{
+			return true;
+		}
+	}
+
 	const FString SoundPath = Sound->GetPathName();
-	return SoundPath.Contains(MainMenuSoundtrackAssetName, ESearchCase::IgnoreCase);
+	return SoundPath.Contains(MainMenuSoundtrackAssetName, ESearchCase::IgnoreCase)
+		|| SoundPath.Contains(TEXT("/Game/Sound/Main"), ESearchCase::IgnoreCase)
+		|| SoundPath.Contains(TEXT("/Game/Sound/TouchMe_OST"), ESearchCase::IgnoreCase)
+		|| SoundPath.Contains(TEXT("/Game/MP_System_V3/Game/Sounds/Cue/MainMenu_Cue"), ESearchCase::IgnoreCase);
 }
 
 void UTMMainMenuSoundtrackSubsystem::ResetForWorld(UWorld* World)
@@ -488,6 +508,7 @@ void UTMMainMenuSoundtrackSubsystem::ResetForWorld(UWorld* World)
 	bLastLoadoutVisible = false;
 	bSoundtrackDuckingActive = false;
 	IntroExitSoundComponent = nullptr;
+	SoundtrackDuckStates.Reset();
 }
 
 void UTMMainMenuSoundtrackSubsystem::StopActiveSoundtrack()
@@ -679,23 +700,50 @@ void UTMMainMenuSoundtrackSubsystem::ApplySoundtrackDucking(const bool bActive)
 		return;
 	}
 
+	TSet<TWeakObjectPtr<USoundBase>> SoundtrackSounds;
+	for (TObjectIterator<UUserWidget> WidgetIt; WidgetIt; ++WidgetIt)
+	{
+		const UUserWidget* Widget = *WidgetIt;
+		if (!IsValid(Widget)
+			|| Widget->GetWorld() != World
+			|| !IsMainMenuWidgetReady(Widget))
+		{
+			continue;
+		}
+
+		if (USoundBase* Soundtrack = ResolveMainMenuSoundtrack(Widget))
+		{
+			SoundtrackSounds.Add(Soundtrack);
+		}
+	}
+	if (IsValid(ActiveSoundtrackComponent))
+	{
+		if (USoundBase* ActiveSoundtrack = ActiveSoundtrackComponent->GetSound())
+		{
+			SoundtrackSounds.Add(ActiveSoundtrack);
+		}
+	}
+
 	int32 AppliedCount = 0;
 	for (TObjectIterator<UAudioComponent> ComponentIt; ComponentIt; ++ComponentIt)
 	{
 		UAudioComponent* AudioComponent = *ComponentIt;
-		if (!IsMainMenuSoundtrackComponent(AudioComponent, World))
+		if (!IsMainMenuSoundtrackComponent(AudioComponent, World, SoundtrackSounds))
 		{
 			continue;
 		}
 
 		TWeakObjectPtr<UAudioComponent> ComponentKey(AudioComponent);
-		float& BaseVolume = SoundtrackBaseVolumes.FindOrAdd(ComponentKey);
-		if (BaseVolume <= UE_KINDA_SMALL_NUMBER)
+		FSoundtrackDuckState& DuckState = SoundtrackDuckStates.FindOrAdd(ComponentKey);
+		if (!DuckState.bCapturedOriginalState)
 		{
-			BaseVolume = AudioComponent->VolumeMultiplier;
+			DuckState.OriginalVolumeMultiplier = AudioComponent->VolumeMultiplier;
+			DuckState.OriginalLowPassFilterFrequency = AudioComponent->LowPassFilterFrequency;
+			DuckState.bOriginalLowPassFilterEnabled = AudioComponent->bEnableLowPassFilter;
+			DuckState.bCapturedOriginalState = true;
 		}
 
-		const float DuckedVolume = FMath::Max(0.0f, BaseVolume * LoadoutSoundtrackDuckingVolumeScale);
+		const float DuckedVolume = FMath::Max(0.0f, DuckState.OriginalVolumeMultiplier * LoadoutSoundtrackDuckingVolumeScale);
 		AudioComponent->SetLowPassFilterEnabled(true);
 		AudioComponent->SetLowPassFilterFrequency(LoadoutSoundtrackLowPassFrequency);
 		AudioComponent->SetVolumeMultiplier(DuckedVolume);
@@ -718,14 +766,14 @@ void UTMMainMenuSoundtrackSubsystem::ApplySoundtrackDucking(const bool bActive)
 
 void UTMMainMenuSoundtrackSubsystem::RestoreSoundtrackDucking()
 {
-	if (SoundtrackBaseVolumes.IsEmpty())
+	if (SoundtrackDuckStates.IsEmpty())
 	{
 		bSoundtrackDuckingActive = false;
 		return;
 	}
 
 	int32 RestoredCount = 0;
-	for (auto It = SoundtrackBaseVolumes.CreateIterator(); It; ++It)
+	for (auto It = SoundtrackDuckStates.CreateIterator(); It; ++It)
 	{
 		UAudioComponent* AudioComponent = It.Key().Get();
 		if (!IsValid(AudioComponent))
@@ -734,9 +782,9 @@ void UTMMainMenuSoundtrackSubsystem::RestoreSoundtrackDucking()
 			continue;
 		}
 
-		AudioComponent->SetLowPassFilterFrequency(MainMenuSoundtrackRestoredLowPassFrequency);
-		AudioComponent->SetLowPassFilterEnabled(false);
-		AudioComponent->SetVolumeMultiplier(It.Value());
+		AudioComponent->SetLowPassFilterFrequency(It.Value().OriginalLowPassFilterFrequency);
+		AudioComponent->SetLowPassFilterEnabled(It.Value().bOriginalLowPassFilterEnabled);
+		AudioComponent->SetVolumeMultiplier(It.Value().OriginalVolumeMultiplier);
 		++RestoredCount;
 		It.RemoveCurrent();
 	}

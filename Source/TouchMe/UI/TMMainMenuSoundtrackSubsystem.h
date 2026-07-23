@@ -26,6 +26,14 @@ public:
 	virtual bool IsTickable() const override;
 
 private:
+	struct FSoundtrackDuckState
+	{
+		float OriginalVolumeMultiplier = 1.0f;
+		float OriginalLowPassFilterFrequency = 0.0f;
+		bool bCapturedOriginalState = false;
+		bool bOriginalLowPassFilterEnabled = false;
+	};
+
 	static bool IsIntroWidgetReady(const UUserWidget* Widget);
 	static bool IsMainMenuWidgetReady(const UUserWidget* Widget);
 	static bool IsLoadoutWidgetReady(const UUserWidget* Widget);
@@ -33,7 +41,10 @@ private:
 	static bool GetIntroExitAnimationPlaybackTime(const UUserWidget* Widget, float& OutCurrentTime);
 	static USoundBase* ResolveMainMenuSoundtrack(const UUserWidget* Widget);
 	static USoundBase* ResolveLoadoutToggleSound();
-	static bool IsMainMenuSoundtrackComponent(UAudioComponent* AudioComponent, UWorld* World);
+	static bool IsMainMenuSoundtrackComponent(
+		UAudioComponent* AudioComponent,
+		UWorld* World,
+		const TSet<TWeakObjectPtr<USoundBase>>& SoundtrackSounds);
 
 	void ResetForWorld(UWorld* World);
 	void StopActiveSoundtrack();
@@ -54,7 +65,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> IntroExitSoundComponent;
 
-	TMap<TWeakObjectPtr<UAudioComponent>, float> SoundtrackBaseVolumes;
+	TMap<TWeakObjectPtr<UAudioComponent>, FSoundtrackDuckState> SoundtrackDuckStates;
 
 	TWeakObjectPtr<UWorld> ActiveWorld;
 	float TimeUntilNextScan = 0.0f;

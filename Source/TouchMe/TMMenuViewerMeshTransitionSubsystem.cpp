@@ -51,6 +51,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogTMMenuViewerMeshTransition, Log, All);
 namespace
 {
 const TCHAR* AttachmentsCameraFocusLoopSoundPath = TEXT("/Game/AGLS/Audio/Vehicle/Engine_Loop_Cue.Engine_Loop_Cue");
+constexpr int32 LoadoutBackgroundShootingLoopSoundMinIndex = 1;
+constexpr int32 LoadoutBackgroundShootingLoopSoundMaxIndex = 9;
 
 static TAutoConsoleVariable<int32> CVarMenuViewerMeshTransition(
 	TEXT("tm.MenuViewerMeshTransition"),
@@ -164,6 +166,48 @@ static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingFadeOut(
 	TEXT("tm.LoadoutMusicDucking.FadeOut"),
 	0.45f,
 	TEXT("Seconds used to restore main menu music after leaving loadout."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarLoadoutBackgroundShootingLoopSound(
+	TEXT("tm.LoadoutBackgroundShootingLoop"),
+	1,
+	TEXT("Plays a random stereo background shooting loop while loadout music is muffled."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundVolume(
+	TEXT("tm.LoadoutBackgroundShootingLoop.Volume"),
+	0.333f,
+	TEXT("Volume multiplier for the stereo background shooting loop while loadout music is muffled."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundPitch(
+	TEXT("tm.LoadoutBackgroundShootingLoop.Pitch"),
+	1.0f,
+	TEXT("Pitch multiplier for the stereo background shooting loop while loadout music is muffled."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundMuffleVolume(
+	TEXT("tm.LoadoutBackgroundShootingLoop.MuffleVolume"),
+	0.65f,
+	TEXT("Target volume multiplier for the background shooting loop while the loadout screen is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundMuffleLowPassFrequency(
+	TEXT("tm.LoadoutBackgroundShootingLoop.MuffleLowPassFrequency"),
+	700.0f,
+	TEXT("Low-pass cutoff frequency for the lighter background shooting muffle while the loadout screen is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundAttachmentsMuffleVolume(
+	TEXT("tm.LoadoutBackgroundShootingLoop.AttachmentsMuffleVolume"),
+	0.35f,
+	TEXT("Target volume multiplier for the background shooting loop while attachments customization is visible."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundAttachmentsMuffleLowPassFrequency(
+	TEXT("tm.LoadoutBackgroundShootingLoop.AttachmentsMuffleLowPassFrequency"),
+	250.0f,
+	TEXT("Low-pass cutoff frequency for the stronger background shooting muffle while attachments customization is visible."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarLoadoutFOVAngle(
@@ -1908,7 +1952,8 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutMusicSound(
 	if (SoundPath.Contains(TEXT("/Game/Sound/Main"), ESearchCase::IgnoreCase)
 		|| SoundPath.Contains(TEXT("/Game/Sound/TouchMe_OST"), ESearchCase::IgnoreCase)
 		|| SoundPath.Contains(TEXT("/Game/MP_System_V3/Game/Sounds/Cue/MainMenu_Cue"), ESearchCase::IgnoreCase)
-		|| SoundPath.Contains(TEXT("/Game/MP_System_V3/Game/Sounds/Wave/MainMenu"), ESearchCase::IgnoreCase))
+		|| SoundPath.Contains(TEXT("/Game/MP_System_V3/Game/Sounds/Wave/MainMenu"), ESearchCase::IgnoreCase)
+		|| IsLoadoutBackgroundShootingSound(Sound))
 	{
 		return true;
 	}
@@ -1918,6 +1963,18 @@ bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutMusicSound(
 		&& (SoundPath.Contains(TEXT("/Music/"), ESearchCase::IgnoreCase)
 			|| SoundPath.Contains(TEXT("/Game/Sound/"), ESearchCase::IgnoreCase)
 			|| SoundPath.Contains(TEXT("MainMenu"), ESearchCase::IgnoreCase));
+}
+
+bool UTMMenuViewerMeshTransitionSubsystem::IsLoadoutBackgroundShootingSound(const USoundBase* Sound)
+{
+	if (!Sound)
+	{
+		return false;
+	}
+
+	return Sound->GetPathName().Contains(
+		TEXT("/Game/Premium_Weapons_Bullets_SFX/CUE/Background_shooting/Background_shooting_"),
+		ESearchCase::IgnoreCase);
 }
 
 bool UTMMenuViewerMeshTransitionSubsystem::IsVisibleLoadoutPreviewWeaponActor(AActor* Actor)
@@ -2493,6 +2550,31 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutMusicDucking(
 		LoadoutLowPassFrequency,
 		AttachmentsLowPassFrequency,
 		LoadoutMusicAttachmentsDuckingAlpha);
+	const float BackgroundLoadoutDuckedVolume = FMath::Clamp(
+		CVarLoadoutBackgroundShootingLoopSoundMuffleVolume.GetValueOnGameThread(),
+		0.0f,
+		1.0f);
+	const float BackgroundAttachmentsDuckedVolume = FMath::Clamp(
+		CVarLoadoutBackgroundShootingLoopSoundAttachmentsMuffleVolume.GetValueOnGameThread(),
+		0.0f,
+		1.0f);
+	const float BackgroundDuckedVolume = FMath::Lerp(
+		BackgroundLoadoutDuckedVolume,
+		BackgroundAttachmentsDuckedVolume,
+		LoadoutMusicAttachmentsDuckingAlpha);
+	const float BackgroundVolumeScale = FMath::Lerp(1.0f, BackgroundDuckedVolume, LoadoutMusicDuckingAlpha);
+	const float BackgroundLoadoutLowPassFrequency = FMath::Clamp(
+		CVarLoadoutBackgroundShootingLoopSoundMuffleLowPassFrequency.GetValueOnGameThread(),
+		20.0f,
+		20000.0f);
+	const float BackgroundAttachmentsLowPassFrequency = FMath::Clamp(
+		CVarLoadoutBackgroundShootingLoopSoundAttachmentsMuffleLowPassFrequency.GetValueOnGameThread(),
+		20.0f,
+		20000.0f);
+	const float BackgroundTargetLowPassFrequency = FMath::Lerp(
+		BackgroundLoadoutLowPassFrequency,
+		BackgroundAttachmentsLowPassFrequency,
+		LoadoutMusicAttachmentsDuckingAlpha);
 	TSet<TWeakObjectPtr<UAudioComponent>> UpdatedComponents;
 
 	if (bShouldDuck)
@@ -2517,34 +2599,52 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutMusicDucking(
 					DuckedVolume,
 					TargetLowPassFrequency);
 			}
+
+			StartLoadoutBackgroundShootingLoopSound(World);
 		}
 	}
-	else if (!bShouldDuck && bLoadoutMusicMuffleSoundMixActive)
+	else if (!bShouldDuck)
 	{
-		if (USoundMix* MuffleSoundMix = LoadoutMusicMuffleSoundMix)
+		if (bLoadoutMusicMuffleSoundMixActive)
 		{
-			UGameplayStatics::PopSoundMixModifier(World, MuffleSoundMix);
+			if (USoundMix* MuffleSoundMix = LoadoutMusicMuffleSoundMix)
+			{
+				UGameplayStatics::PopSoundMixModifier(World, MuffleSoundMix);
+			}
+			if (USoundMix* AttachmentsMuffleSoundMix = LoadoutMusicAttachmentsMuffleSoundMix)
+			{
+				UGameplayStatics::PopSoundMixModifier(World, AttachmentsMuffleSoundMix);
+			}
+			ActiveLoadoutMusicMuffleSoundMix = nullptr;
+			bLoadoutMusicMuffleSoundMixActive = false;
 		}
-		if (USoundMix* AttachmentsMuffleSoundMix = LoadoutMusicAttachmentsMuffleSoundMix)
-		{
-			UGameplayStatics::PopSoundMixModifier(World, AttachmentsMuffleSoundMix);
-		}
-		ActiveLoadoutMusicMuffleSoundMix = nullptr;
-		bLoadoutMusicMuffleSoundMixActive = false;
+		StopLoadoutBackgroundShootingLoopSound();
 	}
 
-	const auto ApplyComponentMuffle = [VolumeScale, TargetLowPassFrequency, this](
+	const auto ApplyComponentMuffle =
+		[
+			VolumeScale,
+			TargetLowPassFrequency,
+			BackgroundVolumeScale,
+			BackgroundTargetLowPassFrequency,
+			this
+		](
 		UAudioComponent* AudioComponent,
 		const FLoadoutMusicDuckComponentState& DuckState)
 	{
+		const bool bBackgroundShooting = IsLoadoutBackgroundShootingSound(AudioComponent ? AudioComponent->Sound : nullptr);
+		const float AppliedVolumeScale = bBackgroundShooting ? BackgroundVolumeScale : VolumeScale;
+		const float AppliedTargetLowPassFrequency = bBackgroundShooting
+			? BackgroundTargetLowPassFrequency
+			: TargetLowPassFrequency;
 		const float OriginalLowPassFrequency = DuckState.bOriginalLowPassFilterEnabled
 			? FMath::Clamp(DuckState.OriginalLowPassFilterFrequency, 20.0f, 20000.0f)
 			: 20000.0f;
 		const float CurrentLowPassFrequency = FMath::Lerp(
 			OriginalLowPassFrequency,
-			TargetLowPassFrequency,
+			AppliedTargetLowPassFrequency,
 			LoadoutMusicDuckingAlpha);
-		AudioComponent->SetVolumeMultiplier(DuckState.OriginalVolumeMultiplier * VolumeScale);
+		AudioComponent->SetVolumeMultiplier(DuckState.OriginalVolumeMultiplier * AppliedVolumeScale);
 		AudioComponent->SetLowPassFilterEnabled(true);
 		AudioComponent->SetLowPassFilterFrequency(CurrentLowPassFrequency);
 	};
@@ -2616,6 +2716,8 @@ void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutMusicDucking(
 
 void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutMusicDucking()
 {
+	StopLoadoutBackgroundShootingLoopSound();
+
 	if (bLoadoutMusicMuffleSoundMixActive)
 	{
 		if (UWorld* World = GetWorld())
@@ -2646,6 +2748,88 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutMusicDucking()
 	LoadoutMusicDuckComponentStates.Empty();
 	LoadoutMusicDuckingAlpha = 0.0f;
 	LoadoutMusicAttachmentsDuckingAlpha = 0.0f;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::StartLoadoutBackgroundShootingLoopSound(UWorld* World)
+{
+	if (!World || CVarLoadoutBackgroundShootingLoopSound.GetValueOnGameThread() == 0)
+	{
+		StopLoadoutBackgroundShootingLoopSound();
+		return;
+	}
+
+	if (UAudioComponent* ExistingAudioComponent = LoadoutBackgroundShootingLoopAudioComponent)
+	{
+		if (ExistingAudioComponent->IsPlaying())
+		{
+			return;
+		}
+
+		ExistingAudioComponent->DestroyComponent();
+		LoadoutBackgroundShootingLoopAudioComponent = nullptr;
+	}
+
+	USoundBase* LoopSound = ResolveLoadoutBackgroundShootingLoopSound();
+	if (!LoopSound)
+	{
+		return;
+	}
+
+	LoadoutBackgroundShootingLoopAudioComponent = UGameplayStatics::SpawnSound2D(
+		World,
+		LoopSound,
+		FMath::Max(0.0f, CVarLoadoutBackgroundShootingLoopSoundVolume.GetValueOnGameThread()),
+		FMath::Max(0.01f, CVarLoadoutBackgroundShootingLoopSoundPitch.GetValueOnGameThread()),
+		0.0f,
+		nullptr,
+		false,
+		false);
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::StopLoadoutBackgroundShootingLoopSound()
+{
+	if (UAudioComponent* AudioComponent = LoadoutBackgroundShootingLoopAudioComponent)
+	{
+		AudioComponent->Stop();
+		AudioComponent->DestroyComponent();
+		LoadoutBackgroundShootingLoopAudioComponent = nullptr;
+	}
+
+	LoadoutBackgroundShootingLoopSound = nullptr;
+}
+
+USoundBase* UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutBackgroundShootingLoopSound()
+{
+	if (!LoadoutBackgroundShootingLoopSound)
+	{
+		const int32 SoundIndex = FMath::RandRange(
+			LoadoutBackgroundShootingLoopSoundMinIndex,
+			LoadoutBackgroundShootingLoopSoundMaxIndex);
+		const FString SoundPath = FString::Printf(
+			TEXT("/Game/Premium_Weapons_Bullets_SFX/CUE/Background_shooting/Background_shooting_%02d_Cue.Background_shooting_%02d_Cue"),
+			SoundIndex,
+			SoundIndex);
+
+		LoadoutBackgroundShootingLoopSound = LoadObject<USoundBase>(nullptr, *SoundPath);
+		if (!LoadoutBackgroundShootingLoopSound)
+		{
+			UE_LOG(
+				LogTMMenuViewerMeshTransition,
+				Warning,
+				TEXT("[TMLoadoutBackgroundShooting] Missing background shooting loop sound: %s"),
+				*SoundPath);
+		}
+		else
+		{
+			UE_LOG(
+				LogTMMenuViewerMeshTransition,
+				Display,
+				TEXT("[TMLoadoutBackgroundShooting] Selected background shooting loop sound: %s"),
+				*SoundPath);
+		}
+	}
+
+	return LoadoutBackgroundShootingLoopSound;
 }
 
 USoundMix* UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutMusicMuffleSoundMix(const bool bAttachmentsMode)
@@ -2704,16 +2888,9 @@ USoundMix* UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutMusicMuffleSoundM
 		return true;
 	};
 
-	const bool bAddedProjectMaster = AddSoundClassAdjuster(
-		TEXT("/Game/MP_System_V3/Game/Sounds/SC_Master_MPS.SC_Master_MPS"),
-		DuckedVolume);
 	AddSoundClassAdjuster(
 		TEXT("/Game/MP_System_V3/Game/Sounds/SC_Music_MPS.SC_Music_MPS"),
-		bAddedProjectMaster ? 1.0f : DuckedVolume);
-	AddSoundClassAdjuster(
-		TEXT("/Game/MP_System_V3/Game/Sounds/SC_Menu_MPS.SC_Menu_MPS"),
-		bAddedProjectMaster ? 1.0f : DuckedVolume);
-	AddSoundClassAdjuster(TEXT("/Engine/EngineSounds/Master.Master"), DuckedVolume);
+		DuckedVolume);
 
 	if (SoundMix->SoundClassEffects.IsEmpty())
 	{
