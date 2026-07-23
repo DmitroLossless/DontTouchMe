@@ -160,6 +160,36 @@ static TAutoConsoleVariable<float> CVarAttachmentsPreviewBrightness(
 	TEXT("Delayed exposure and color lift used only while W_Attachments is visible."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<float> CVarLoadoutAttachmentsPostProcessBlendDuration(
+	TEXT("tm.LoadoutPostProcess.Attachments.BlendDuration"),
+	0.45f,
+	TEXT("Seconds used to blend into and out of the W_Attachments weapon post process profile."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutAttachmentsPostProcessFstop(
+	TEXT("tm.LoadoutPostProcess.Attachments.Fstop"),
+	1.25f,
+	TEXT("Depth-of-field f-stop used by the W_Attachments weapon post process profile."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutAttachmentsPostProcessDepthScale(
+	TEXT("tm.LoadoutPostProcess.Attachments.DepthScale"),
+	1.25f,
+	TEXT("Depth-of-field scale used by the W_Attachments weapon post process profile."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutAttachmentsPostProcessBloomIntensity(
+	TEXT("tm.LoadoutPostProcess.Attachments.BloomIntensity"),
+	1.15f,
+	TEXT("Bloom intensity used by the W_Attachments weapon post process profile."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarLoadoutAttachmentsPostProcessBloomThreshold(
+	TEXT("tm.LoadoutPostProcess.Attachments.BloomThreshold"),
+	0.28f,
+	TEXT("Bloom threshold used by the W_Attachments weapon post process profile."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarLoadoutBackGlowDucking(
 	TEXT("tm.LoadoutBackGlowDucking"),
 	1,
@@ -459,6 +489,13 @@ FLinearColor LerpLinearColor(const FLinearColor& From, const FLinearColor& To, c
 		FMath::Lerp(From.G, To.G, Alpha),
 		FMath::Lerp(From.B, To.B, Alpha),
 		FMath::Lerp(From.A, To.A, Alpha));
+}
+
+FVector2f LerpVector2f(const FVector2f& From, const FVector2f& To, const float Alpha)
+{
+	return FVector2f(
+		FMath::Lerp(From.X, To.X, Alpha),
+		FMath::Lerp(From.Y, To.Y, Alpha));
 }
 
 float SmoothStep01(const float Alpha)
@@ -1336,6 +1373,7 @@ void UTMMenuViewerMeshTransitionSubsystem::Tick(float DeltaTime)
 	UpdateLoadoutFOV(World, bLoadoutFOVEnabled);
 	UpdateLoadoutBackGlowTiming(bLoadoutFOVVisible, DeltaTime);
 	UpdateAttachmentsPreviewBrightnessTiming(bAttachmentsVisible, bLoadoutFOVVisible, DeltaTime);
+	UpdateLoadoutAttachmentsPostProcessBlend(bAttachmentsVisible, bLoadoutFOVVisible, DeltaTime);
 	UpdateMainMenuCameraDrift(World, bMainMenuVisible || bLoadoutFOVVisible, bLoadoutFOVVisible, bAttachmentsVisible, DeltaTime);
 	UpdateLoadoutPostProcess(World, bPostProcessVisible, bLoadoutFOVVisible, bAttachmentsVisible);
 	UpdateAttachmentSelectionHighlight(World, bAttachmentsVisible);
@@ -2339,7 +2377,13 @@ void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
 	}
 
 	FPostProcessSettings Settings = SavedLoadoutPostProcessSettings;
-	const FLoadoutPostProcessFocus Focus = ResolveLoadoutPostProcessFocus(World, CameraComponent);
+	const float AttachmentsPostProcessAlpha = bLoadoutVisible
+		? FMath::Clamp(LoadoutAttachmentsPostProcessCurrentAlpha, 0.0f, 1.0f)
+		: 0.0f;
+	const FLoadoutPostProcessFocus Focus = ResolveLoadoutPostProcessFocus(
+		World,
+		CameraComponent,
+		bAttachmentsVisible || AttachmentsPostProcessAlpha > KINDA_SMALL_NUMBER);
 	const float AttachmentsBrightness = bLoadoutVisible
 		? FMath::Clamp(CVarAttachmentsPreviewBrightness.GetValueOnGameThread(), 0.0f, 0.5f)
 			* FMath::Clamp(AttachmentsPreviewBrightnessCurrentAlpha, 0.0f, 1.0f)
@@ -2496,6 +2540,109 @@ void UTMMenuViewerMeshTransitionSubsystem::ApplyLoadoutPostProcess(
 		Settings.FilmGrainIntensity = 0.04f;
 	}
 
+	if (bLoadoutVisible && AttachmentsPostProcessAlpha > KINDA_SMALL_NUMBER)
+	{
+		const FLoadoutPostProcessFocus AttachmentsFocus = ResolveLoadoutPostProcessFocus(World, CameraComponent, true);
+		const float TargetFocalRegion = FMath::Clamp(AttachmentsFocus.FocalRegion * 0.65f, 35.0f, 95.0f);
+		const float TargetFstop = FMath::Clamp(
+			CVarLoadoutAttachmentsPostProcessFstop.GetValueOnGameThread(),
+			0.7f,
+			22.0f);
+		const float TargetDepthScale = FMath::Clamp(
+			CVarLoadoutAttachmentsPostProcessDepthScale.GetValueOnGameThread(),
+			0.0f,
+			5.0f);
+		const float TargetBloomIntensity = FMath::Clamp(
+			CVarLoadoutAttachmentsPostProcessBloomIntensity.GetValueOnGameThread(),
+			0.0f,
+			8.0f);
+		const float TargetBloomThreshold = FMath::Clamp(
+			CVarLoadoutAttachmentsPostProcessBloomThreshold.GetValueOnGameThread(),
+			-1.0f,
+			8.0f);
+
+		Settings.bOverride_DepthOfFieldFstop = true;
+		Settings.DepthOfFieldFstop = FMath::Lerp(Settings.DepthOfFieldFstop, TargetFstop, AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldMinFstop = true;
+		Settings.DepthOfFieldMinFstop = FMath::Lerp(Settings.DepthOfFieldMinFstop, FMath::Min(TargetFstop, 1.0f), AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldFocalDistance = true;
+		Settings.DepthOfFieldFocalDistance = FMath::Lerp(
+			Settings.DepthOfFieldFocalDistance,
+			AttachmentsFocus.FocalDistance,
+			AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldFocalRegion = true;
+		Settings.DepthOfFieldFocalRegion = FMath::Lerp(
+			Settings.DepthOfFieldFocalRegion,
+			TargetFocalRegion,
+			AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldNearTransitionRegion = true;
+		Settings.DepthOfFieldNearTransitionRegion = FMath::Lerp(Settings.DepthOfFieldNearTransitionRegion, 32.0f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldFarTransitionRegion = true;
+		Settings.DepthOfFieldFarTransitionRegion = FMath::Lerp(Settings.DepthOfFieldFarTransitionRegion, 58.0f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldScale = true;
+		Settings.DepthOfFieldScale = FMath::Lerp(Settings.DepthOfFieldScale, TargetDepthScale, AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldNearBlurSize = true;
+		Settings.DepthOfFieldNearBlurSize = FMath::Lerp(Settings.DepthOfFieldNearBlurSize, 4.0f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldFarBlurSize = true;
+		Settings.DepthOfFieldFarBlurSize = FMath::Lerp(Settings.DepthOfFieldFarBlurSize, 9.0f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldPetzvalBokeh = true;
+		Settings.DepthOfFieldPetzvalBokeh = FMath::Lerp(Settings.DepthOfFieldPetzvalBokeh, 0.55f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldPetzvalBokehFalloff = true;
+		Settings.DepthOfFieldPetzvalBokehFalloff = FMath::Lerp(Settings.DepthOfFieldPetzvalBokehFalloff, 3.4f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldPetzvalExclusionBoxExtents = true;
+		Settings.DepthOfFieldPetzvalExclusionBoxExtents = LerpVector2f(
+			Settings.DepthOfFieldPetzvalExclusionBoxExtents,
+			FVector2f(0.56f, 0.36f),
+			AttachmentsPostProcessAlpha);
+		Settings.bOverride_DepthOfFieldVignetteSize = true;
+		Settings.DepthOfFieldVignetteSize = FMath::Lerp(Settings.DepthOfFieldVignetteSize, 88.0f, AttachmentsPostProcessAlpha);
+
+		Settings.bOverride_BloomIntensity = true;
+		Settings.BloomIntensity = FMath::Lerp(Settings.BloomIntensity, TargetBloomIntensity, AttachmentsPostProcessAlpha);
+		Settings.bOverride_BloomGaussianIntensity = true;
+		Settings.BloomGaussianIntensity = FMath::Lerp(Settings.BloomGaussianIntensity, 0.72f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_BloomThreshold = true;
+		Settings.BloomThreshold = FMath::Lerp(Settings.BloomThreshold, TargetBloomThreshold, AttachmentsPostProcessAlpha);
+		Settings.bOverride_BloomSizeScale = true;
+		Settings.BloomSizeScale = FMath::Lerp(Settings.BloomSizeScale, 1.85f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_Bloom1Tint = true;
+		Settings.Bloom1Tint = LerpLinearColor(Settings.Bloom1Tint, FLinearColor(0.92f, 0.98f, 1.0f, 1.0f), AttachmentsPostProcessAlpha);
+		Settings.bOverride_Bloom3Tint = true;
+		Settings.Bloom3Tint = LerpLinearColor(Settings.Bloom3Tint, FLinearColor(0.78f, 0.9f, 1.0f, 1.0f), AttachmentsPostProcessAlpha);
+		Settings.bOverride_Bloom5Tint = true;
+		Settings.Bloom5Tint = LerpLinearColor(Settings.Bloom5Tint, FLinearColor(0.64f, 0.78f, 1.0f, 1.0f), AttachmentsPostProcessAlpha);
+
+		Settings.bOverride_AutoExposureBias = true;
+		Settings.AutoExposureBias = FMath::Lerp(
+			Settings.AutoExposureBias,
+			-0.38f + AttachmentsBrightness * 0.45f,
+			AttachmentsPostProcessAlpha);
+		Settings.bOverride_VignetteIntensity = true;
+		Settings.VignetteIntensity = FMath::Lerp(Settings.VignetteIntensity, 0.46f, AttachmentsPostProcessAlpha);
+		Settings.bOverride_SceneColorTint = true;
+		Settings.SceneColorTint = LerpLinearColor(
+			Settings.SceneColorTint,
+			FLinearColor(0.96f, 0.98f, 1.0f, 1.0f),
+			AttachmentsPostProcessAlpha);
+		Settings.bOverride_ColorSaturation = true;
+		Settings.ColorSaturation = LerpVector4(
+			Settings.ColorSaturation,
+			FVector4(0.92f, 0.92f, 0.92f, 1.0f),
+			AttachmentsPostProcessAlpha);
+		Settings.bOverride_ColorContrast = true;
+		Settings.ColorContrast = LerpVector4(
+			Settings.ColorContrast,
+			FVector4(1.04f, 1.04f, 1.04f, 1.0f),
+			AttachmentsPostProcessAlpha);
+		Settings.bOverride_ColorGain = true;
+		Settings.ColorGain = LerpVector4(
+			Settings.ColorGain,
+			FVector4(0.92f, 0.92f, 0.92f, 1.0f),
+			AttachmentsPostProcessAlpha);
+		Settings.bOverride_FilmGrainIntensity = true;
+		Settings.FilmGrainIntensity = FMath::Lerp(Settings.FilmGrainIntensity, 0.025f, AttachmentsPostProcessAlpha);
+	}
+
 	CameraComponent->PostProcessSettings = Settings;
 	CameraComponent->SetPostProcessBlendWeight(FMath::Clamp(
 		CVarLoadoutPostProcessBlendWeight.GetValueOnGameThread(),
@@ -2525,6 +2672,46 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreLoadoutPostProcess()
 	SavedLoadoutPostProcessSettings = FPostProcessSettings();
 	SavedLoadoutPostProcessBlendWeight = 0.0f;
 	bLoadoutPostProcessApplied = false;
+}
+
+void UTMMenuViewerMeshTransitionSubsystem::UpdateLoadoutAttachmentsPostProcessBlend(
+	const bool bAttachmentsVisible,
+	const bool bLoadoutVisible,
+	const float DeltaTime)
+{
+	if (!bLoadoutVisible)
+	{
+		bLoadoutAttachmentsPostProcessTargetVisible = false;
+		LoadoutAttachmentsPostProcessElapsedSeconds = 0.0f;
+		LoadoutAttachmentsPostProcessTransitionStartAlpha = 0.0f;
+		LoadoutAttachmentsPostProcessCurrentAlpha = 0.0f;
+		return;
+	}
+
+	if (bLoadoutAttachmentsPostProcessTargetVisible != bAttachmentsVisible)
+	{
+		bLoadoutAttachmentsPostProcessTargetVisible = bAttachmentsVisible;
+		LoadoutAttachmentsPostProcessElapsedSeconds = 0.0f;
+		LoadoutAttachmentsPostProcessTransitionStartAlpha = LoadoutAttachmentsPostProcessCurrentAlpha;
+	}
+
+	LoadoutAttachmentsPostProcessElapsedSeconds += FMath::Max(0.0f, DeltaTime);
+	const float Duration = FMath::Max(
+		0.01f,
+		CVarLoadoutAttachmentsPostProcessBlendDuration.GetValueOnGameThread());
+	const float Alpha = SmoothStep01(LoadoutAttachmentsPostProcessElapsedSeconds / Duration);
+	const float TargetAlpha = bLoadoutAttachmentsPostProcessTargetVisible ? 1.0f : 0.0f;
+	LoadoutAttachmentsPostProcessCurrentAlpha = FMath::Lerp(
+		LoadoutAttachmentsPostProcessTransitionStartAlpha,
+		TargetAlpha,
+		Alpha);
+
+	if (Alpha >= 1.0f)
+	{
+		LoadoutAttachmentsPostProcessCurrentAlpha = TargetAlpha;
+		LoadoutAttachmentsPostProcessTransitionStartAlpha = TargetAlpha;
+		LoadoutAttachmentsPostProcessElapsedSeconds = 0.0f;
+	}
 }
 
 void UTMMenuViewerMeshTransitionSubsystem::UpdateAttachmentsPreviewBrightnessTiming(
@@ -4843,7 +5030,8 @@ void UTMMenuViewerMeshTransitionSubsystem::RestoreMainMenuCameraDrift()
 UTMMenuViewerMeshTransitionSubsystem::FLoadoutPostProcessFocus
 UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutPostProcessFocus(
 	UWorld* World,
-	const UCameraComponent* CameraComponent) const
+	const UCameraComponent* CameraComponent,
+	const bool bPreferAttachmentsWeapon) const
 {
 	FLoadoutPostProcessFocus Focus;
 	if (!World || !CameraComponent)
@@ -4853,7 +5041,17 @@ UTMMenuViewerMeshTransitionSubsystem::ResolveLoadoutPostProcessFocus(
 
 	const FVector CameraLocation = CameraComponent->GetComponentLocation();
 	const FVector CameraForward = CameraComponent->GetForwardVector().GetSafeNormal();
-	if (AActor* PreviewWeaponActor = ResolveLoadoutPreviewWeaponActor(World, CameraLocation))
+	AActor* PreviewWeaponActor = bPreferAttachmentsWeapon
+		? ResolveAttachmentsPreviewWeaponActor(World, CameraLocation)
+		: ResolveLoadoutPreviewWeaponActor(World, CameraLocation);
+	if (!PreviewWeaponActor)
+	{
+		PreviewWeaponActor = bPreferAttachmentsWeapon
+			? ResolveLoadoutPreviewWeaponActor(World, CameraLocation)
+			: ResolveAttachmentsPreviewWeaponActor(World, CameraLocation);
+	}
+
+	if (PreviewWeaponActor)
 	{
 		float MinWeaponDepth = TNumericLimits<float>::Max();
 		float MaxWeaponDepth = -TNumericLimits<float>::Max();

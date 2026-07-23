@@ -175,6 +175,7 @@ private:
 	void UpdateLoadoutPostProcess(UWorld* World, bool bPostProcessVisible, bool bLoadoutVisible, bool bAttachmentsVisible);
 	void ApplyLoadoutPostProcess(UWorld* World, UCameraComponent* CameraComponent, bool bLoadoutVisible, bool bAttachmentsVisible);
 	void RestoreLoadoutPostProcess();
+	void UpdateLoadoutAttachmentsPostProcessBlend(bool bAttachmentsVisible, bool bLoadoutVisible, float DeltaTime);
 	void UpdateAttachmentsPreviewBrightnessTiming(bool bAttachmentsVisible, bool bLoadoutVisible, float DeltaTime);
 	void UpdateLoadoutBackGlowTiming(bool bLoadoutVisible, float DeltaTime);
 	void UpdateLoadoutBackGlow(UWorld* World, bool bLoadoutVisible, float DeltaTime);
@@ -196,7 +197,7 @@ private:
 	void ResetAttachmentsCameraFocus();
 	AActor* ResolveLoadoutPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
 	AActor* ResolveAttachmentsPreviewWeaponActor(UWorld* World, const FVector& CameraLocation) const;
-	FLoadoutPostProcessFocus ResolveLoadoutPostProcessFocus(UWorld* World, const UCameraComponent* CameraComponent) const;
+	FLoadoutPostProcessFocus ResolveLoadoutPostProcessFocus(UWorld* World, const UCameraComponent* CameraComponent, bool bPreferAttachmentsWeapon) const;
 	EAttachmentCameraFocusGroup ResolveActiveAttachmentCameraFocusGroup(UWorld* World) const;
 	bool ResolveActiveLoadoutWeaponHighlightTokens(UWorld* World, TSet<FString>& OutTokens) const;
 	bool ResolveInstalledAttachmentHighlightTokens(UWorld* World, EAttachmentCameraFocusGroup Group, TSet<FString>& OutTokens) const;
@@ -258,6 +259,9 @@ private:
 	float SavedLoadoutPostProcessBlendWeight = 0.0f;
 	float LoadoutBackGlowElapsedSeconds = 0.0f;
 	float LoadoutBackGlowCurrentAlpha = 0.0f;
+	float LoadoutAttachmentsPostProcessElapsedSeconds = 0.0f;
+	float LoadoutAttachmentsPostProcessTransitionStartAlpha = 0.0f;
+	float LoadoutAttachmentsPostProcessCurrentAlpha = 0.0f;
 	float AttachmentsPreviewBrightnessElapsedSeconds = 0.0f;
 	float AttachmentsPreviewBrightnessTransitionStartAlpha = 0.0f;
 	float AttachmentsPreviewBrightnessCurrentAlpha = 0.0f;
@@ -274,6 +278,7 @@ private:
 	bool bLoadoutFOVApplied = false;
 	bool bLoadoutPostProcessApplied = false;
 	bool bLoadoutPostProcessLastLoadoutMode = false;
+	bool bLoadoutAttachmentsPostProcessTargetVisible = false;
 	bool bAttachmentsPreviewBrightnessActive = false;
 	bool bAttachmentsPreviewBrightnessTargetVisible = false;
 	bool bLoadoutBackGlowTargetVisible = false;
