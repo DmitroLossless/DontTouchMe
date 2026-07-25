@@ -78,6 +78,7 @@
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
+#include "UObject/StructOnScope.h"
 #include "Particles/ParticleSystem.h"
 #include "Sound/SlateSound.h"
 #include "Sound/SoundBase.h"
@@ -5447,59 +5448,122 @@ namespace
 		return TMSavePackageForAsset(WeaponsTable, TEXT("TMLoadoutOffset"));
 	}
 
-	bool TMEnsureAttachmentEnumHasSilencerco(UUserDefinedEnum*& OutEnum, int64& OutSilencercoValue)
+	bool TMEnsureUserDefinedEnumHasDisplayName(
+		UUserDefinedEnum* Enum,
+		const TCHAR* DisplayName,
+		const TCHAR* LogPrefix,
+		int64& OutValue)
 	{
-		OutEnum = LoadObject<UUserDefinedEnum>(
-			nullptr,
-			TEXT("/Game/MP_System_V3/Game/Blueprints/Enums/ENUM_Attachments.ENUM_Attachments"));
-		if (!OutEnum)
+		if (!Enum)
 		{
-			UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] Failed to load ENUM_Attachments."));
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to update null enum with %s."), LogPrefix, DisplayName);
 			return false;
 		}
 
-		int32 SilencercoIndex = TMFindEnumIndexByDisplayName(OutEnum, TEXT("Silencerco"));
-		if (SilencercoIndex == INDEX_NONE)
+		const FString EnumLabel = Enum->GetName();
+		int32 EnumIndex = TMFindEnumIndexByDisplayName(Enum, DisplayName);
+		if (EnumIndex == INDEX_NONE)
 		{
-			OutEnum->Modify();
-			FEnumEditorUtils::AddNewEnumeratorForUserDefinedEnum(OutEnum);
-			SilencercoIndex = OutEnum->NumEnums() - 2;
-			if (SilencercoIndex < 0
-				|| !FEnumEditorUtils::SetEnumeratorDisplayName(OutEnum, SilencercoIndex, FText::FromString(TEXT("Silencerco"))))
+			Enum->Modify();
+			FEnumEditorUtils::AddNewEnumeratorForUserDefinedEnum(Enum);
+			EnumIndex = Enum->NumEnums() - 2;
+			if (EnumIndex < 0
+				|| !FEnumEditorUtils::SetEnumeratorDisplayName(Enum, EnumIndex, FText::FromString(FString(DisplayName))))
 			{
-				UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] Failed to add Silencerco to ENUM_Attachments."));
+				UE_LOG(LogTemp, Error, TEXT("[%s] Failed to add %s to %s."), LogPrefix, DisplayName, *EnumLabel);
 				return false;
 			}
 
 			UE_LOG(
 				LogTemp,
 				Display,
-				TEXT("[TMSilencerco] Added Silencerco to ENUM_Attachments at index %d."),
-				SilencercoIndex);
-			TMSavePackageForAsset(OutEnum, TEXT("TMSilencerco"));
+				TEXT("[%s] Added %s to %s at index %d."),
+				LogPrefix,
+				DisplayName,
+				*EnumLabel,
+				EnumIndex);
+			TMSavePackageForAsset(Enum, LogPrefix);
 		}
 		else
 		{
 			UE_LOG(
 				LogTemp,
 				Display,
-				TEXT("[TMSilencerco] Silencerco already present in ENUM_Attachments at index %d."),
-				SilencercoIndex);
+				TEXT("[%s] %s already present in %s at index %d."),
+				LogPrefix,
+				DisplayName,
+				*EnumLabel,
+				EnumIndex);
 		}
 
-		OutSilencercoValue = OutEnum->GetValueByIndex(SilencercoIndex);
+		OutValue = Enum->GetValueByIndex(EnumIndex);
 		FString EnumList;
-		for (int32 Index = 0; Index < OutEnum->NumEnums(); ++Index)
+		for (int32 Index = 0; Index < Enum->NumEnums(); ++Index)
 		{
 			EnumList += FString::Printf(
 				TEXT("%d:%s/%s=%lld "),
 				Index,
-				*OutEnum->GetNameStringByIndex(Index),
-				*OutEnum->GetDisplayNameTextByIndex(Index).ToString(),
-				static_cast<long long>(OutEnum->GetValueByIndex(Index)));
+				*Enum->GetNameStringByIndex(Index),
+				*Enum->GetDisplayNameTextByIndex(Index).ToString(),
+				static_cast<long long>(Enum->GetValueByIndex(Index)));
 		}
-		UE_LOG(LogTemp, Display, TEXT("[TMSilencerco] ENUM_Attachments values: %s"), *EnumList);
+		UE_LOG(LogTemp, Display, TEXT("[%s] %s values: %s"), LogPrefix, *EnumLabel, *EnumList);
 		return true;
+	}
+
+	bool TMEnsureAttachmentEnumHasDisplayName(
+		const TCHAR* DisplayName,
+		const TCHAR* LogPrefix,
+		UUserDefinedEnum*& OutEnum,
+		int64& OutValue)
+	{
+		OutEnum = LoadObject<UUserDefinedEnum>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Enums/ENUM_Attachments.ENUM_Attachments"));
+		if (!OutEnum)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load ENUM_Attachments."), LogPrefix);
+			return false;
+		}
+
+		return TMEnsureUserDefinedEnumHasDisplayName(OutEnum, DisplayName, LogPrefix, OutValue);
+	}
+
+	bool TMEnsureAttachmentEnumHasSilencerco(UUserDefinedEnum*& OutEnum, int64& OutSilencercoValue)
+	{
+		return TMEnsureAttachmentEnumHasDisplayName(
+			TEXT("Silencerco"),
+			TEXT("TMSilencerco"),
+			OutEnum,
+			OutSilencercoValue);
+	}
+
+	bool TMEnsureAttachmentEnumHasSuppressor(UUserDefinedEnum*& OutEnum, int64& OutSuppressorValue)
+	{
+		return TMEnsureAttachmentEnumHasDisplayName(
+			TEXT("Suppressor"),
+			TEXT("TMACWISuppressor"),
+			OutEnum,
+			OutSuppressorValue);
+	}
+
+	bool TMEnsureMuzzleEnumHasSuppressor()
+	{
+		UUserDefinedEnum* MuzzleEnum = LoadObject<UUserDefinedEnum>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Enums/Attachments/ENUM_Muzzle.ENUM_Muzzle"));
+		if (!MuzzleEnum)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMACWISuppressor] Failed to load ENUM_Muzzle."));
+			return false;
+		}
+
+		int64 IgnoredValue = 0;
+		return TMEnsureUserDefinedEnumHasDisplayName(
+			MuzzleEnum,
+			TEXT("Suppressor"),
+			TEXT("TMACWISuppressor"),
+			IgnoredValue);
 	}
 
 	FArrayProperty* TMFindArrayPropertyByName(UClass* Class, const TCHAR* ExpectedName)
@@ -5573,7 +5637,12 @@ namespace
 		return false;
 	}
 
-	bool TMAddEnumValueToCompatibleAttachment(UBlueprint* Blueprint, UEnum* Enum, const int64 EnumValue)
+	bool TMAddEnumValueToCompatibleAttachment(
+		UBlueprint* Blueprint,
+		UEnum* Enum,
+		const int64 EnumValue,
+		const TCHAR* DisplayName = TEXT("Silencerco"),
+		const TCHAR* LogPrefix = TEXT("TMSilencerco"))
 	{
 		if (!Blueprint || !Blueprint->GeneratedClass || !Enum)
 		{
@@ -5585,7 +5654,7 @@ namespace
 			TMFindArrayPropertyByName(DefaultObject ? DefaultObject->GetClass() : nullptr, TEXT("CompatibleAttachment"));
 		if (!DefaultObject || !CompatibleAttachmentProperty)
 		{
-			UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] CompatibleAttachment not found on %s."), *GetNameSafe(Blueprint));
+			UE_LOG(LogTemp, Error, TEXT("[%s] CompatibleAttachment not found on %s."), LogPrefix, *GetNameSafe(Blueprint));
 			return false;
 		}
 
@@ -5605,8 +5674,10 @@ namespace
 					UE_LOG(
 						LogTemp,
 						Display,
-						TEXT("[TMSilencerco] %s already has Silencerco in CompatibleAttachment. Values: %s"),
+						TEXT("[%s] %s already has %s in CompatibleAttachment. Values: %s"),
+						LogPrefix,
 						*Blueprint->GetPathName(),
+						DisplayName,
 						*BeforeValues);
 					return true;
 				}
@@ -5619,7 +5690,7 @@ namespace
 		const int32 NewIndex = ArrayHelper.AddValue();
 		if (!TMWriteEnumArrayValue(CompatibleAttachmentProperty->Inner, ArrayHelper.GetRawPtr(NewIndex), EnumValue))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[TMSilencerco] Failed to write Silencerco enum value on %s."), *Blueprint->GetPathName());
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to write %s enum value on %s."), LogPrefix, DisplayName, *Blueprint->GetPathName());
 			return false;
 		}
 
@@ -5644,11 +5715,270 @@ namespace
 		UE_LOG(
 			LogTemp,
 			Display,
-			TEXT("[TMSilencerco] Added Silencerco to %s CompatibleAttachment. Before: %s After: %s"),
+			TEXT("[%s] Added %s to %s CompatibleAttachment. Before: %s After: %s"),
+			LogPrefix,
+			DisplayName,
 			*Blueprint->GetPathName(),
 			*BeforeValues,
 			*AfterValues);
-		return Blueprint->Status != BS_Error && TMSavePackageForAsset(Blueprint, TEXT("TMSilencerco"));
+		return Blueprint->Status != BS_Error && TMSavePackageForAsset(Blueprint, LogPrefix);
+	}
+
+	FProperty* TMFindStructPropertyByAuthoredNameWithFallback(
+		UScriptStruct* Struct,
+		const TCHAR* ExpectedName,
+		const TCHAR* AlternateName = nullptr)
+	{
+		FProperty* Property = TMFindStructPropertyByAuthoredName(Struct, ExpectedName);
+		if (!Property && AlternateName)
+		{
+			Property = TMFindStructPropertyByAuthoredName(Struct, AlternateName);
+		}
+		return Property;
+	}
+
+	bool TMSetNameStructPropertyValue(
+		UScriptStruct* Struct,
+		void* ContainerPtr,
+		const TCHAR* PropertyName,
+		const FName Value,
+		const TCHAR* LogPrefix)
+	{
+		FNameProperty* NameProperty = CastField<FNameProperty>(
+			TMFindStructPropertyByAuthoredName(Struct, PropertyName));
+		if (!NameProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to find FName property '%s' on %s."), LogPrefix, PropertyName, *GetNameSafe(Struct));
+			return false;
+		}
+
+		*NameProperty->ContainerPtrToValuePtr<FName>(ContainerPtr) = Value;
+		return true;
+	}
+
+	bool TMSetObjectStructPropertyValue(
+		UScriptStruct* Struct,
+		void* ContainerPtr,
+		const TCHAR* PropertyName,
+		const TCHAR* AssetPath,
+		const TCHAR* LogPrefix)
+	{
+		FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(
+			TMFindStructPropertyByAuthoredName(Struct, PropertyName));
+		if (!ObjectProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to find object property '%s' on %s."), LogPrefix, PropertyName, *GetNameSafe(Struct));
+			return false;
+		}
+
+		UObject* Asset = LoadObject<UObject>(nullptr, AssetPath);
+		if (!Asset)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load asset for '%s': %s"), LogPrefix, PropertyName, AssetPath);
+			return false;
+		}
+
+		if (ObjectProperty->PropertyClass && !Asset->IsA(ObjectProperty->PropertyClass))
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[%s] Asset %s is %s, expected %s for '%s'."),
+				LogPrefix,
+				AssetPath,
+				*GetNameSafe(Asset->GetClass()),
+				*GetNameSafe(ObjectProperty->PropertyClass),
+				PropertyName);
+			return false;
+		}
+
+		ObjectProperty->SetObjectPropertyValue(ObjectProperty->ContainerPtrToValuePtr<void>(ContainerPtr), Asset);
+		return true;
+	}
+
+	bool TMSetBoolStructPropertyValue(
+		UScriptStruct* Struct,
+		void* ContainerPtr,
+		const TCHAR* PropertyName,
+		const bool bValue,
+		const TCHAR* LogPrefix,
+		const TCHAR* AlternatePropertyName = nullptr)
+	{
+		FBoolProperty* BoolProperty = CastField<FBoolProperty>(
+			TMFindStructPropertyByAuthoredNameWithFallback(Struct, PropertyName, AlternatePropertyName));
+		if (!BoolProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to find bool property '%s' on %s."), LogPrefix, PropertyName, *GetNameSafe(Struct));
+			return false;
+		}
+
+		BoolProperty->SetPropertyValue_InContainer(ContainerPtr, bValue);
+		return true;
+	}
+
+	bool TMSetNumericStructPropertyValue(
+		UScriptStruct* Struct,
+		void* ContainerPtr,
+		const TCHAR* PropertyName,
+		const double Value,
+		const TCHAR* LogPrefix)
+	{
+		FNumericProperty* NumericProperty = CastField<FNumericProperty>(
+			TMFindStructPropertyByAuthoredName(Struct, PropertyName));
+		if (!NumericProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to find numeric property '%s' on %s."), LogPrefix, PropertyName, *GetNameSafe(Struct));
+			return false;
+		}
+
+		void* ValuePtr = NumericProperty->ContainerPtrToValuePtr<void>(ContainerPtr);
+		if (NumericProperty->IsFloatingPoint())
+		{
+			NumericProperty->SetFloatingPointPropertyValue(ValuePtr, Value);
+		}
+		else
+		{
+			NumericProperty->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
+		}
+		return true;
+	}
+
+	bool TMPatchACWISuppressorMuzzleRow()
+	{
+		const FName SuppressorRowName(TEXT("Suppressor"));
+		const TCHAR* LogPrefix = TEXT("TMACWISuppressor");
+
+		UDataTable* MuzzleTable = LoadObject<UDataTable>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Muzzle.DT_Muzzle"));
+		if (!MuzzleTable)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load DT_Muzzle."), LogPrefix);
+			return false;
+		}
+
+		UScriptStruct* RowStruct = const_cast<UScriptStruct*>(MuzzleTable->GetRowStruct());
+		if (!RowStruct)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] DT_Muzzle has no row struct."), LogPrefix);
+			return false;
+		}
+
+		FStructOnScope RowScope(RowStruct);
+		uint8* RowData = RowScope.GetStructMemory();
+		if (!RowData)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to allocate DT_Muzzle row memory."), LogPrefix);
+			return false;
+		}
+
+		if (uint8* const* TemplateRowPtr = MuzzleTable->GetRowMap().Find(TEXT("Silencerco")))
+		{
+			RowStruct->CopyScriptStruct(RowData, *TemplateRowPtr);
+		}
+
+		FProperty* EnumProperty = TMFindStructPropertyByAuthoredName(RowStruct, TEXT("EnumMuzzle"));
+		if (!EnumProperty || !TMSetEnumPropertyByDisplayName(EnumProperty, RowData, TEXT("Suppressor")))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to set EnumMuzzle=Suppressor."), LogPrefix);
+			return false;
+		}
+
+		bool bSuccess = true;
+		bSuccess &= TMSetNameStructPropertyValue(RowStruct, RowData, TEXT("Socket"), FName(TEXT("Muzzle")), LogPrefix);
+		bSuccess &= TMSetObjectStructPropertyValue(
+			RowStruct,
+			RowData,
+			TEXT("Mesh"),
+			TEXT("/Game/AdvanceWeaponPack/Mesh/Attachment/Barrel/SM_Suppressor_Barrel.SM_Suppressor_Barrel"),
+			LogPrefix);
+		bSuccess &= TMSetObjectStructPropertyValue(
+			RowStruct,
+			RowData,
+			TEXT("Flash Particle"),
+			TEXT("/Game/Fps/Particles/P_MuzzleFX.P_MuzzleFX"),
+			LogPrefix);
+		bSuccess &= TMSetObjectStructPropertyValue(
+			RowStruct,
+			RowData,
+			TEXT("Silenced Shot Sound"),
+			TEXT("/Game/MP_System_V3/Game/Sounds/Cue/Silenced_Shoot_Cue.Silenced_Shoot_Cue"),
+			LogPrefix);
+		bSuccess &= TMSetBoolStructPropertyValue(
+			RowStruct,
+			RowData,
+			TEXT("Is Silenced? "),
+			true,
+			LogPrefix,
+			TEXT("Is Silenced?"));
+		bSuccess &= TMSetNumericStructPropertyValue(RowStruct, RowData, TEXT("Recoil X Reduction"), -0.3, LogPrefix);
+		bSuccess &= TMSetNumericStructPropertyValue(RowStruct, RowData, TEXT("Recoil Y Reduction"), -0.3, LogPrefix);
+		bSuccess &= TMSetNumericStructPropertyValue(RowStruct, RowData, TEXT("Control"), 0.4, LogPrefix);
+		if (!bSuccess)
+		{
+			return false;
+		}
+
+		FString RowText;
+		RowStruct->ExportText(RowText, RowData, nullptr, nullptr, PPF_None, nullptr);
+
+		MuzzleTable->Modify();
+		MuzzleTable->RemoveRow(SuppressorRowName);
+		MuzzleTable->AddRow(SuppressorRowName, RowData, RowStruct);
+		MuzzleTable->HandleDataTableChanged(SuppressorRowName);
+		MuzzleTable->MarkPackageDirty();
+
+		UE_LOG(LogTemp, Display, TEXT("[%s] Patched DT_Muzzle row %s: %s"), LogPrefix, *SuppressorRowName.ToString(), *RowText);
+		return TMSavePackageForAsset(MuzzleTable, LogPrefix);
+	}
+
+	bool TMPatchACWISuppressorOnly()
+	{
+		UUserDefinedEnum* AttachmentEnum = nullptr;
+		int64 SuppressorValue = 0;
+		if (!TMEnsureAttachmentEnumHasSuppressor(AttachmentEnum, SuppressorValue))
+		{
+			return false;
+		}
+		if (!TMEnsureMuzzleEnumHasSuppressor())
+		{
+			return false;
+		}
+
+		bool bSuccess = TMPatchACWISuppressorMuzzleRow();
+
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/ACWI/BP_ACWI.BP_ACWI"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMACWISuppressor] Failed to load BP_ACWI."));
+			bSuccess = false;
+		}
+		else
+		{
+			bSuccess &= TMAddEnumValueToCompatibleAttachment(
+				Blueprint,
+				AttachmentEnum,
+				SuppressorValue,
+				TEXT("Suppressor"),
+				TEXT("TMACWISuppressor"));
+		}
+
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Weapon_Master.BP_Weapon_Master"),
+			TEXT("TMACWISuppressor"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer"),
+			TEXT("TMACWISuppressor"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			TEXT("TMACWISuppressor"));
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			TEXT("TMACWISuppressor"));
+
+		return bSuccess;
 	}
 
 	FString TMDescribeCompatibleAttachmentValues(FArrayProperty* ArrayProperty, FScriptArrayHelper& ArrayHelper, const UEnum* Enum)
@@ -7903,7 +8233,7 @@ namespace
 	const int32 TMCategoryIconWidth = 128;
 	const int32 TMCategoryIconHeight = 64;
 	const int32 TMCategoryIconSupersample = 4;
-	constexpr float TMCategoryIconDisplayScale = 0.15f;
+	constexpr float TMCategoryIconDisplayScale = 0.30f;
 	constexpr uint8 TMCategoryIconCropColorThreshold = 18;
 	constexpr uint8 TMCategoryIconCropAlphaThreshold = 8;
 	const int32 TMCategoryIconCropPadding = 0;
@@ -13164,6 +13494,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("PatchDESilencercoOnly"), ESearchCase::IgnoreCase))
 	{
 		return TMPatchDESilencercoOnly() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchACWISuppressor"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchACWISuppressorOnly() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("TintYellowUI"), ESearchCase::IgnoreCase))

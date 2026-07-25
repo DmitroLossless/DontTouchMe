@@ -366,7 +366,23 @@ int32 UTMGenerateUIIconsCommandlet::Main(const FString& Params)
 	{
 		FTouchMeEditorModule& TouchMeEditorModule =
 			FModuleManager::LoadModuleChecked<FTouchMeEditorModule>(TEXT("TouchMeEditor"));
-		TouchMeEditorModule.GenerateLoadoutWeaponActiveIcons();
+
+		FString LoadoutAssetPath;
+		if (FParse::Value(*Params, TEXT("Asset="), LoadoutAssetPath))
+		{
+			UObject* Asset = LoadObject<UObject>(nullptr, *LoadoutAssetPath);
+			if (!Asset)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[TMIconGenerator] Failed to load asset: %s"), *LoadoutAssetPath);
+				return 1;
+			}
+
+			TouchMeEditorModule.GenerateLoadoutWeaponActiveIconsForAssets({ FAssetData(Asset) });
+		}
+		else
+		{
+			TouchMeEditorModule.GenerateLoadoutWeaponActiveIcons();
+		}
 		return 0;
 	}
 

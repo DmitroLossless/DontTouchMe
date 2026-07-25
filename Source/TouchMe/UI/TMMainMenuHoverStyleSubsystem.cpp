@@ -14,6 +14,9 @@
 #include "Components/Widget.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
+#include "HAL/PlatformMisc.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "UObject/UObjectIterator.h"
 
 namespace
@@ -33,8 +36,7 @@ namespace
 	constexpr float MainMenuLabelHoverScale = 1.07f;
 	constexpr float MainMenuSubmenuLabelHoverFontScale = 1.15f;
 	constexpr float QuitConfirmationOptionHoverFontScale = 1.12f;
-	constexpr float LoadoutCategoryButtonDisplayScale = 0.15f;
-	constexpr float LoadoutCategoryButtonHoverScale = 1.15f;
+	constexpr float LoadoutCategoryButtonDisplayScale = 0.30f;
 	const FLinearColor MainMenuDialogYellow(0.672443f, 0.381326f, 0.025187f, 1.0f);
 	const FLinearColor MainMenuDialogHoverRed(1.0f, 0.0f, 0.0f, 1.0f);
 	const FName MainMenuLabelHoverTypeface(TEXT("Light"));
@@ -42,6 +44,7 @@ namespace
 	struct FLoadoutCategoryButtonSpec
 	{
 		FName ButtonName;
+		FName Token;
 		FName IconBoxName;
 		FName IconImageName;
 		FVector2D FallbackNativeSize = FVector2D(128.0f, 64.0f);
@@ -49,25 +52,75 @@ namespace
 
 	const FLoadoutCategoryButtonSpec LoadoutCategoryButtonSpecs[] =
 	{
-		{ TEXT("B_Primary"), TEXT("TM_Primary_CategoryIconBox"), TEXT("TM_Primary_CategoryIconImage"), FVector2D(1881.0f, 560.0f) },
-		{ TEXT("B_Secondary"), TEXT("TM_Secondary_CategoryIconBox"), TEXT("TM_Secondary_CategoryIconImage"), FVector2D(1688.0f, 639.0f) },
-		{ TEXT("B_Special"), TEXT("TM_Special_CategoryIconBox"), TEXT("TM_Special_CategoryIconImage"), FVector2D(1672.0f, 645.0f) },
-		{ TEXT("B_Melee"), TEXT("TM_Melee_CategoryIconBox"), TEXT("TM_Melee_CategoryIconImage"), FVector2D(1685.0f, 654.0f) },
-		{ TEXT("B_Explosive"), TEXT("TM_Explosive_CategoryIconBox"), TEXT("TM_Explosive_CategoryIconImage"), FVector2D(1679.0f, 648.0f) }
+		{ TEXT("B_Primary"), TEXT("Primary"), TEXT("TM_Primary_CategoryIconBox"), TEXT("TM_Primary_CategoryIconImage"), FVector2D(1881.0f, 560.0f) },
+		{ TEXT("B_Secondary"), TEXT("Secondary"), TEXT("TM_Secondary_CategoryIconBox"), TEXT("TM_Secondary_CategoryIconImage"), FVector2D(1688.0f, 639.0f) },
+		{ TEXT("B_Special"), TEXT("Special"), TEXT("TM_Special_CategoryIconBox"), TEXT("TM_Special_CategoryIconImage"), FVector2D(1679.0f, 648.0f) },
+		{ TEXT("B_Melee"), TEXT("Melee"), TEXT("TM_Melee_CategoryIconBox"), TEXT("TM_Melee_CategoryIconImage"), FVector2D(1672.0f, 645.0f) },
+		{ TEXT("B_Explosive"), TEXT("Explosive"), TEXT("TM_Explosive_CategoryIconBox"), TEXT("TM_Explosive_CategoryIconImage"), FVector2D(1685.0f, 654.0f) }
 	};
 
-	FVector2D GetLoadoutCategoryNativeSize(const FLoadoutCategoryButtonSpec& Spec, const UImage* IconImage)
+	FString MakeLoadoutCategoryIconObjectPath(const FName Token, const bool bActive)
 	{
+		const FString TokenString = Token.ToString();
+		const FString AssetName = FString::Printf(TEXT("T_Menu_%s_Icon%s"), *TokenString, bActive ? TEXT("_Active") : TEXT(""));
+		return FString::Printf(TEXT("/Game/UI/Generated/Icons/%s.%s"), *AssetName, *AssetName);
+	}
+
+	UTexture2D* LoadLoadoutCategoryIconTexture(const FName Token, const bool bActive)
+	{
+		static TMap<FString, TWeakObjectPtr<UTexture2D>> TextureCache;
+
+		const FString CacheKey = Token.ToString() + (bActive ? TEXT("_Active") : TEXT(""));
+		if (const TWeakObjectPtr<UTexture2D>* CachedTexture = TextureCache.Find(CacheKey))
+		{
+			if (CachedTexture->IsValid())
+			{
+				return CachedTexture->Get();
+			}
+		}
+
+		UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, *MakeLoadoutCategoryIconObjectPath(Token, bActive));
+		TextureCache.Add(CacheKey, Texture);
+		return Texture;
+	}
+
+	FVector2D GetLoadoutCategoryTextureSize(const UTexture2D* Texture)
+	{
+		if (!Texture)
+		{
+			return FVector2D::ZeroVector;
+		}
+
+		const int32 TextureWidth = Texture->GetSizeX();
+		const int32 TextureHeight = Texture->GetSizeY();
+		if (TextureWidth > 0 && TextureHeight > 0)
+		{
+			return FVector2D(static_cast<float>(TextureWidth), static_cast<float>(TextureHeight));
+		}
+
+		return FVector2D::ZeroVector;
+	}
+
+	FVector2D GetLoadoutCategoryNativeSize(
+		const FLoadoutCategoryButtonSpec& Spec,
+		const UTexture2D* NormalTexture,
+		const UImage* IconImage)
+	{
+		const FVector2D NormalTextureSize = GetLoadoutCategoryTextureSize(NormalTexture);
+		if (NormalTextureSize.X > 0.0f && NormalTextureSize.Y > 0.0f)
+		{
+			return NormalTextureSize;
+		}
+
 		if (IconImage)
 		{
 			const FSlateBrush Brush = IconImage->GetBrush();
 			if (const UTexture2D* Texture = Cast<UTexture2D>(Brush.GetResourceObject()))
 			{
-				const int32 TextureWidth = Texture->GetSizeX();
-				const int32 TextureHeight = Texture->GetSizeY();
-				if (TextureWidth > 0 && TextureHeight > 0)
+				const FVector2D BrushTextureSize = GetLoadoutCategoryTextureSize(Texture);
+				if (BrushTextureSize.X > 0.0f && BrushTextureSize.Y > 0.0f)
 				{
-					return FVector2D(static_cast<float>(TextureWidth), static_cast<float>(TextureHeight));
+					return BrushTextureSize;
 				}
 			}
 
@@ -81,9 +134,135 @@ namespace
 		return Spec.FallbackNativeSize;
 	}
 
-	FVector2D GetLoadoutCategoryDisplaySize(const FLoadoutCategoryButtonSpec& Spec, const UImage* IconImage)
+	FVector2D GetLoadoutCategoryDisplaySize(const FVector2D NativeSize, const UImage* IconImage)
 	{
-		return GetLoadoutCategoryNativeSize(Spec, IconImage) * LoadoutCategoryButtonDisplayScale;
+		const FVector2D DefaultSize = NativeSize * LoadoutCategoryButtonDisplayScale;
+		if (!IconImage || NativeSize.X <= 0.0f || NativeSize.Y <= 0.0f)
+		{
+			return DefaultSize;
+		}
+
+		const float LayoutHeight = IconImage->GetCachedGeometry().GetLocalSize().Y;
+		if (LayoutHeight <= 1.0f || LayoutHeight >= DefaultSize.Y)
+		{
+			return DefaultSize;
+		}
+
+		return FVector2D((NativeSize.X / NativeSize.Y) * LayoutHeight, LayoutHeight);
+	}
+
+	bool IsLoadoutCategoryRulerEnabled()
+	{
+		static const bool bEnabled = []()
+		{
+			return FPlatformMisc::GetEnvironmentVariable(TEXT("DTM_MENU_ICON_RULER")).Equals(TEXT("1"));
+		}();
+
+		return bEnabled;
+	}
+
+	void AppendLoadoutCategoryRulerSample(
+		const FLoadoutCategoryButtonSpec& Spec,
+		const UImage* IconImage,
+		const bool bHovered,
+		const FVector2D SourceSize,
+		const FVector2D RequestedDrawSize)
+	{
+		if (!IsLoadoutCategoryRulerEnabled() || !IconImage)
+		{
+			return;
+		}
+
+		const FGeometry& Geometry = IconImage->GetCachedGeometry();
+		const FVector2D LocalSize = Geometry.GetLocalSize();
+		if (LocalSize.X <= 0.0f || LocalSize.Y <= 0.0f)
+		{
+			return;
+		}
+
+		const FVector2D TopLeft = Geometry.LocalToAbsolute(FVector2D::ZeroVector);
+		const FVector2D BottomRight = Geometry.LocalToAbsolute(LocalSize);
+		const FString OutputPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("AI_MenuHoverAspectImport"), TEXT("menu_icon_draw_rects.csv"));
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(OutputPath), true);
+
+		static TSet<FString> WrittenKeys;
+		static bool bHeaderWritten = false;
+		if (!bHeaderWritten && !FPaths::FileExists(OutputPath))
+		{
+			FFileHelper::SaveStringToFile(
+				TEXT("Icon,State,SourceW,SourceH,RequestedW,RequestedH,Left,Top,Right,Bottom,Width,Height,SourceRatio,DrawRatio,RatioDelta\n"),
+				*OutputPath);
+		}
+		bHeaderWritten = true;
+
+		const FString State = bHovered ? TEXT("hover") : TEXT("normal");
+		const int32 Left = FMath::RoundToInt(TopLeft.X);
+		const int32 Top = FMath::RoundToInt(TopLeft.Y);
+		const int32 Right = FMath::RoundToInt(BottomRight.X);
+		const int32 Bottom = FMath::RoundToInt(BottomRight.Y);
+		const int32 Width = Right - Left;
+		const int32 Height = Bottom - Top;
+		const double SourceRatio = SourceSize.Y > 0.0f ? static_cast<double>(SourceSize.X / SourceSize.Y) : 0.0;
+		const double DrawRatio = Height > 0 ? static_cast<double>(Width) / static_cast<double>(Height) : 0.0;
+		const double RatioDelta = FMath::Abs(SourceRatio - DrawRatio);
+
+		const FString Key = FString::Printf(TEXT("%s_%s_%d_%d_%d_%d"), *Spec.Token.ToString(), *State, Left, Top, Width, Height);
+		if (WrittenKeys.Contains(Key))
+		{
+			return;
+		}
+		WrittenKeys.Add(Key);
+
+		const FString Line = FString::Printf(
+			TEXT("%s,%s,%.0f,%.0f,%.0f,%.0f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f\n"),
+			*Spec.Token.ToString(),
+			*State,
+			SourceSize.X,
+			SourceSize.Y,
+			RequestedDrawSize.X,
+			RequestedDrawSize.Y,
+			Left,
+			Top,
+			Right,
+			Bottom,
+			Width,
+			Height,
+			SourceRatio,
+			DrawRatio,
+			RatioDelta);
+		FFileHelper::SaveStringToFile(Line, *OutputPath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
+	}
+
+	void ApplyLoadoutCategoryIconTexture(
+		const FLoadoutCategoryButtonSpec& Spec,
+		UImage* IconImage,
+		const bool bHovered,
+		const FVector2D DrawSize)
+	{
+		if (!IconImage)
+		{
+			return;
+		}
+
+		UTexture2D* NormalTexture = LoadLoadoutCategoryIconTexture(Spec.Token, false);
+		UTexture2D* ActiveTexture = LoadLoadoutCategoryIconTexture(Spec.Token, true);
+		UTexture2D* DesiredTexture = (bHovered && ActiveTexture) ? ActiveTexture : NormalTexture;
+		if (!DesiredTexture)
+		{
+			return;
+		}
+
+		FSlateBrush Brush = IconImage->GetBrush();
+		if (Brush.GetResourceObject() != DesiredTexture
+			|| !Brush.GetImageSize().Equals(DrawSize, 0.5f)
+			|| Brush.DrawAs != ESlateBrushDrawType::Image)
+		{
+			Brush.DrawAs = ESlateBrushDrawType::Image;
+			Brush.SetResourceObject(DesiredTexture);
+			Brush.SetImageSize(DrawSize);
+			Brush.TintColor = FSlateColor(FLinearColor::White);
+			IconImage->SetBrush(Brush);
+		}
 	}
 
 	void VisitMainMenuHoverWidgetTree(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
@@ -420,7 +599,10 @@ void UTMMainMenuHoverStyleSubsystem::ApplyLoadoutCategoryButtonStyle(
 		}
 
 		UImage* IconImage = Cast<UImage>(Widget->GetWidgetFromName(Spec.IconImageName));
-		const FVector2D DisplaySize = GetLoadoutCategoryDisplaySize(Spec, IconImage);
+		UTexture2D* NormalTexture = LoadLoadoutCategoryIconTexture(Spec.Token, false);
+		const FVector2D NativeSize = GetLoadoutCategoryNativeSize(Spec, NormalTexture, IconImage);
+		const FVector2D DisplaySize = GetLoadoutCategoryDisplaySize(NativeSize, IconImage);
+		const bool bHovered = Button->IsHovered() || IsMainMenuHoverWidgetTreeHovered(Button);
 
 		if (USizeBox* IconBox = Cast<USizeBox>(Widget->GetWidgetFromName(Spec.IconBoxName)))
 		{
@@ -431,13 +613,15 @@ void UTMMainMenuHoverStyleSubsystem::ApplyLoadoutCategoryButtonStyle(
 
 		if (IconImage)
 		{
+			ApplyLoadoutCategoryIconTexture(Spec, IconImage, bHovered, DisplaySize);
 			IconImage->SetDesiredSizeOverride(DisplaySize);
 			IconImage->SetColorAndOpacity(FLinearColor::White);
 			IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+			AppendLoadoutCategoryRulerSample(Spec, IconImage, bHovered, NativeSize, DisplaySize);
 		}
 
 		SeenButtons.Add(Button);
-		SetLoadoutCategoryButtonHovered(Button, Button->IsHovered() || IsMainMenuHoverWidgetTreeHovered(Button));
+		SetLoadoutCategoryButtonHovered(Button, bHovered);
 	}
 }
 
@@ -620,14 +804,6 @@ void UTMMainMenuHoverStyleSubsystem::SetLoadoutCategoryButtonHovered(UWidget* Wi
 
 	Style->bHovered = bHovered;
 
-	FWidgetTransform Transform = Style->NormalTransform;
-	if (bHovered)
-	{
-		Transform.Scale = FVector2D(
-			Style->NormalTransform.Scale.X * LoadoutCategoryButtonHoverScale,
-			Style->NormalTransform.Scale.Y * LoadoutCategoryButtonHoverScale);
-	}
-
-	Widget->SetRenderTransformPivot(bHovered ? FVector2D(0.5f, 0.5f) : Style->NormalPivot);
-	Widget->SetRenderTransform(Transform);
+	Widget->SetRenderTransformPivot(Style->NormalPivot);
+	Widget->SetRenderTransform(Style->NormalTransform);
 }

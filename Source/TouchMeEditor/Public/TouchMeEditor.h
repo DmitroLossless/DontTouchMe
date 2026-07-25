@@ -13,6 +13,7 @@ public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 	void GenerateIconsForAssets(TArray<FAssetData> SelectedAssets) const;
+	void GenerateLoadoutWeaponActiveIconsForAssets(TArray<FAssetData> SourceAssets) const;
 	void GenerateLoadoutWeaponActiveIcons() const;
 
 private:

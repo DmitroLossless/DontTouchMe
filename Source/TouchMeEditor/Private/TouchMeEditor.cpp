@@ -1255,8 +1255,200 @@ namespace
 	}
 
 	bool TMReadTextureSourceBgra8(UTexture2D* Texture, TArray<uint8>& OutPixels, int32& OutWidth, int32& OutHeight);
+	const TCHAR* TMGetMeleeLoadoutDiffuseTexturePath(const UStaticMesh* StaticMesh, const TCHAR*& OutWeaponName);
+	bool TMDownsampleBgraPixels(
+		const TArray<uint8>& SourcePixels,
+		int32 SourceWidth,
+		int32 SourceHeight,
+		TArray<uint8>& OutPixels,
+		int32 OutWidth,
+		int32 OutHeight);
+	void TMRasterizeTexturedProjectedTriangle(
+		TArray<uint8>& Pixels,
+		TArray<float>& DepthBuffer,
+		int32 Width,
+		int32 Height,
+		const FVector2D& A,
+		const FVector2D& B,
+		const FVector2D& C,
+		float DepthA,
+		float DepthB,
+		float DepthC,
+		const FVector2f& UVA,
+		const FVector2f& UVB,
+		const FVector2f& UVC,
+		const TArray<uint8>& DiffusePixels,
+		int32 DiffuseWidth,
+		int32 DiffuseHeight,
+		float Light,
+		float Facing);
+
+	bool TMBuildMeleeStaticMeshProjectedIconPixels(UStaticMesh* StaticMesh, TArray<uint8>& OutPixels)
+	{
+		OutPixels.Reset();
+		if (!StaticMesh || !StaticMesh->GetRenderData() || StaticMesh->GetRenderData()->LODResources.IsEmpty())
+		{
+			return false;
+		}
+
+		const FStaticMeshLODResources& LODResources = StaticMesh->GetRenderData()->LODResources[0];
+		const FPositionVertexBuffer& PositionBuffer = LODResources.VertexBuffers.PositionVertexBuffer;
+		const FStaticMeshVertexBuffer& StaticMeshVertexBuffer = LODResources.VertexBuffers.StaticMeshVertexBuffer;
+		const int32 VertexCount = static_cast<int32>(PositionBuffer.GetNumVertices());
+		if (VertexCount <= 0 || StaticMeshVertexBuffer.GetNumTexCoords() <= 0)
+		{
+			return false;
+		}
+
+		const TCHAR* WeaponName = nullptr;
+		const TCHAR* DiffuseTexturePath = TMGetMeleeLoadoutDiffuseTexturePath(StaticMesh, WeaponName);
+		if (!DiffuseTexturePath)
+		{
+			return false;
+		}
+
+		TArray<uint8> DiffusePixels;
+		int32 DiffuseWidth = 0;
+		int32 DiffuseHeight = 0;
+		UTexture2D* DiffuseTexture = LoadObject<UTexture2D>(nullptr, DiffuseTexturePath);
+		if (!DiffuseTexture || !TMReadTextureSourceBgra8(DiffuseTexture, DiffusePixels, DiffuseWidth, DiffuseHeight))
+		{
+			return false;
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[TMIconGenerator] Using %s diffuse material texture %s for melee loadout projection."),
+			WeaponName ? WeaponName : TEXT("melee weapon"),
+			*DiffuseTexture->GetPathName());
+
+		const FBoxSphereBounds MeshBounds = StaticMesh->GetBounds();
+		const FVector Center = MeshBounds.Origin;
+		const FRotationMatrix ViewRotationMatrix(FRotator(-18.0f, -38.0f, 0.0f));
+		const FVector ViewForward = ViewRotationMatrix.GetScaledAxis(EAxis::X);
+		const FVector ViewRight = ViewRotationMatrix.GetScaledAxis(EAxis::Y);
+		const FVector ViewUp = ViewRotationMatrix.GetScaledAxis(EAxis::Z);
+		const FVector LightDirection = (ViewForward * 0.35f + ViewRight * -0.25f + ViewUp * 0.85f).GetSafeNormal();
+
+		TArray<FVector> CenteredVertices;
+		CenteredVertices.SetNum(VertexCount);
+		TArray<FVector2D> ProjectedVertices;
+		ProjectedVertices.SetNum(VertexCount);
+		TArray<float> ProjectedDepths;
+		ProjectedDepths.SetNum(VertexCount);
+		FBox2D ProjectedBounds(ForceInit);
+		for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
+		{
+			const FVector3f VertexPosition = PositionBuffer.VertexPosition(VertexIndex);
+			const FVector LocalPosition(VertexPosition);
+			const FVector Offset = LocalPosition - Center;
+			CenteredVertices[VertexIndex] = Offset;
+			const FVector2D ProjectedPosition(
+				FVector::DotProduct(Offset, ViewRight),
+				-FVector::DotProduct(Offset, ViewUp));
+			ProjectedVertices[VertexIndex] = ProjectedPosition;
+			ProjectedDepths[VertexIndex] = static_cast<float>(FVector::DotProduct(Offset, ViewForward));
+			ProjectedBounds += ProjectedPosition;
+		}
+
+		if (!ProjectedBounds.bIsValid)
+		{
+			return false;
+		}
+
+		const FVector2D ProjectedSize = ProjectedBounds.GetSize();
+		if (ProjectedSize.X <= UE_SMALL_NUMBER || ProjectedSize.Y <= UE_SMALL_NUMBER)
+		{
+			return false;
+		}
+
+		constexpr int32 RenderScale = 8;
+		constexpr int32 RenderWidth = TMIconWidth * RenderScale;
+		constexpr int32 RenderHeight = TMIconHeight * RenderScale;
+		const float Scale = FMath::Min(
+			(static_cast<float>(RenderWidth) * 0.90f) / ProjectedSize.X,
+			(static_cast<float>(RenderHeight) * 0.90f) / ProjectedSize.Y);
+		const FVector2D ProjectedCenter = ProjectedBounds.GetCenter();
+		const FVector2D IconCenter(static_cast<float>(RenderWidth) * 0.5f, static_cast<float>(RenderHeight) * 0.5f);
+
+		for (FVector2D& ProjectedVertex : ProjectedVertices)
+		{
+			ProjectedVertex = ((ProjectedVertex - ProjectedCenter) * Scale) + IconCenter;
+		}
+
+		TArray<uint8> RenderPixels;
+		RenderPixels.Init(0, RenderWidth * RenderHeight * 4);
+		TArray<float> DepthBuffer;
+		DepthBuffer.Init(-FLT_MAX, RenderWidth * RenderHeight);
+		const FIndexArrayView Indices = LODResources.IndexBuffer.GetArrayView();
+		for (int32 Index = 0; Index + 2 < Indices.Num(); Index += 3)
+		{
+			const int32 IndexA = static_cast<int32>(Indices[Index]);
+			const int32 IndexB = static_cast<int32>(Indices[Index + 1]);
+			const int32 IndexC = static_cast<int32>(Indices[Index + 2]);
+			if (!ProjectedVertices.IsValidIndex(IndexA)
+				|| !ProjectedVertices.IsValidIndex(IndexB)
+				|| !ProjectedVertices.IsValidIndex(IndexC))
+			{
+				continue;
+			}
+
+			const FVector TriangleNormal = FVector::CrossProduct(
+				CenteredVertices[IndexB] - CenteredVertices[IndexA],
+				CenteredVertices[IndexC] - CenteredVertices[IndexA]).GetSafeNormal();
+			const float Light = FMath::Abs(FVector::DotProduct(TriangleNormal, LightDirection));
+			const float Facing = FMath::Abs(FVector::DotProduct(TriangleNormal, ViewForward));
+			TMRasterizeTexturedProjectedTriangle(
+				RenderPixels,
+				DepthBuffer,
+				RenderWidth,
+				RenderHeight,
+				ProjectedVertices[IndexA],
+				ProjectedVertices[IndexB],
+				ProjectedVertices[IndexC],
+				ProjectedDepths[IndexA],
+				ProjectedDepths[IndexB],
+				ProjectedDepths[IndexC],
+				StaticMeshVertexBuffer.GetVertexUV(IndexA, 0),
+				StaticMeshVertexBuffer.GetVertexUV(IndexB, 0),
+				StaticMeshVertexBuffer.GetVertexUV(IndexC, 0),
+				DiffusePixels,
+				DiffuseWidth,
+				DiffuseHeight,
+				Light,
+				Facing);
+		}
+
+		TArray<uint8> Mask;
+		Mask.Init(0, RenderWidth * RenderHeight);
+		for (int32 PixelIndex = 0; PixelIndex < RenderWidth * RenderHeight; ++PixelIndex)
+		{
+			Mask[PixelIndex] = RenderPixels[(PixelIndex * 4) + 3];
+		}
+		if (!TMFindMaskBounds(Mask, RenderWidth, RenderHeight).IsValid())
+		{
+			return false;
+		}
+
+		if (!TMDownsampleBgraPixels(RenderPixels, RenderWidth, RenderHeight, OutPixels, TMIconWidth, TMIconHeight))
+		{
+			return false;
+		}
+
+		return TMIconHasReadableColor(OutPixels, TMIconWidth, TMIconHeight);
+	}
+
+	bool TMReadTextureSourceBgra8(UTexture2D* Texture, TArray<uint8>& OutPixels, int32& OutWidth, int32& OutHeight);
 	bool TMIsWeaponDataTableMeshSourceWithVisualOverride(const FAssetData& SourceAsset);
 	bool TMIsFragDataTableMeshSource(const FAssetData& SourceAsset);
+
+	bool TMIsMeleeLoadoutMeshSource(const FAssetData& SourceAsset)
+	{
+		const FString ObjectPath = SourceAsset.GetObjectPathString();
+		return ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Kunai_01.SK_Kunai_01"), ESearchCase::IgnoreCase)
+			|| ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Bayonet_01.SK_Bayonet_01"), ESearchCase::IgnoreCase);
+	}
 
 	bool TMIsSkeletalVisualMeshPath(const USkeletalMesh* SkeletalMesh, const TCHAR* MeshPath)
 	{
@@ -1306,6 +1498,108 @@ namespace
 		return nullptr;
 	}
 
+	const TCHAR* TMGetMeleeLoadoutDiffuseTexturePath(const UStaticMesh* StaticMesh, const TCHAR*& OutWeaponName)
+	{
+		OutWeaponName = nullptr;
+		if (!StaticMesh)
+		{
+			return nullptr;
+		}
+
+		const FString MeshPath = StaticMesh->GetPathName();
+		if (MeshPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SM_Kunai_01.SM_Kunai_01"), ESearchCase::IgnoreCase))
+		{
+			OutWeaponName = TEXT("Kunai");
+			return TEXT("/Game/MeleeWeapons/Textures/T_Kunai_BC.T_Kunai_BC");
+		}
+
+		if (MeshPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SM_Bayonet_01.SM_Bayonet_01"), ESearchCase::IgnoreCase))
+		{
+			OutWeaponName = TEXT("Bayonet");
+			return TEXT("/Game/MeleeWeapons/Textures/T_Bayonet_BC.T_Bayonet_BC");
+		}
+
+		return nullptr;
+	}
+
+	bool TMDownsampleBgraPixels(
+		const TArray<uint8>& SourcePixels,
+		const int32 SourceWidth,
+		const int32 SourceHeight,
+		TArray<uint8>& OutPixels,
+		const int32 OutWidth,
+		const int32 OutHeight)
+	{
+		OutPixels.Reset();
+		if (SourceWidth <= 0
+			|| SourceHeight <= 0
+			|| OutWidth <= 0
+			|| OutHeight <= 0
+			|| SourcePixels.Num() != SourceWidth * SourceHeight * 4)
+		{
+			return false;
+		}
+
+		OutPixels.Init(0, OutWidth * OutHeight * 4);
+		for (int32 OutY = 0; OutY < OutHeight; ++OutY)
+		{
+			const int32 SourceY0 = FMath::FloorToInt(static_cast<float>(OutY) * static_cast<float>(SourceHeight) / static_cast<float>(OutHeight));
+			const int32 SourceY1 = FMath::Max(
+				SourceY0 + 1,
+				FMath::CeilToInt(static_cast<float>(OutY + 1) * static_cast<float>(SourceHeight) / static_cast<float>(OutHeight)));
+			for (int32 OutX = 0; OutX < OutWidth; ++OutX)
+			{
+				const int32 SourceX0 = FMath::FloorToInt(static_cast<float>(OutX) * static_cast<float>(SourceWidth) / static_cast<float>(OutWidth));
+				const int32 SourceX1 = FMath::Max(
+					SourceX0 + 1,
+					FMath::CeilToInt(static_cast<float>(OutX + 1) * static_cast<float>(SourceWidth) / static_cast<float>(OutWidth)));
+
+				double AlphaSum = 0.0;
+				double BlueSum = 0.0;
+				double GreenSum = 0.0;
+				double RedSum = 0.0;
+				int32 SampleCount = 0;
+				for (int32 SourceY = SourceY0; SourceY < SourceY1; ++SourceY)
+				{
+					if (SourceY < 0 || SourceY >= SourceHeight)
+					{
+						continue;
+					}
+
+					for (int32 SourceX = SourceX0; SourceX < SourceX1; ++SourceX)
+					{
+						if (SourceX < 0 || SourceX >= SourceWidth)
+						{
+							continue;
+						}
+
+						const int32 SourceIndex = ((SourceY * SourceWidth) + SourceX) * 4;
+						const double Alpha = static_cast<double>(SourcePixels[SourceIndex + 3]) / 255.0;
+						AlphaSum += Alpha;
+						BlueSum += static_cast<double>(SourcePixels[SourceIndex]) * Alpha;
+						GreenSum += static_cast<double>(SourcePixels[SourceIndex + 1]) * Alpha;
+						RedSum += static_cast<double>(SourcePixels[SourceIndex + 2]) * Alpha;
+						++SampleCount;
+					}
+				}
+
+				if (SampleCount <= 0 || AlphaSum <= UE_SMALL_NUMBER)
+				{
+					continue;
+				}
+
+				const double AverageAlpha = AlphaSum / static_cast<double>(SampleCount);
+				const int32 OutIndex = ((OutY * OutWidth) + OutX) * 4;
+				OutPixels[OutIndex] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(BlueSum / AlphaSum), 0, 255));
+				OutPixels[OutIndex + 1] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(GreenSum / AlphaSum), 0, 255));
+				OutPixels[OutIndex + 2] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(RedSum / AlphaSum), 0, 255));
+				OutPixels[OutIndex + 3] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(AverageAlpha * 255.0), 0, 255));
+			}
+		}
+
+		return OutPixels.Num() == OutWidth * OutHeight * 4;
+	}
+
 	FColor TMSampleBgraTextureWrapped(
 		const TArray<uint8>& TexturePixels,
 		const int32 TextureWidth,
@@ -1317,16 +1611,36 @@ namespace
 			return FColor(64, 66, 68, 255);
 		}
 
-		const float WrappedU = UV.X - FMath::FloorToFloat(UV.X);
-		const float WrappedV = UV.Y - FMath::FloorToFloat(UV.Y);
-		const int32 X = FMath::Clamp(FMath::FloorToInt(WrappedU * static_cast<float>(TextureWidth)), 0, TextureWidth - 1);
-		const int32 Y = FMath::Clamp(FMath::FloorToInt((1.0f - WrappedV) * static_cast<float>(TextureHeight)), 0, TextureHeight - 1);
-		const int32 DataIndex = ((Y * TextureWidth) + X) * 4;
-		return FColor(
-			TexturePixels[DataIndex + 2],
-			TexturePixels[DataIndex + 1],
-			TexturePixels[DataIndex],
-			TexturePixels[DataIndex + 3]);
+		const float U = FMath::Clamp(UV.X, 0.0f, 1.0f);
+		const float V = FMath::Clamp(1.0f - UV.Y, 0.0f, 1.0f);
+		const float XFloat = U * static_cast<float>(TextureWidth - 1);
+		const float YFloat = V * static_cast<float>(TextureHeight - 1);
+		const int32 X0 = FMath::Clamp(FMath::FloorToInt(XFloat), 0, TextureWidth - 1);
+		const int32 Y0 = FMath::Clamp(FMath::FloorToInt(YFloat), 0, TextureHeight - 1);
+		const int32 X1 = FMath::Min(X0 + 1, TextureWidth - 1);
+		const int32 Y1 = FMath::Min(Y0 + 1, TextureHeight - 1);
+		const float BlendX = XFloat - static_cast<float>(X0);
+		const float BlendY = YFloat - static_cast<float>(Y0);
+		const auto SampleChannel = [&TexturePixels, TextureWidth](const int32 X, const int32 Y, const int32 Channel) -> float
+		{
+			return static_cast<float>(TexturePixels[((Y * TextureWidth) + X) * 4 + Channel]);
+		};
+
+		uint8 Channels[4] = { 0, 0, 0, 255 };
+		for (int32 Channel = 0; Channel < 4; ++Channel)
+		{
+			const float Top = FMath::Lerp(
+				SampleChannel(X0, Y0, Channel),
+				SampleChannel(X1, Y0, Channel),
+				BlendX);
+			const float Bottom = FMath::Lerp(
+				SampleChannel(X0, Y1, Channel),
+				SampleChannel(X1, Y1, Channel),
+				BlendX);
+			Channels[Channel] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(FMath::Lerp(Top, Bottom, BlendY)), 0, 255));
+		}
+
+		return FColor(Channels[2], Channels[1], Channels[0], Channels[3]);
 	}
 
 	FColor TMShadeMaterialColor(const FColor& BaseColor, const float Light, const float Facing)
@@ -1704,6 +2018,73 @@ namespace
 		}
 	}
 
+	void TMSmoothMeleeLoadoutIconMaterial(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return;
+		}
+
+		TArray<uint8> SourcePixels = PixelData;
+		for (int32 Y = 0; Y < Height; ++Y)
+		{
+			for (int32 X = 0; X < Width; ++X)
+			{
+				const int32 DataIndex = ((Y * Width) + X) * 4;
+				if (SourcePixels[DataIndex + 3] <= 24)
+				{
+					continue;
+				}
+
+				int32 BlueSum = 0;
+				int32 GreenSum = 0;
+				int32 RedSum = 0;
+				int32 WeightSum = 0;
+				for (int32 OffsetY = -1; OffsetY <= 1; ++OffsetY)
+				{
+					for (int32 OffsetX = -1; OffsetX <= 1; ++OffsetX)
+					{
+						const int32 NeighborX = X + OffsetX;
+						const int32 NeighborY = Y + OffsetY;
+						if (NeighborX < 0 || NeighborX >= Width || NeighborY < 0 || NeighborY >= Height)
+						{
+							continue;
+						}
+
+						const int32 NeighborIndex = ((NeighborY * Width) + NeighborX) * 4;
+						if (SourcePixels[NeighborIndex + 3] <= 24)
+						{
+							continue;
+						}
+
+						const int32 Weight = (OffsetX == 0 && OffsetY == 0) ? 4 : 1;
+						BlueSum += static_cast<int32>(SourcePixels[NeighborIndex]) * Weight;
+						GreenSum += static_cast<int32>(SourcePixels[NeighborIndex + 1]) * Weight;
+						RedSum += static_cast<int32>(SourcePixels[NeighborIndex + 2]) * Weight;
+						WeightSum += Weight;
+					}
+				}
+
+				if (WeightSum <= 0)
+				{
+					continue;
+				}
+
+				const float OriginalWeight = 0.58f;
+				const float SmoothWeight = 1.0f - OriginalWeight;
+				PixelData[DataIndex] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(
+					static_cast<float>(SourcePixels[DataIndex]) * OriginalWeight
+					+ static_cast<float>(BlueSum) / static_cast<float>(WeightSum) * SmoothWeight), 0, 255));
+				PixelData[DataIndex + 1] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(
+					static_cast<float>(SourcePixels[DataIndex + 1]) * OriginalWeight
+					+ static_cast<float>(GreenSum) / static_cast<float>(WeightSum) * SmoothWeight), 0, 255));
+				PixelData[DataIndex + 2] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(
+					static_cast<float>(SourcePixels[DataIndex + 2]) * OriginalWeight
+					+ static_cast<float>(RedSum) / static_cast<float>(WeightSum) * SmoothWeight), 0, 255));
+			}
+		}
+	}
+
 	void TMLeftAlignIconForeground(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
 	{
 		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
@@ -1787,6 +2168,40 @@ namespace
 		}
 
 		PixelData = MoveTemp(ShiftedPixels);
+	}
+
+	void TMOrientMeleeLoadoutIconHorizontal(TArray<uint8>& PixelData)
+	{
+		if (PixelData.Num() != TMIconWidth * TMIconHeight * 4)
+		{
+			return;
+		}
+
+		TArray<uint8> AlphaMask;
+		AlphaMask.Init(0, TMIconWidth * TMIconHeight);
+		for (int32 PixelIndex = 0; PixelIndex < TMIconWidth * TMIconHeight; ++PixelIndex)
+		{
+			const uint8 Alpha = PixelData[(PixelIndex * 4) + 3];
+			AlphaMask[PixelIndex] = Alpha > 16 ? Alpha : 0;
+		}
+
+		const FTMSubjectBounds Bounds = TMFindMaskBounds(AlphaMask, TMIconWidth, TMIconHeight);
+		if (Bounds.IsValid() && Bounds.Height() > FMath::RoundToInt(static_cast<float>(Bounds.Width()) * 1.15f))
+		{
+			TArray<uint8> RotatedPixels;
+			if (TMBuildTransformedButtonIconPixels(
+				PixelData,
+				TMIconWidth,
+				TMIconHeight,
+				90.0f,
+				0.90f,
+				0.88f,
+				1.0f,
+				RotatedPixels))
+			{
+				PixelData = MoveTemp(RotatedPixels);
+			}
+		}
 	}
 
 	void TMApplyLoadoutWeaponRowIconAlignment(const FAssetData& AssetData, TArray<uint8>& PixelData)
@@ -2810,6 +3225,20 @@ namespace
 			bBuiltPixels = TMBuildRealMaterialSceneCaptureIconPixels(RenderSourceObject, OutPixels);
 			if (!bBuiltPixels)
 			{
+				if (TMIsMeleeLoadoutMeshSource(AssetData)
+					&& TMBuildMeleeStaticMeshProjectedIconPixels(Cast<UStaticMesh>(RenderSourceObject), OutPixels))
+				{
+					bBuiltPixels = true;
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMIconGenerator] Applied melee loadout material projection fallback for %s."),
+						*AssetData.GetObjectPathString());
+				}
+			}
+
+			if (!bBuiltPixels)
+			{
 				if (TMIsWeaponDataTableMeshSourceWithVisualOverride(AssetData)
 					&& TMBuildSkeletalMeshProjectedIconPixels(Cast<USkeletalMesh>(RenderSourceObject), OutPixels))
 				{
@@ -2836,6 +3265,11 @@ namespace
 		else
 		{
 			TMCleanLoadoutWeaponIconAlpha(OutPixels, TMIconWidth, TMIconHeight);
+		}
+		if (TMIsMeleeLoadoutMeshSource(AssetData))
+		{
+			TMOrientMeleeLoadoutIconHorizontal(OutPixels);
+			TMSmoothMeleeLoadoutIconMaterial(OutPixels, TMIconWidth, TMIconHeight);
 		}
 
 		float PostFitWidthRatio = 0.0f;
@@ -2968,6 +3402,7 @@ namespace
 			|| AssetName.Equals(TEXT("SM_Laser"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("ForeGrip"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("V_Grip"), ESearchCase::IgnoreCase)
+			|| AssetName.Equals(TEXT("SM_Suppressor_Barrel"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("Silencer"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("Compensator"), ESearchCase::IgnoreCase);
 	}
@@ -3059,6 +3494,7 @@ namespace
 			|| AssetName.Contains(TEXT("Sight"), ESearchCase::IgnoreCase)
 			|| AssetName.Contains(TEXT("Laser"), ESearchCase::IgnoreCase)
 			|| AssetName.Contains(TEXT("Grip"), ESearchCase::IgnoreCase)
+			|| AssetName.Contains(TEXT("Suppressor"), ESearchCase::IgnoreCase)
 			|| AssetName.Contains(TEXT("Silencer"), ESearchCase::IgnoreCase)
 			|| AssetName.Contains(TEXT("Compensator"), ESearchCase::IgnoreCase);
 	}
@@ -3135,6 +3571,24 @@ namespace
 
 	UObject* TMFindWeaponVisualIconSourceObject(const FAssetData& SourceAsset)
 	{
+		if (SourceAsset.GetObjectPathString().Equals(
+			TEXT("/Game/MeleeWeapons/Meshes/SK_Kunai_01.SK_Kunai_01"),
+			ESearchCase::IgnoreCase))
+		{
+			return LoadObject<UStaticMesh>(
+				nullptr,
+				TEXT("/Game/MeleeWeapons/Meshes/SM_Kunai_01.SM_Kunai_01"));
+		}
+
+		if (SourceAsset.GetObjectPathString().Equals(
+			TEXT("/Game/MeleeWeapons/Meshes/SK_Bayonet_01.SK_Bayonet_01"),
+			ESearchCase::IgnoreCase))
+		{
+			return LoadObject<UStaticMesh>(
+				nullptr,
+				TEXT("/Game/MeleeWeapons/Meshes/SM_Bayonet_01.SM_Bayonet_01"));
+		}
+
 		if (TMIsTARDataTableMeshSource(SourceAsset))
 		{
 			return TMResolveWeaponVisualIconSourceObject(
@@ -3343,6 +3797,96 @@ namespace
 		return bSaved;
 	}
 
+	void TMPadTransparentIconColor(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return;
+		}
+
+		TArray<uint8> WorkingPixels = PixelData;
+		constexpr int32 PassCount = 8;
+		for (int32 Pass = 0; Pass < PassCount; ++Pass)
+		{
+			TArray<uint8> NextPixels = WorkingPixels;
+			bool bChangedAnyPixel = false;
+			for (int32 Y = 0; Y < Height; ++Y)
+			{
+				for (int32 X = 0; X < Width; ++X)
+				{
+					const int32 DataIndex = ((Y * Width) + X) * 4;
+					if (WorkingPixels[DataIndex + 3] > 0)
+					{
+						continue;
+					}
+
+					int32 BlueSum = 0;
+					int32 GreenSum = 0;
+					int32 RedSum = 0;
+					int32 NeighborCount = 0;
+					for (int32 OffsetY = -1; OffsetY <= 1; ++OffsetY)
+					{
+						for (int32 OffsetX = -1; OffsetX <= 1; ++OffsetX)
+						{
+							if (OffsetX == 0 && OffsetY == 0)
+							{
+								continue;
+							}
+
+							const int32 NeighborX = X + OffsetX;
+							const int32 NeighborY = Y + OffsetY;
+							if (NeighborX < 0 || NeighborX >= Width || NeighborY < 0 || NeighborY >= Height)
+							{
+								continue;
+							}
+
+							const int32 NeighborIndex = ((NeighborY * Width) + NeighborX) * 4;
+							if (WorkingPixels[NeighborIndex + 3] <= 0)
+							{
+								continue;
+							}
+
+							BlueSum += WorkingPixels[NeighborIndex];
+							GreenSum += WorkingPixels[NeighborIndex + 1];
+							RedSum += WorkingPixels[NeighborIndex + 2];
+							++NeighborCount;
+						}
+					}
+
+					if (NeighborCount <= 0)
+					{
+						continue;
+					}
+
+					NextPixels[DataIndex] = static_cast<uint8>(BlueSum / NeighborCount);
+					NextPixels[DataIndex + 1] = static_cast<uint8>(GreenSum / NeighborCount);
+					NextPixels[DataIndex + 2] = static_cast<uint8>(RedSum / NeighborCount);
+					NextPixels[DataIndex + 3] = 0;
+					bChangedAnyPixel = true;
+				}
+			}
+
+			WorkingPixels = MoveTemp(NextPixels);
+			if (!bChangedAnyPixel)
+			{
+				break;
+			}
+		}
+
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
+		{
+			const int32 DataIndex = PixelIndex * 4;
+			if (PixelData[DataIndex + 3] != 0)
+			{
+				continue;
+			}
+
+			PixelData[DataIndex] = WorkingPixels[DataIndex];
+			PixelData[DataIndex + 1] = WorkingPixels[DataIndex + 1];
+			PixelData[DataIndex + 2] = WorkingPixels[DataIndex + 2];
+		}
+	}
+
 	bool TMCreateOrUpdateIconTexture(
 		const FAssetData& SourceAsset,
 		const TCHAR* VariantSuffix,
@@ -3391,9 +3935,12 @@ namespace
 				RF_Public | RF_Standalone | RF_Transactional);
 		}
 
+		TArray<uint8> StoredPixels = PixelData;
+		TMPadTransparentIconColor(StoredPixels, Width, Height);
+
 		Texture->Modify();
 		Texture->PreEditChange(nullptr);
-		Texture->Source.Init(Width, Height, 1, 1, TSF_BGRA8, PixelData.GetData());
+		Texture->Source.Init(Width, Height, 1, 1, TSF_BGRA8, StoredPixels.GetData());
 		Texture->SRGB = true;
 		Texture->CompressionSettings = TC_EditorIcon;
 		Texture->MipGenSettings = TMGS_NoMipmaps;
@@ -3412,7 +3959,7 @@ namespace
 		const bool bSaved = TMSavePackageForAsset(Package, Texture, PackageName);
 		if (bSaved)
 		{
-			TMSaveIconPreviewPng(AssetName, PixelData, Width, Height);
+			TMSaveIconPreviewPng(AssetName, StoredPixels, Width, Height);
 			UE_LOG(
 				LogTemp,
 				Display,
@@ -3534,6 +4081,11 @@ void FTouchMeEditorModule::BuildAssetSelectionMenu(
 void FTouchMeEditorModule::GenerateLoadoutWeaponActiveIcons() const
 {
 	TArray<FAssetData> SourceAssets = TMCollectLoadoutWeaponMeshAssetsFromDataTable();
+	GenerateLoadoutWeaponActiveIconsForAssets(MoveTemp(SourceAssets));
+}
+
+void FTouchMeEditorModule::GenerateLoadoutWeaponActiveIconsForAssets(TArray<FAssetData> SourceAssets) const
+{
 	if (SourceAssets.IsEmpty())
 	{
 		TMShowNotification(
@@ -3605,6 +4157,9 @@ void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAss
 		TArray<uint8> NormalPixels;
 		bool bBuiltNormalPixels = false;
 		bool bUsedPreferredSourceIcon = false;
+		const TCHAR* IconVariantSuffix = TEXT("Icon");
+		const bool bLoadoutMaterialVariantMode =
+			bTMGenerateLoadoutWeaponMaterialOnly || bTMGenerateLoadoutWeaponActiveOnly;
 		if (bTMGenerateLoadoutWeaponActiveOnly)
 		{
 			if (!TMBuildLoadoutWeaponMaterialIconPixels(AssetData, RenderSourceObject, true, NormalPixels))
@@ -3612,16 +4167,19 @@ void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAss
 				UE_LOG(
 					LogTemp,
 					Warning,
-					TEXT("[TMIconGenerator] Failed to build active real-material icon pixels for %s."),
+					TEXT("[TMIconGenerator] Failed to build active real-material icon pixels for %s; falling back to mesh render."),
 					*AssetData.GetObjectPathString());
+			}
+			else
+			{
+				if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon_Active"), NormalPixels, TMIconWidth, TMIconHeight))
+				{
+					++SavedCount;
+				}
 				continue;
 			}
 
-			if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon_Active"), NormalPixels, TMIconWidth, TMIconHeight))
-			{
-				++SavedCount;
-			}
-			continue;
+			IconVariantSuffix = TEXT("Icon_Active");
 		}
 
 		if (bTMGenerateLoadoutWeaponMaterialOnly)
@@ -3631,16 +4189,17 @@ void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAss
 				UE_LOG(
 					LogTemp,
 					Warning,
-					TEXT("[TMIconGenerator] Failed to build inactive real-material icon pixels for %s."),
+					TEXT("[TMIconGenerator] Failed to build inactive real-material icon pixels for %s; falling back to mesh render."),
 					*AssetData.GetObjectPathString());
+			}
+			else
+			{
+				if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon"), NormalPixels, TMIconWidth, TMIconHeight))
+				{
+					++SavedCount;
+				}
 				continue;
 			}
-
-			if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon"), NormalPixels, TMIconWidth, TMIconHeight))
-			{
-				++SavedCount;
-			}
-			continue;
 		}
 
 		if (UTexture2D* PreferredSourceIcon = TMFindPreferredSourceIconTexture(AssetData))
@@ -3850,10 +4409,23 @@ void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAss
 		{
 			TMCleanLoadoutWeaponIconAlpha(NormalPixels, TMIconWidth, TMIconHeight);
 			TMApplyLoadoutWeaponRowIconAlignment(AssetData, NormalPixels);
-			TMApplyLoadoutWeaponMaterialIconTone(NormalPixels, TMIconWidth, TMIconHeight, false);
+			TMApplyLoadoutWeaponMaterialIconTone(
+				NormalPixels,
+				TMIconWidth,
+				TMIconHeight,
+				bTMGenerateLoadoutWeaponActiveOnly);
+		}
+		else if (bLoadoutMaterialVariantMode)
+		{
+			TMCleanLoadoutWeaponIconAlpha(NormalPixels, TMIconWidth, TMIconHeight);
+			TMApplyLoadoutWeaponMaterialIconTone(
+				NormalPixels,
+				TMIconWidth,
+				TMIconHeight,
+				bTMGenerateLoadoutWeaponActiveOnly);
 		}
 
-		if (TMCreateOrUpdateIconTexture(AssetData, TEXT("Icon"), NormalPixels, TMIconWidth, TMIconHeight))
+		if (TMCreateOrUpdateIconTexture(AssetData, IconVariantSuffix, NormalPixels, TMIconWidth, TMIconHeight))
 		{
 			++SavedCount;
 		}
