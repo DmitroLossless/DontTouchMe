@@ -4,10 +4,12 @@
 
 #include "CoreMinimal.h"
 #include "Slate/WidgetTransform.h"
+#include "Styling/SlateTypes.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 #include "TMMainMenuHoverStyleSubsystem.generated.h"
 
+class UButton;
 class UTextBlock;
 class UWidget;
 
@@ -33,26 +35,30 @@ private:
 		bool bHovered = false;
 	};
 
-	struct FTrackedWidgetTransform
+	struct FTrackedAttachmentTopButtonStyle
 	{
+		FButtonStyle NormalStyle;
 		FWidgetTransform NormalTransform;
 		FVector2D NormalPivot = FVector2D::ZeroVector;
-		bool bHovered = false;
 	};
 
 	void ApplyMainMenuHoverStyle();
 	void ApplyQuitConfirmationStyle(class UUserWidget* Widget, TSet<TWeakObjectPtr<UTextBlock>>& SeenLabels);
-	void ApplyLoadoutCategoryButtonStyle(class UUserWidget* Widget, TSet<TWeakObjectPtr<UWidget>>& SeenButtons);
+	void ApplyAttachmentTopButtonPressedStyle(class UUserWidget* Widget, TSet<TWeakObjectPtr<UButton>>& SeenButtons);
+	void ApplyAttachmentPanelLayout(class UUserWidget* Widget);
+	void SetMainMenuButtonHoverSound(UButton* Button);
+	void SetAttachmentTopButtonPressed(UButton* Button, FName GroupName, bool bPressed);
 	static bool IsMainMenuWidget(const class UUserWidget* Widget);
-	static bool IsLoadoutCategoryWidget(const class UUserWidget* Widget);
+	static bool IsAttachmentTopButtonWidget(const class UUserWidget* Widget);
 	static bool IsMainMenuLargeLabel(const FString& Text);
 	static UTextBlock* FindLargeLabelText(class UWidget* RootWidget);
 	static UTextBlock* FindQuitOptionLabelText(class UWidget* RootWidget);
 	void SetLabelHovered(UTextBlock* TextBlock, bool bHovered);
 	void SetQuitOptionHovered(UTextBlock* TextBlock, bool bHovered);
-	void SetLoadoutCategoryButtonHovered(UWidget* Widget, bool bHovered);
 
 	TMap<TWeakObjectPtr<UTextBlock>, FTrackedLabelStyle> TrackedLabels;
 	TMap<TWeakObjectPtr<UTextBlock>, FTrackedLabelStyle> TrackedQuitOptionLabels;
-	TMap<TWeakObjectPtr<UWidget>, FTrackedWidgetTransform> TrackedLoadoutCategoryButtons;
+	TMap<TWeakObjectPtr<UButton>, FButtonStyle> TrackedMainMenuButtonStyles;
+	TMap<TWeakObjectPtr<UButton>, FTrackedAttachmentTopButtonStyle> TrackedAttachmentTopButtonStyles;
+	FName SelectedAttachmentTopButtonGroup;
 };

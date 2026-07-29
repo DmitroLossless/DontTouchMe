@@ -6,17 +6,16 @@
 #include "Components/Border.h"
 #include "Blueprint/UserWidget.h"
 #include "Components/Button.h"
+#include "Components/CanvasPanelSlot.h"
 #include "Components/ContentWidget.h"
 #include "Components/Image.h"
 #include "Components/PanelWidget.h"
+#include "Components/ScrollBox.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/Widget.h"
-#include "Engine/Texture2D.h"
 #include "Engine/World.h"
-#include "HAL/PlatformMisc.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
+#include "Sound/SoundBase.h"
 #include "UObject/UObjectIterator.h"
 
 namespace
@@ -36,233 +35,100 @@ namespace
 	constexpr float MainMenuLabelHoverScale = 1.07f;
 	constexpr float MainMenuSubmenuLabelHoverFontScale = 1.15f;
 	constexpr float QuitConfirmationOptionHoverFontScale = 1.12f;
-	constexpr float LoadoutCategoryButtonDisplayScale = 0.30f;
 	const FLinearColor MainMenuDialogYellow(0.672443f, 0.381326f, 0.025187f, 1.0f);
 	const FLinearColor MainMenuDialogHoverRed(1.0f, 0.0f, 0.0f, 1.0f);
 	const FName MainMenuLabelHoverTypeface(TEXT("Light"));
+	const TCHAR* MainMenuButtonHoverSoundPath =
+		TEXT("/Game/Free_UI/CUE/MinimalistRND.MinimalistRND");
+	constexpr float AttachmentTopButtonSelectedScale = 1.07f;
 
-	struct FLoadoutCategoryButtonSpec
+	const FName AttachmentTopButtonGroupOptics(TEXT("Optics"));
+	const FName AttachmentTopButtonGroupSideRail(TEXT("SideRail"));
+	const FName AttachmentTopButtonGroupUnderbarrel(TEXT("Underbarrel"));
+	const FName AttachmentTopButtonGroupMuzzle(TEXT("Muzzle"));
+	constexpr float AttachmentListRaisedTopY = 315.0f;
+	constexpr float AttachmentListMinHeight = 360.0f;
+	constexpr float AttachmentStatsBottomMargin = 38.0f;
+	constexpr float AttachmentListStatsGap = 18.0f;
+
+	struct FAttachmentTopButtonSpec
 	{
 		FName ButtonName;
-		FName Token;
-		FName IconBoxName;
-		FName IconImageName;
-		FVector2D FallbackNativeSize = FVector2D(128.0f, 64.0f);
+		FName GroupName;
 	};
 
-	const FLoadoutCategoryButtonSpec LoadoutCategoryButtonSpecs[] =
+	const FAttachmentTopButtonSpec AttachmentTopButtonSpecs[] =
 	{
-		{ TEXT("B_Primary"), TEXT("Primary"), TEXT("TM_Primary_CategoryIconBox"), TEXT("TM_Primary_CategoryIconImage"), FVector2D(1881.0f, 560.0f) },
-		{ TEXT("B_Secondary"), TEXT("Secondary"), TEXT("TM_Secondary_CategoryIconBox"), TEXT("TM_Secondary_CategoryIconImage"), FVector2D(1688.0f, 639.0f) },
-		{ TEXT("B_Special"), TEXT("Special"), TEXT("TM_Special_CategoryIconBox"), TEXT("TM_Special_CategoryIconImage"), FVector2D(1679.0f, 648.0f) },
-		{ TEXT("B_Melee"), TEXT("Melee"), TEXT("TM_Melee_CategoryIconBox"), TEXT("TM_Melee_CategoryIconImage"), FVector2D(1672.0f, 645.0f) },
-		{ TEXT("B_Explosive"), TEXT("Explosive"), TEXT("TM_Explosive_CategoryIconBox"), TEXT("TM_Explosive_CategoryIconImage"), FVector2D(1685.0f, 654.0f) }
+		{ TEXT("B_Optics"), AttachmentTopButtonGroupOptics },
+		{ TEXT("B_Optics_R"), AttachmentTopButtonGroupOptics },
+		{ TEXT("B_SideRail"), AttachmentTopButtonGroupSideRail },
+		{ TEXT("B_SideRail_R"), AttachmentTopButtonGroupSideRail },
+		{ TEXT("B_Underbarrel"), AttachmentTopButtonGroupUnderbarrel },
+		{ TEXT("B_Underbarrel_R"), AttachmentTopButtonGroupUnderbarrel },
+		{ TEXT("B_Muzzle"), AttachmentTopButtonGroupMuzzle },
+		{ TEXT("B_Muzzle_R"), AttachmentTopButtonGroupMuzzle }
 	};
 
-	FString MakeLoadoutCategoryIconObjectPath(const FName Token, const bool bActive)
+	UWidget* FindFirstVisibleWidgetByName(UUserWidget* Widget, const FName* WidgetNames, const int32 WidgetNameCount)
 	{
-		const FString TokenString = Token.ToString();
-		const FString AssetName = FString::Printf(TEXT("T_Menu_%s_Icon%s"), *TokenString, bActive ? TEXT("_Active") : TEXT(""));
-		return FString::Printf(TEXT("/Game/UI/Generated/Icons/%s.%s"), *AssetName, *AssetName);
-	}
-
-	UTexture2D* LoadLoadoutCategoryIconTexture(const FName Token, const bool bActive)
-	{
-		static TMap<FString, TWeakObjectPtr<UTexture2D>> TextureCache;
-
-		const FString CacheKey = Token.ToString() + (bActive ? TEXT("_Active") : TEXT(""));
-		if (const TWeakObjectPtr<UTexture2D>* CachedTexture = TextureCache.Find(CacheKey))
+		if (!Widget || !WidgetNames || WidgetNameCount <= 0)
 		{
-			if (CachedTexture->IsValid())
+			return nullptr;
+		}
+
+		for (int32 NameIndex = 0; NameIndex < WidgetNameCount; ++NameIndex)
+		{
+			UWidget* Candidate = Widget->GetWidgetFromName(WidgetNames[NameIndex]);
+			if (IsValid(Candidate) && Candidate->IsVisible())
 			{
-				return CachedTexture->Get();
+				return Candidate;
 			}
 		}
 
-		UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, *MakeLoadoutCategoryIconObjectPath(Token, bActive));
-		TextureCache.Add(CacheKey, Texture);
-		return Texture;
+		return nullptr;
 	}
 
-	FVector2D GetLoadoutCategoryTextureSize(const UTexture2D* Texture)
+	UCanvasPanelSlot* FindCanvasSlotForWidgetOrAncestor(UWidget* Widget)
 	{
-		if (!Texture)
+		for (UWidget* Candidate = Widget; IsValid(Candidate); )
 		{
-			return FVector2D::ZeroVector;
-		}
-
-		const int32 TextureWidth = Texture->GetSizeX();
-		const int32 TextureHeight = Texture->GetSizeY();
-		if (TextureWidth > 0 && TextureHeight > 0)
-		{
-			return FVector2D(static_cast<float>(TextureWidth), static_cast<float>(TextureHeight));
-		}
-
-		return FVector2D::ZeroVector;
-	}
-
-	FVector2D GetLoadoutCategoryNativeSize(
-		const FLoadoutCategoryButtonSpec& Spec,
-		const UTexture2D* NormalTexture,
-		const UImage* IconImage)
-	{
-		const FVector2D NormalTextureSize = GetLoadoutCategoryTextureSize(NormalTexture);
-		if (NormalTextureSize.X > 0.0f && NormalTextureSize.Y > 0.0f)
-		{
-			return NormalTextureSize;
-		}
-
-		if (IconImage)
-		{
-			const FSlateBrush Brush = IconImage->GetBrush();
-			if (const UTexture2D* Texture = Cast<UTexture2D>(Brush.GetResourceObject()))
+			if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Candidate->Slot))
 			{
-				const FVector2D BrushTextureSize = GetLoadoutCategoryTextureSize(Texture);
-				if (BrushTextureSize.X > 0.0f && BrushTextureSize.Y > 0.0f)
-				{
-					return BrushTextureSize;
-				}
+				return CanvasSlot;
 			}
 
-			const FVector2D BrushSize = Brush.GetImageSize();
-			if (BrushSize.X > 0.0f && BrushSize.Y > 0.0f)
+			UPanelWidget* Parent = Candidate->GetParent();
+			Candidate = Parent ? Cast<UWidget>(Parent) : nullptr;
+		}
+
+		return nullptr;
+	}
+
+	USizeBox* FindSizeBoxForWidgetOrAncestor(UWidget* Widget)
+	{
+		for (UWidget* Candidate = Widget; IsValid(Candidate); )
+		{
+			if (USizeBox* SizeBox = Cast<USizeBox>(Candidate))
 			{
-				return BrushSize;
+				return SizeBox;
 			}
+
+			UPanelWidget* Parent = Candidate->GetParent();
+			Candidate = Parent ? Cast<UWidget>(Parent) : nullptr;
 		}
 
-		return Spec.FallbackNativeSize;
+		return nullptr;
 	}
 
-	FVector2D GetLoadoutCategoryDisplaySize(const FVector2D NativeSize, const UImage* IconImage)
+	float ResolveAttachmentLayoutHeight(const UUserWidget* Widget)
 	{
-		const FVector2D DefaultSize = NativeSize * LoadoutCategoryButtonDisplayScale;
-		if (!IconImage || NativeSize.X <= 0.0f || NativeSize.Y <= 0.0f)
+		if (!Widget)
 		{
-			return DefaultSize;
+			return 720.0f;
 		}
 
-		const float LayoutHeight = IconImage->GetCachedGeometry().GetLocalSize().Y;
-		if (LayoutHeight <= 1.0f || LayoutHeight >= DefaultSize.Y)
-		{
-			return DefaultSize;
-		}
-
-		return FVector2D((NativeSize.X / NativeSize.Y) * LayoutHeight, LayoutHeight);
-	}
-
-	bool IsLoadoutCategoryRulerEnabled()
-	{
-		static const bool bEnabled = []()
-		{
-			return FPlatformMisc::GetEnvironmentVariable(TEXT("DTM_MENU_ICON_RULER")).Equals(TEXT("1"));
-		}();
-
-		return bEnabled;
-	}
-
-	void AppendLoadoutCategoryRulerSample(
-		const FLoadoutCategoryButtonSpec& Spec,
-		const UImage* IconImage,
-		const bool bHovered,
-		const FVector2D SourceSize,
-		const FVector2D RequestedDrawSize)
-	{
-		if (!IsLoadoutCategoryRulerEnabled() || !IconImage)
-		{
-			return;
-		}
-
-		const FGeometry& Geometry = IconImage->GetCachedGeometry();
-		const FVector2D LocalSize = Geometry.GetLocalSize();
-		if (LocalSize.X <= 0.0f || LocalSize.Y <= 0.0f)
-		{
-			return;
-		}
-
-		const FVector2D TopLeft = Geometry.LocalToAbsolute(FVector2D::ZeroVector);
-		const FVector2D BottomRight = Geometry.LocalToAbsolute(LocalSize);
-		const FString OutputPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("AI_MenuHoverAspectImport"), TEXT("menu_icon_draw_rects.csv"));
-		IFileManager::Get().MakeDirectory(*FPaths::GetPath(OutputPath), true);
-
-		static TSet<FString> WrittenKeys;
-		static bool bHeaderWritten = false;
-		if (!bHeaderWritten && !FPaths::FileExists(OutputPath))
-		{
-			FFileHelper::SaveStringToFile(
-				TEXT("Icon,State,SourceW,SourceH,RequestedW,RequestedH,Left,Top,Right,Bottom,Width,Height,SourceRatio,DrawRatio,RatioDelta\n"),
-				*OutputPath);
-		}
-		bHeaderWritten = true;
-
-		const FString State = bHovered ? TEXT("hover") : TEXT("normal");
-		const int32 Left = FMath::RoundToInt(TopLeft.X);
-		const int32 Top = FMath::RoundToInt(TopLeft.Y);
-		const int32 Right = FMath::RoundToInt(BottomRight.X);
-		const int32 Bottom = FMath::RoundToInt(BottomRight.Y);
-		const int32 Width = Right - Left;
-		const int32 Height = Bottom - Top;
-		const double SourceRatio = SourceSize.Y > 0.0f ? static_cast<double>(SourceSize.X / SourceSize.Y) : 0.0;
-		const double DrawRatio = Height > 0 ? static_cast<double>(Width) / static_cast<double>(Height) : 0.0;
-		const double RatioDelta = FMath::Abs(SourceRatio - DrawRatio);
-
-		const FString Key = FString::Printf(TEXT("%s_%s_%d_%d_%d_%d"), *Spec.Token.ToString(), *State, Left, Top, Width, Height);
-		if (WrittenKeys.Contains(Key))
-		{
-			return;
-		}
-		WrittenKeys.Add(Key);
-
-		const FString Line = FString::Printf(
-			TEXT("%s,%s,%.0f,%.0f,%.0f,%.0f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f\n"),
-			*Spec.Token.ToString(),
-			*State,
-			SourceSize.X,
-			SourceSize.Y,
-			RequestedDrawSize.X,
-			RequestedDrawSize.Y,
-			Left,
-			Top,
-			Right,
-			Bottom,
-			Width,
-			Height,
-			SourceRatio,
-			DrawRatio,
-			RatioDelta);
-		FFileHelper::SaveStringToFile(Line, *OutputPath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
-	}
-
-	void ApplyLoadoutCategoryIconTexture(
-		const FLoadoutCategoryButtonSpec& Spec,
-		UImage* IconImage,
-		const bool bHovered,
-		const FVector2D DrawSize)
-	{
-		if (!IconImage)
-		{
-			return;
-		}
-
-		UTexture2D* NormalTexture = LoadLoadoutCategoryIconTexture(Spec.Token, false);
-		UTexture2D* ActiveTexture = LoadLoadoutCategoryIconTexture(Spec.Token, true);
-		UTexture2D* DesiredTexture = (bHovered && ActiveTexture) ? ActiveTexture : NormalTexture;
-		if (!DesiredTexture)
-		{
-			return;
-		}
-
-		FSlateBrush Brush = IconImage->GetBrush();
-		if (Brush.GetResourceObject() != DesiredTexture
-			|| !Brush.GetImageSize().Equals(DrawSize, 0.5f)
-			|| Brush.DrawAs != ESlateBrushDrawType::Image)
-		{
-			Brush.DrawAs = ESlateBrushDrawType::Image;
-			Brush.SetResourceObject(DesiredTexture);
-			Brush.SetImageSize(DrawSize);
-			Brush.TintColor = FSlateColor(FLinearColor::White);
-			IconImage->SetBrush(Brush);
-		}
+		const float CachedHeight = Widget->GetCachedGeometry().GetLocalSize().Y;
+		return CachedHeight > 100.0f ? CachedHeight : 720.0f;
 	}
 
 	void VisitMainMenuHoverWidgetTree(UWidget* Widget, TFunctionRef<void(UWidget*)> Visitor)
@@ -302,6 +168,26 @@ namespace
 		});
 
 		return bHovered;
+	}
+
+	USoundBase* ResolveMainMenuButtonHoverSound()
+	{
+		static TWeakObjectPtr<USoundBase> CachedSound;
+		if (CachedSound.IsValid())
+		{
+			return CachedSound.Get();
+		}
+
+		USoundBase* Sound = LoadObject<USoundBase>(nullptr, MainMenuButtonHoverSoundPath);
+		CachedSound = Sound;
+		return Sound;
+	}
+
+	FSlateSound MakeMainMenuButtonHoverSlateSound(UObject* ResourceObject)
+	{
+		FSlateSound Sound;
+		Sound.SetResourceObject(ResourceObject);
+		return Sound;
 	}
 
 	bool IsMainMenuSubmenuLabel(const FString& Text)
@@ -392,21 +278,34 @@ void UTMMainMenuHoverStyleSubsystem::Deinitialize()
 		TextBlock->SetColorAndOpacity(Pair.Value.NormalColor);
 	}
 
-	for (TPair<TWeakObjectPtr<UWidget>, FTrackedWidgetTransform>& Pair : TrackedLoadoutCategoryButtons)
+	for (TPair<TWeakObjectPtr<UButton>, FButtonStyle>& Pair : TrackedMainMenuButtonStyles)
 	{
-		UWidget* Widget = Pair.Key.Get();
-		if (!IsValid(Widget))
+		UButton* Button = Pair.Key.Get();
+		if (!IsValid(Button))
 		{
 			continue;
 		}
 
-		Widget->SetRenderTransform(Pair.Value.NormalTransform);
-		Widget->SetRenderTransformPivot(Pair.Value.NormalPivot);
+		Button->SetStyle(Pair.Value);
+	}
+
+	for (TPair<TWeakObjectPtr<UButton>, FTrackedAttachmentTopButtonStyle>& Pair : TrackedAttachmentTopButtonStyles)
+	{
+		UButton* Button = Pair.Key.Get();
+		if (!IsValid(Button))
+		{
+			continue;
+		}
+
+		Button->SetStyle(Pair.Value.NormalStyle);
+		Button->SetRenderTransform(Pair.Value.NormalTransform);
+		Button->SetRenderTransformPivot(Pair.Value.NormalPivot);
 	}
 
 	TrackedLabels.Reset();
 	TrackedQuitOptionLabels.Reset();
-	TrackedLoadoutCategoryButtons.Reset();
+	TrackedMainMenuButtonStyles.Reset();
+	TrackedAttachmentTopButtonStyles.Reset();
 	Super::Deinitialize();
 }
 
@@ -435,7 +334,8 @@ void UTMMainMenuHoverStyleSubsystem::ApplyMainMenuHoverStyle()
 	}
 
 	TSet<TWeakObjectPtr<UTextBlock>> SeenLabels;
-	TSet<TWeakObjectPtr<UWidget>> SeenLoadoutCategoryButtons;
+	TSet<TWeakObjectPtr<UButton>> SeenMainMenuButtons;
+	TSet<TWeakObjectPtr<UButton>> SeenAttachmentTopButtons;
 
 	for (TObjectIterator<UUserWidget> WidgetIt; WidgetIt; ++WidgetIt)
 	{
@@ -455,6 +355,9 @@ void UTMMainMenuHoverStyleSubsystem::ApplyMainMenuHoverStyle()
 					continue;
 				}
 
+				SeenMainMenuButtons.Add(Button);
+				SetMainMenuButtonHoverSound(Button);
+
 				UTextBlock* Label = FindLargeLabelText(Button);
 				if (!IsValid(Label))
 				{
@@ -467,7 +370,8 @@ void UTMMainMenuHoverStyleSubsystem::ApplyMainMenuHoverStyle()
 		}
 
 		ApplyQuitConfirmationStyle(Widget, SeenLabels);
-		ApplyLoadoutCategoryButtonStyle(Widget, SeenLoadoutCategoryButtons);
+		ApplyAttachmentTopButtonPressedStyle(Widget, SeenAttachmentTopButtons);
+		ApplyAttachmentPanelLayout(Widget);
 	}
 
 	for (auto It = TrackedLabels.CreateIterator(); It; ++It)
@@ -504,19 +408,36 @@ void UTMMainMenuHoverStyleSubsystem::ApplyMainMenuHoverStyle()
 		}
 	}
 
-	for (auto It = TrackedLoadoutCategoryButtons.CreateIterator(); It; ++It)
+	for (auto It = TrackedMainMenuButtonStyles.CreateIterator(); It; ++It)
 	{
-		UWidget* Widget = It.Key().Get();
-		if (!IsValid(Widget))
+		UButton* Button = It.Key().Get();
+		if (!IsValid(Button))
 		{
 			It.RemoveCurrent();
 			continue;
 		}
 
-		if (!SeenLoadoutCategoryButtons.Contains(Widget))
+		if (!SeenMainMenuButtons.Contains(Button))
 		{
-			Widget->SetRenderTransform(It.Value().NormalTransform);
-			Widget->SetRenderTransformPivot(It.Value().NormalPivot);
+			Button->SetStyle(It.Value());
+			It.RemoveCurrent();
+		}
+	}
+
+	for (auto It = TrackedAttachmentTopButtonStyles.CreateIterator(); It; ++It)
+	{
+		UButton* Button = It.Key().Get();
+		if (!IsValid(Button))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+
+		if (!SeenAttachmentTopButtons.Contains(Button))
+		{
+			Button->SetStyle(It.Value().NormalStyle);
+			Button->SetRenderTransform(It.Value().NormalTransform);
+			Button->SetRenderTransformPivot(It.Value().NormalPivot);
 			It.RemoveCurrent();
 		}
 	}
@@ -581,16 +502,90 @@ void UTMMainMenuHoverStyleSubsystem::ApplyQuitConfirmationStyle(
 	});
 }
 
-void UTMMainMenuHoverStyleSubsystem::ApplyLoadoutCategoryButtonStyle(
-	UUserWidget* Widget,
-	TSet<TWeakObjectPtr<UWidget>>& SeenButtons)
+void UTMMainMenuHoverStyleSubsystem::ApplyAttachmentPanelLayout(UUserWidget* Widget)
 {
-	if (!IsLoadoutCategoryWidget(Widget))
+	if (!IsAttachmentTopButtonWidget(Widget))
 	{
 		return;
 	}
 
-	for (const FLoadoutCategoryButtonSpec& Spec : LoadoutCategoryButtonSpecs)
+	static const FName AttachmentListNames[] =
+	{
+		TEXT("AttachmentsList"),
+		TEXT("AttachmentList"),
+		TEXT("AttachmentList_1"),
+		TEXT("AttachmentSlots"),
+		TEXT("List")
+	};
+	static const FName AttachmentStatsNames[] =
+	{
+		TEXT("StatBox"),
+		TEXT("Stats")
+	};
+
+	UWidget* AttachmentList = FindFirstVisibleWidgetByName(
+		Widget,
+		AttachmentListNames,
+		UE_ARRAY_COUNT(AttachmentListNames));
+	UWidget* AttachmentStats = FindFirstVisibleWidgetByName(
+		Widget,
+		AttachmentStatsNames,
+		UE_ARRAY_COUNT(AttachmentStatsNames));
+	if (!AttachmentList || !AttachmentStats)
+	{
+		return;
+	}
+
+	const float LayoutHeight = ResolveAttachmentLayoutHeight(Widget);
+	UCanvasPanelSlot* StatsCanvasSlot = FindCanvasSlotForWidgetOrAncestor(AttachmentStats);
+	float StatsTopY = LayoutHeight - AttachmentStatsBottomMargin - 132.0f;
+	if (StatsCanvasSlot)
+	{
+		FVector2D StatsSize = StatsCanvasSlot->GetSize();
+		if (StatsSize.Y <= 1.0f)
+		{
+			StatsSize.Y = FMath::Max(AttachmentStats->GetDesiredSize().Y, 132.0f);
+			StatsCanvasSlot->SetSize(StatsSize);
+		}
+
+		FVector2D StatsPosition = StatsCanvasSlot->GetPosition();
+		StatsPosition.Y = FMath::Max(0.0f, LayoutHeight - AttachmentStatsBottomMargin - StatsSize.Y);
+		StatsCanvasSlot->SetPosition(StatsPosition);
+		StatsTopY = StatsPosition.Y;
+	}
+
+	const float ListTopY = FMath::Min(AttachmentListRaisedTopY, FMath::Max(0.0f, StatsTopY - AttachmentListMinHeight - AttachmentListStatsGap));
+	const float ListHeight = FMath::Max(AttachmentListMinHeight, StatsTopY - ListTopY - AttachmentListStatsGap);
+	if (UCanvasPanelSlot* ListCanvasSlot = FindCanvasSlotForWidgetOrAncestor(AttachmentList))
+	{
+		FVector2D ListPosition = ListCanvasSlot->GetPosition();
+		FVector2D ListSize = ListCanvasSlot->GetSize();
+		ListPosition.Y = ListTopY;
+		ListSize.Y = FMath::Max(ListSize.Y, ListHeight);
+		ListCanvasSlot->SetPosition(ListPosition);
+		ListCanvasSlot->SetSize(ListSize);
+	}
+
+	if (USizeBox* ListSizeBox = FindSizeBoxForWidgetOrAncestor(AttachmentList))
+	{
+		ListSizeBox->SetHeightOverride(ListHeight);
+	}
+	else if (UScrollBox* ListScrollBox = Cast<UScrollBox>(AttachmentList))
+	{
+		ListScrollBox->SetRenderTransform(FWidgetTransform());
+	}
+}
+
+void UTMMainMenuHoverStyleSubsystem::ApplyAttachmentTopButtonPressedStyle(
+	UUserWidget* Widget,
+	TSet<TWeakObjectPtr<UButton>>& SeenButtons)
+{
+	if (!IsAttachmentTopButtonWidget(Widget))
+	{
+		return;
+	}
+
+	for (const FAttachmentTopButtonSpec& Spec : AttachmentTopButtonSpecs)
 	{
 		UButton* Button = Cast<UButton>(Widget->GetWidgetFromName(Spec.ButtonName));
 		if (!IsValid(Button) || !Button->IsVisible())
@@ -598,30 +593,13 @@ void UTMMainMenuHoverStyleSubsystem::ApplyLoadoutCategoryButtonStyle(
 			continue;
 		}
 
-		UImage* IconImage = Cast<UImage>(Widget->GetWidgetFromName(Spec.IconImageName));
-		UTexture2D* NormalTexture = LoadLoadoutCategoryIconTexture(Spec.Token, false);
-		const FVector2D NativeSize = GetLoadoutCategoryNativeSize(Spec, NormalTexture, IconImage);
-		const FVector2D DisplaySize = GetLoadoutCategoryDisplaySize(NativeSize, IconImage);
-		const bool bHovered = Button->IsHovered() || IsMainMenuHoverWidgetTreeHovered(Button);
-
-		if (USizeBox* IconBox = Cast<USizeBox>(Widget->GetWidgetFromName(Spec.IconBoxName)))
-		{
-			IconBox->SetWidthOverride(DisplaySize.X);
-			IconBox->SetHeightOverride(DisplaySize.Y);
-			IconBox->SetVisibility(ESlateVisibility::HitTestInvisible);
-		}
-
-		if (IconImage)
-		{
-			ApplyLoadoutCategoryIconTexture(Spec, IconImage, bHovered, DisplaySize);
-			IconImage->SetDesiredSizeOverride(DisplaySize);
-			IconImage->SetColorAndOpacity(FLinearColor::White);
-			IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
-			AppendLoadoutCategoryRulerSample(Spec, IconImage, bHovered, NativeSize, DisplaySize);
-		}
-
 		SeenButtons.Add(Button);
-		SetLoadoutCategoryButtonHovered(Button, bHovered);
+		if (SelectedAttachmentTopButtonGroup.IsNone() || Button->IsPressed())
+		{
+			SelectedAttachmentTopButtonGroup = Spec.GroupName;
+		}
+
+		SetAttachmentTopButtonPressed(Button, Spec.GroupName, SelectedAttachmentTopButtonGroup == Spec.GroupName);
 	}
 }
 
@@ -631,18 +609,10 @@ bool UTMMainMenuHoverStyleSubsystem::IsMainMenuWidget(const UUserWidget* Widget)
 	return WidgetClass && WidgetClass->GetName().Contains(TEXT("W_MainMenu"), ESearchCase::IgnoreCase);
 }
 
-bool UTMMainMenuHoverStyleSubsystem::IsLoadoutCategoryWidget(const UUserWidget* Widget)
+bool UTMMainMenuHoverStyleSubsystem::IsAttachmentTopButtonWidget(const UUserWidget* Widget)
 {
 	const UClass* WidgetClass = Widget ? Widget->GetClass() : nullptr;
-	if (!WidgetClass)
-	{
-		return false;
-	}
-
-	const FString ClassName = WidgetClass->GetName();
-	return ClassName.Contains(TEXT("W_Loadout"), ESearchCase::IgnoreCase)
-		|| ClassName.Contains(TEXT("W_Attachments"), ESearchCase::IgnoreCase)
-		|| ClassName.Contains(TEXT("W_MainMenu"), ESearchCase::IgnoreCase);
+	return WidgetClass && WidgetClass->GetName().Contains(TEXT("W_Attachments"), ESearchCase::IgnoreCase);
 }
 
 bool UTMMainMenuHoverStyleSubsystem::IsMainMenuLargeLabel(const FString& Text)
@@ -786,24 +756,71 @@ void UTMMainMenuHoverStyleSubsystem::SetQuitOptionHovered(UTextBlock* TextBlock,
 	TextBlock->SetRenderTransform(Transform);
 }
 
-void UTMMainMenuHoverStyleSubsystem::SetLoadoutCategoryButtonHovered(UWidget* Widget, const bool bHovered)
+void UTMMainMenuHoverStyleSubsystem::SetAttachmentTopButtonPressed(
+	UButton* Button,
+	const FName GroupName,
+	const bool bPressed)
 {
-	if (!IsValid(Widget))
+	if (!IsValid(Button) || GroupName.IsNone())
 	{
 		return;
 	}
 
-	FTrackedWidgetTransform* Style = TrackedLoadoutCategoryButtons.Find(Widget);
+	FTrackedAttachmentTopButtonStyle* Style = TrackedAttachmentTopButtonStyles.Find(Button);
 	if (!Style)
 	{
-		FTrackedWidgetTransform NewStyle;
-		NewStyle.NormalTransform = Widget->GetRenderTransform();
-		NewStyle.NormalPivot = Widget->GetRenderTransformPivot();
-		Style = &TrackedLoadoutCategoryButtons.Add(Widget, NewStyle);
+		FTrackedAttachmentTopButtonStyle NewStyle;
+		NewStyle.NormalStyle = Button->GetStyle();
+		NewStyle.NormalTransform = Button->GetRenderTransform();
+		NewStyle.NormalPivot = Button->GetRenderTransformPivot();
+		Style = &TrackedAttachmentTopButtonStyles.Add(Button, NewStyle);
 	}
 
-	Style->bHovered = bHovered;
+	FButtonStyle ButtonStyle = Style->NormalStyle;
+	FWidgetTransform Transform = Style->NormalTransform;
+	FVector2D Pivot = Style->NormalPivot;
 
-	Widget->SetRenderTransformPivot(Style->NormalPivot);
-	Widget->SetRenderTransform(Style->NormalTransform);
+	if (bPressed)
+	{
+		ButtonStyle
+			.SetNormal(Style->NormalStyle.Pressed)
+			.SetHovered(Style->NormalStyle.Pressed)
+			.SetNormalForeground(Style->NormalStyle.PressedForeground)
+			.SetHoveredForeground(Style->NormalStyle.PressedForeground);
+
+		Transform.Scale = Style->NormalTransform.Scale * AttachmentTopButtonSelectedScale;
+		Pivot = FVector2D(0.5f, 0.5f);
+	}
+
+	Button->SetStyle(ButtonStyle);
+	Button->SetRenderTransformPivot(Pivot);
+	Button->SetRenderTransform(Transform);
+}
+
+void UTMMainMenuHoverStyleSubsystem::SetMainMenuButtonHoverSound(UButton* Button)
+{
+	if (!IsValid(Button))
+	{
+		return;
+	}
+
+	USoundBase* HoverSound = ResolveMainMenuButtonHoverSound();
+	if (!HoverSound)
+	{
+		return;
+	}
+
+	if (!TrackedMainMenuButtonStyles.Contains(Button))
+	{
+		TrackedMainMenuButtonStyles.Add(Button, Button->GetStyle());
+	}
+
+	FButtonStyle Style = Button->GetStyle();
+	if (Style.HoveredSlateSound.GetResourceObject() == HoverSound)
+	{
+		return;
+	}
+
+	Style.SetHoveredSound(MakeMainMenuButtonHoverSlateSound(HoverSound));
+	Button->SetStyle(Style);
 }

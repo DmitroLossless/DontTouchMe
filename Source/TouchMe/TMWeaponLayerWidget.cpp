@@ -13,15 +13,33 @@
 
 namespace
 {
-const FVector2D WeaponIconBrushSize(512.0f, 128.0f);
-const FVector2D WeaponIconWidgetSize(288.0f, 72.0f);
+const FVector2D WeaponIconMaxWidgetSize(288.0f, 72.0f);
 const FLinearColor WeaponSelectionFrameColor = FLinearColor::FromSRGBColor(FColor(255, 212, 32, 255));
+
+FVector2D GetWeaponIconTextureSize(const UTexture2D* Texture)
+{
+	if (!Texture || Texture->GetSizeX() <= 0 || Texture->GetSizeY() <= 0)
+	{
+		return FVector2D(512.0f, 128.0f);
+	}
+
+	return FVector2D(static_cast<float>(Texture->GetSizeX()), static_cast<float>(Texture->GetSizeY()));
+}
+
+FVector2D GetWeaponIconWidgetSize(const UTexture2D* Texture)
+{
+	const FVector2D TextureSize = GetWeaponIconTextureSize(Texture);
+	const float Scale = FMath::Min(
+		WeaponIconMaxWidgetSize.X / TextureSize.X,
+		WeaponIconMaxWidgetSize.Y / TextureSize.Y);
+	return TextureSize * FMath::Max(Scale, 0.001f);
+}
 
 FSlateBrush MakeWeaponIconBrush(UTexture2D* Texture)
 {
 	FSlateBrush Brush;
 	Brush.DrawAs = Texture ? ESlateBrushDrawType::Image : ESlateBrushDrawType::NoDrawType;
-	Brush.ImageSize = WeaponIconBrushSize;
+	Brush.ImageSize = GetWeaponIconTextureSize(Texture);
 	Brush.TintColor = FSlateColor(FLinearColor::White);
 	if (Texture)
 	{
@@ -30,11 +48,11 @@ FSlateBrush MakeWeaponIconBrush(UTexture2D* Texture)
 	return Brush;
 }
 
-FSlateBrush MakeWeaponFrameBrush(const bool bVisible)
+FSlateBrush MakeWeaponFrameBrush(const bool bVisible, const FVector2D& ImageSize)
 {
 	FSlateBrush Brush;
 	Brush.DrawAs = bVisible ? ESlateBrushDrawType::Border : ESlateBrushDrawType::NoDrawType;
-	Brush.ImageSize = WeaponIconBrushSize;
+	Brush.ImageSize = ImageSize;
 	Brush.Margin = FMargin(0.004f, 0.016f);
 	Brush.TintColor = FSlateColor(bVisible ? WeaponSelectionFrameColor : FLinearColor::Transparent);
 	if (bVisible)
@@ -89,11 +107,13 @@ void UTMWeaponLayerWidget::RefreshWeaponIcon()
 	}
 
 	SetVisibility(ESlateVisibility::Visible);
+	const FVector2D TextureSize = GetWeaponIconTextureSize(IconTexture);
+	const FVector2D WidgetSize = GetWeaponIconWidgetSize(IconTexture);
 
 	if (USizeBox* Box = IconBox.Get())
 	{
-		Box->SetWidthOverride(WeaponIconWidgetSize.X);
-		Box->SetHeightOverride(WeaponIconWidgetSize.Y);
+		Box->SetWidthOverride(WidgetSize.X);
+		Box->SetHeightOverride(WidgetSize.Y);
 		Box->SetVisibility(ESlateVisibility::HitTestInvisible);
 	}
 
@@ -113,7 +133,7 @@ void UTMWeaponLayerWidget::RefreshWeaponIcon()
 	if (UImage* Image = IconImage.Get())
 	{
 		Image->SetVisibility(ESlateVisibility::HitTestInvisible);
-		Image->SetDesiredSizeOverride(WeaponIconBrushSize);
+		Image->SetDesiredSizeOverride(TextureSize);
 		Image->SetBrush(MakeWeaponIconBrush(IconTexture));
 		Image->SetColorAndOpacity(FLinearColor::White);
 	}
@@ -198,6 +218,15 @@ void UTMWeaponLayerWidget::ApplyWeaponIconBrush() const
 		return;
 	}
 
+	const FVector2D TextureSize = GetWeaponIconTextureSize(IconTexture);
+	if (USizeBox* Box = IconBox.Get())
+	{
+		const FVector2D WidgetSize = GetWeaponIconWidgetSize(IconTexture);
+		Box->SetWidthOverride(WidgetSize.X);
+		Box->SetHeightOverride(WidgetSize.Y);
+	}
+
+	Image->SetDesiredSizeOverride(TextureSize);
 	Image->SetBrush(MakeWeaponIconBrush(IconTexture));
 	Image->SetColorAndOpacity(FLinearColor::White);
 }
@@ -206,8 +235,11 @@ void UTMWeaponLayerWidget::ApplySelectionFrame() const
 {
 	if (UImage* Frame = IconFrame.Get())
 	{
+		const UTexture2D* IconTexture = ResolveWeaponIconTexture(GetWeaponLookupToken(), bWeaponIconSelected);
+		const FVector2D TextureSize = GetWeaponIconTextureSize(IconTexture);
 		Frame->SetVisibility(ESlateVisibility::HitTestInvisible);
-		Frame->SetBrush(MakeWeaponFrameBrush(bWeaponIconSelected));
+		Frame->SetDesiredSizeOverride(TextureSize);
+		Frame->SetBrush(MakeWeaponFrameBrush(bWeaponIconSelected, TextureSize));
 		Frame->SetColorAndOpacity(bWeaponIconSelected ? WeaponSelectionFrameColor : FLinearColor::Transparent);
 	}
 }
