@@ -22,6 +22,7 @@ public class TouchMe : ModuleRules
 				"BlueprintGraph",
 				"ImageWrapper",
 				"Kismet",
+				"SkeletalMeshUtilitiesCommon",
 				"UMGEditor",
 				"UnrealEd"
 			});

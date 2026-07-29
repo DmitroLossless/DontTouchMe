@@ -37,8 +37,8 @@ namespace
 		TEXT("/Game/Battle_Royale_Game/Cues/Foley/Foley_Consume_Apple_Use_5_Fruit_Health_Wet_Slime_Goo_Crunch_Cue.Foley_Consume_Apple_Use_5_Fruit_Health_Wet_Slime_Goo_Crunch_Cue")
 	};
 	constexpr float MainMenuSoundtrackScanInterval = 0.05f;
-	constexpr float LoadoutSoundtrackDuckingVolumeScale = 0.35f;
-	constexpr float LoadoutSoundtrackLowPassFrequency = 250.0f;
+	constexpr float LoadoutSoundtrackDuckingVolumeScale = 0.78f;
+	constexpr float LoadoutSoundtrackLowPassFrequency = 450.0f;
 	const FLinearColor MainMenuArrowRed(1.0f, 0.0f, 0.0f, 1.0f);
 	constexpr float MainMenuReturnArrowFallbackSize = 28.0f;
 

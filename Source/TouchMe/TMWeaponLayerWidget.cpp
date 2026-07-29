@@ -239,8 +239,8 @@ void UTMWeaponLayerWidget::ApplySelectionFrame() const
 		const FVector2D TextureSize = GetWeaponIconTextureSize(IconTexture);
 		Frame->SetVisibility(ESlateVisibility::HitTestInvisible);
 		Frame->SetDesiredSizeOverride(TextureSize);
-		Frame->SetBrush(MakeWeaponFrameBrush(bWeaponIconSelected, TextureSize));
-		Frame->SetColorAndOpacity(bWeaponIconSelected ? WeaponSelectionFrameColor : FLinearColor::Transparent);
+		Frame->SetBrush(MakeWeaponFrameBrush(false, TextureSize));
+		Frame->SetColorAndOpacity(FLinearColor::Transparent);
 	}
 }
 

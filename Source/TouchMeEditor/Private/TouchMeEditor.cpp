@@ -932,6 +932,47 @@ namespace
 		return AverageLuminance > 12.0 || LitPixelCount > VisiblePixelCount / 20;
 	}
 
+	bool TMRealMaterialIconHasUsableDetail(const TArray<uint8>& PixelData, const int32 Width, const int32 Height)
+	{
+		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
+		{
+			return false;
+		}
+
+		int32 VisiblePixelCount = 0;
+		int32 LitPixelCount = 0;
+		double LuminanceSum = 0.0;
+		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
+		{
+			const int32 DataIndex = PixelIndex * 4;
+			if (PixelData[DataIndex + 3] <= 8)
+			{
+				continue;
+			}
+
+			++VisiblePixelCount;
+			const uint8 Blue = PixelData[DataIndex];
+			const uint8 Green = PixelData[DataIndex + 1];
+			const uint8 Red = PixelData[DataIndex + 2];
+			const uint8 MaxChannel = FMath::Max3(Red, Green, Blue);
+			if (MaxChannel > 48)
+			{
+				++LitPixelCount;
+			}
+			LuminanceSum += (static_cast<double>(Red) * 0.2126)
+				+ (static_cast<double>(Green) * 0.7152)
+				+ (static_cast<double>(Blue) * 0.0722);
+		}
+
+		if (VisiblePixelCount <= 0)
+		{
+			return false;
+		}
+
+		const double AverageLuminance = LuminanceSum / static_cast<double>(VisiblePixelCount);
+		return AverageLuminance > 20.0 || LitPixelCount > VisiblePixelCount / 15;
+	}
+
 	void TMApplyReadableTint(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
 	{
 		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
@@ -1281,7 +1322,8 @@ namespace
 		int32 DiffuseWidth,
 		int32 DiffuseHeight,
 		float Light,
-		float Facing);
+		float Facing,
+		bool bRepairTransparentDiffuseSamples = false);
 
 	bool TMBuildMeleeStaticMeshProjectedIconPixels(UStaticMesh* StaticMesh, TArray<uint8>& OutPixels)
 	{
@@ -1447,7 +1489,8 @@ namespace
 	{
 		const FString ObjectPath = SourceAsset.GetObjectPathString();
 		return ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Kunai_01.SK_Kunai_01"), ESearchCase::IgnoreCase)
-			|| ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Bayonet_01.SK_Bayonet_01"), ESearchCase::IgnoreCase);
+			|| ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Bayonet_01.SK_Bayonet_01"), ESearchCase::IgnoreCase)
+			|| ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Cleaver_01.SK_Cleaver_01"), ESearchCase::IgnoreCase);
 	}
 
 	bool TMIsSkeletalVisualMeshPath(const USkeletalMesh* SkeletalMesh, const TCHAR* MeshPath)
@@ -1459,7 +1502,22 @@ namespace
 				ESearchCase::IgnoreCase);
 	}
 
-	const TCHAR* TMGetSkeletalVisualDiffuseTexturePath(const USkeletalMesh* SkeletalMesh, const TCHAR*& OutWeaponName)
+	struct FTMProjectedDiffuseTextureData
+	{
+		TArray<uint8> Pixels;
+		int32 Width = 0;
+		int32 Height = 0;
+
+		bool IsValid() const
+		{
+			return !Pixels.IsEmpty() && Width > 0 && Height > 0;
+		}
+	};
+
+	const TCHAR* TMGetSkeletalVisualDiffuseTexturePath(
+		const USkeletalMesh* SkeletalMesh,
+		const TCHAR*& OutWeaponName,
+		const int32 MaterialIndex = 0)
 	{
 		OutWeaponName = nullptr;
 		if (TMIsSkeletalVisualMeshPath(SkeletalMesh, TEXT("/Game/Modular_AR_Pack/Mesh/T21/SKM_T21.SKM_T21")))
@@ -1470,6 +1528,12 @@ namespace
 
 		if (TMIsSkeletalVisualMeshPath(SkeletalMesh, TEXT("/Game/Modular_AR_Pack/Mesh/SCAL/SKM_SCAL_Complete.SKM_SCAL_Complete")))
 		{
+			if (MaterialIndex == 1)
+			{
+				OutWeaponName = TEXT("Scar stock");
+				return TEXT("/Game/Modular_AR_Pack/Texture/Stocks/T_Stocks_Diffuse.T_Stocks_Diffuse");
+			}
+
 			OutWeaponName = TEXT("Scar");
 			return TEXT("/Game/Modular_AR_Pack/Texture/SCAL/T_SCAL_Diffuse.T_SCAL_Diffuse");
 		}
@@ -1498,6 +1562,12 @@ namespace
 		return nullptr;
 	}
 
+	bool TMShouldRepairSkeletalVisualDiffuseProjection(const USkeletalMesh* SkeletalMesh)
+	{
+		return TMIsSkeletalVisualMeshPath(SkeletalMesh, TEXT("/Game/Modular_AR_Pack/Mesh/T21/SKM_T21.SKM_T21"))
+			|| TMIsSkeletalVisualMeshPath(SkeletalMesh, TEXT("/Game/Modular_AR_Pack/Mesh/SCAL/SKM_SCAL_Complete.SKM_SCAL_Complete"));
+	}
+
 	const TCHAR* TMGetMeleeLoadoutDiffuseTexturePath(const UStaticMesh* StaticMesh, const TCHAR*& OutWeaponName)
 	{
 		OutWeaponName = nullptr;
@@ -1517,6 +1587,12 @@ namespace
 		{
 			OutWeaponName = TEXT("Bayonet");
 			return TEXT("/Game/MeleeWeapons/Textures/T_Bayonet_BC.T_Bayonet_BC");
+		}
+
+		if (MeshPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SM_Cleaver_01.SM_Cleaver_01"), ESearchCase::IgnoreCase))
+		{
+			OutWeaponName = TEXT("Cleaver");
+			return TEXT("/Game/MeleeWeapons/Textures/T_Cleaver_BC.T_Cleaver_BC");
 		}
 
 		return nullptr;
@@ -1654,6 +1730,84 @@ namespace
 		return Color;
 	}
 
+	FColor TMGetBgraTexturePixel(
+		const TArray<uint8>& TexturePixels,
+		const int32 TextureWidth,
+		const int32 TextureHeight,
+		const int32 X,
+		const int32 Y)
+	{
+		if (TextureWidth <= 0 || TextureHeight <= 0 || TexturePixels.Num() != TextureWidth * TextureHeight * 4)
+		{
+			return FColor(64, 66, 68, 255);
+		}
+
+		const int32 ClampedX = FMath::Clamp(X, 0, TextureWidth - 1);
+		const int32 ClampedY = FMath::Clamp(Y, 0, TextureHeight - 1);
+		const int32 DataIndex = ((ClampedY * TextureWidth) + ClampedX) * 4;
+		return FColor(
+			TexturePixels[DataIndex + 2],
+			TexturePixels[DataIndex + 1],
+			TexturePixels[DataIndex],
+			TexturePixels[DataIndex + 3]);
+	}
+
+	FColor TMFindNearestOpaqueDiffuseColor(
+		const TArray<uint8>& TexturePixels,
+		const int32 TextureWidth,
+		const int32 TextureHeight,
+		const FVector2f& UV)
+	{
+		const float U = FMath::Clamp(UV.X, 0.0f, 1.0f);
+		const float V = FMath::Clamp(1.0f - UV.Y, 0.0f, 1.0f);
+		const int32 CenterX = FMath::Clamp(FMath::RoundToInt(U * static_cast<float>(TextureWidth - 1)), 0, TextureWidth - 1);
+		const int32 CenterY = FMath::Clamp(FMath::RoundToInt(V * static_cast<float>(TextureHeight - 1)), 0, TextureHeight - 1);
+
+		for (int32 Radius = 1; Radius <= 10; ++Radius)
+		{
+			for (int32 OffsetY = -Radius; OffsetY <= Radius; ++OffsetY)
+			{
+				for (int32 OffsetX = -Radius; OffsetX <= Radius; ++OffsetX)
+				{
+					if (FMath::Abs(OffsetX) != Radius && FMath::Abs(OffsetY) != Radius)
+					{
+						continue;
+					}
+
+					const FColor Candidate = TMGetBgraTexturePixel(
+						TexturePixels,
+						TextureWidth,
+						TextureHeight,
+						CenterX + OffsetX,
+						CenterY + OffsetY);
+					if (Candidate.A > 16)
+					{
+						return Candidate;
+					}
+				}
+			}
+		}
+
+		return FColor(70, 72, 76, 255);
+	}
+
+	FColor TMRepairProjectedDiffuseSample(
+		const TArray<uint8>& TexturePixels,
+		const int32 TextureWidth,
+		const int32 TextureHeight,
+		const FVector2f& UV,
+		const bool bRepairTransparentSamples)
+	{
+		FColor SampledColor = TMSampleBgraTextureWrapped(TexturePixels, TextureWidth, TextureHeight, UV);
+		if (bRepairTransparentSamples && SampledColor.A <= 16)
+		{
+			SampledColor = TMFindNearestOpaqueDiffuseColor(TexturePixels, TextureWidth, TextureHeight, UV);
+		}
+
+		SampledColor.A = 255;
+		return SampledColor;
+	}
+
 	void TMRasterizeTexturedProjectedTriangle(
 		TArray<uint8>& Pixels,
 		TArray<float>& DepthBuffer,
@@ -1672,7 +1826,8 @@ namespace
 		const int32 DiffuseWidth,
 		const int32 DiffuseHeight,
 		const float Light,
-		const float Facing)
+		const float Facing,
+		const bool bRepairTransparentDiffuseSamples)
 	{
 		const float Area = TMTriangleEdge(A, B, C);
 		if (FMath::IsNearlyZero(Area, 0.01f))
@@ -1715,7 +1870,12 @@ namespace
 					(UVA.X * WeightA) + (UVB.X * WeightB) + (UVC.X * WeightC),
 					(UVA.Y * WeightA) + (UVB.Y * WeightB) + (UVC.Y * WeightC));
 				const FColor Color = TMShadeMaterialColor(
-					TMSampleBgraTextureWrapped(DiffusePixels, DiffuseWidth, DiffuseHeight, UV),
+					TMRepairProjectedDiffuseSample(
+						DiffusePixels,
+						DiffuseWidth,
+						DiffuseHeight,
+						UV,
+						bRepairTransparentDiffuseSamples),
 					Light,
 					Facing);
 
@@ -1762,6 +1922,7 @@ namespace
 		TArray<uint8> DiffusePixels;
 		int32 DiffuseWidth = 0;
 		int32 DiffuseHeight = 0;
+		const bool bRepairTransparentDiffuseSamples = TMShouldRepairSkeletalVisualDiffuseProjection(SkeletalMesh);
 		if (DiffuseTexturePath)
 		{
 			UTexture2D* DiffuseTexture = LoadObject<UTexture2D>(
@@ -1778,6 +1939,60 @@ namespace
 					*DiffuseTexture->GetPathName());
 			}
 		}
+		TMap<int32, FTMProjectedDiffuseTextureData> DiffuseTextureByMaterialIndex;
+		const auto LoadDiffuseTextureForMaterialIndex =
+			[&DiffuseTextureByMaterialIndex, SkeletalMesh](const int32 MaterialIndex) -> const FTMProjectedDiffuseTextureData*
+			{
+				if (const FTMProjectedDiffuseTextureData* ExistingTextureData = DiffuseTextureByMaterialIndex.Find(MaterialIndex))
+				{
+					return ExistingTextureData->IsValid() ? ExistingTextureData : nullptr;
+				}
+
+				const TCHAR* MaterialWeaponName = nullptr;
+				const TCHAR* MaterialDiffuseTexturePath = TMGetSkeletalVisualDiffuseTexturePath(
+					SkeletalMesh,
+					MaterialWeaponName,
+					MaterialIndex);
+				FTMProjectedDiffuseTextureData TextureData;
+				if (MaterialDiffuseTexturePath)
+				{
+					UTexture2D* MaterialDiffuseTexture = LoadObject<UTexture2D>(nullptr, MaterialDiffuseTexturePath);
+					if (MaterialDiffuseTexture
+						&& TMReadTextureSourceBgra8(
+							MaterialDiffuseTexture,
+							TextureData.Pixels,
+							TextureData.Width,
+							TextureData.Height))
+					{
+						UE_LOG(
+							LogTemp,
+							Display,
+							TEXT("[TMIconGenerator] Using %s material slot %d diffuse texture %s for skeletal geometry projection."),
+							MaterialWeaponName ? MaterialWeaponName : TEXT("weapon"),
+							MaterialIndex,
+							*MaterialDiffuseTexture->GetPathName());
+					}
+				}
+
+				DiffuseTextureByMaterialIndex.Add(MaterialIndex, MoveTemp(TextureData));
+				const FTMProjectedDiffuseTextureData* AddedTextureData = DiffuseTextureByMaterialIndex.Find(MaterialIndex);
+				return AddedTextureData && AddedTextureData->IsValid() ? AddedTextureData : nullptr;
+			};
+		const auto FindSectionMaterialIndex =
+			[&LODRenderData](const int32 IndexBufferPosition) -> int32
+			{
+				for (const FSkelMeshRenderSection& RenderSection : LODRenderData.RenderSections)
+				{
+					const int32 SectionBaseIndex = static_cast<int32>(RenderSection.BaseIndex);
+					const int32 SectionIndexCount = static_cast<int32>(RenderSection.NumTriangles) * 3;
+					if (IndexBufferPosition >= SectionBaseIndex && IndexBufferPosition < SectionBaseIndex + SectionIndexCount)
+					{
+						return RenderSection.MaterialIndex;
+					}
+				}
+
+				return 0;
+			};
 
 		const FBoxSphereBounds MeshBounds = SkeletalMesh->GetBounds();
 		const FVector Center = MeshBounds.Origin;
@@ -1852,6 +2067,19 @@ namespace
 			const float Facing = FMath::Abs(FVector::DotProduct(TriangleNormal, ViewForward));
 			if (!DiffusePixels.IsEmpty())
 			{
+				const int32 MaterialIndex = FindSectionMaterialIndex(Index);
+				const FTMProjectedDiffuseTextureData* MaterialDiffuseTextureData = MaterialIndex == 0
+					? nullptr
+					: LoadDiffuseTextureForMaterialIndex(MaterialIndex);
+				const TArray<uint8>& TriangleDiffusePixels = MaterialDiffuseTextureData
+					? MaterialDiffuseTextureData->Pixels
+					: DiffusePixels;
+				const int32 TriangleDiffuseWidth = MaterialDiffuseTextureData
+					? MaterialDiffuseTextureData->Width
+					: DiffuseWidth;
+				const int32 TriangleDiffuseHeight = MaterialDiffuseTextureData
+					? MaterialDiffuseTextureData->Height
+					: DiffuseHeight;
 				TMRasterizeTexturedProjectedTriangle(
 					OutPixels,
 					DepthBuffer,
@@ -1866,11 +2094,12 @@ namespace
 					LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexA, 0),
 					LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexB, 0),
 					LODRenderData.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(IndexC, 0),
-					DiffusePixels,
-					DiffuseWidth,
-					DiffuseHeight,
+					TriangleDiffusePixels,
+					TriangleDiffuseWidth,
+					TriangleDiffuseHeight,
 					Light,
-					Facing);
+					Facing,
+					bRepairTransparentDiffuseSamples);
 				continue;
 			}
 
@@ -2211,7 +2440,7 @@ namespace
 		const FString ObjectPath = AssetData.GetObjectPathString();
 		if (ObjectPath.Contains(TEXT("SMG_Scar"), ESearchCase::IgnoreCase))
 		{
-			TMShiftIconForegroundRight(PixelData, TMIconWidth, TMIconHeight, 16);
+			TMShiftIconForegroundRight(PixelData, TMIconWidth, TMIconHeight, 8);
 		}
 		if (ObjectPath.Contains(TEXT("SMG_TAR"), ESearchCase::IgnoreCase))
 		{
@@ -2221,6 +2450,17 @@ namespace
 		{
 			TMShiftIconForegroundRight(PixelData, TMIconWidth, TMIconHeight, 3);
 		}
+	}
+
+	void TMRemoveScarLoadoutIconCaptureArtifacts(const FAssetData& AssetData, TArray<uint8>& PixelData)
+	{
+		if (!AssetData.GetObjectPathString().Contains(TEXT("SMG_Scar"), ESearchCase::IgnoreCase)
+			|| PixelData.Num() != TMIconWidth * TMIconHeight * 4)
+		{
+			return;
+		}
+
+		// Scar now uses material projection before scene capture, so coordinate cleanup is intentionally disabled.
 	}
 
 	bool TMFitIconForegroundToCanvas(
@@ -2326,6 +2566,13 @@ namespace
 		if (ObjectPath.Contains(TEXT("SMG_TAR"), ESearchCase::IgnoreCase))
 		{
 			OutTargetWidthRatio = 0.68f;
+			OutTargetHeightRatio = 0.98f;
+			return true;
+		}
+
+		if (ObjectPath.Contains(TEXT("SMG_Scar"), ESearchCase::IgnoreCase))
+		{
+			OutTargetWidthRatio = 0.98f;
 			OutTargetHeightRatio = 0.98f;
 			return true;
 		}
@@ -2938,6 +3185,16 @@ namespace
 			if (bSceneFitted)
 			{
 				TMNormalizeSceneCaptureIconExposure(OutPixels, TMIconWidth, TMIconHeight);
+				if (!TMRealMaterialIconHasUsableDetail(OutPixels, TMIconWidth, TMIconHeight))
+				{
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[TMIconGenerator] Rejected dark real-material skeletal mesh render for %s."),
+						*SkeletalMesh->GetPathName());
+					OutPixels.Reset();
+					return false;
+				}
 			}
 			return bSceneFitted && OutPixels.Num() == TMIconWidth * TMIconHeight * 4;
 		}
@@ -3173,6 +3430,7 @@ namespace
 		}
 
 		bool bBuiltPixels = false;
+		const bool bIsScar = AssetData.GetObjectPathString().Contains(TEXT("SMG_Scar"), ESearchCase::IgnoreCase);
 		if (UTexture2D* SourceIconTexture = TMFindLoadoutWeaponSourceIconTexture(AssetData))
 		{
 			TArray<uint8> SourceIconPixels;
@@ -3216,6 +3474,19 @@ namespace
 					Warning,
 					TEXT("[TMIconGenerator] Failed to read baked source HUD texture %s for %s."),
 					*SourceIconTexture->GetPathName(),
+					*AssetData.GetObjectPathString());
+			}
+		}
+
+		if (!bBuiltPixels)
+		{
+			if (bIsScar && TMBuildSkeletalMeshProjectedIconPixels(Cast<USkeletalMesh>(RenderSourceObject), OutPixels))
+			{
+				bBuiltPixels = true;
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMIconGenerator] Applied Scar loadout material projection before scene capture for %s."),
 					*AssetData.GetObjectPathString());
 			}
 		}
@@ -3283,6 +3554,7 @@ namespace
 			TMApplyFragLoadoutIconColor(OutPixels, TMIconWidth, TMIconHeight);
 		}
 		TMApplyLoadoutWeaponRowIconAlignment(AssetData, OutPixels);
+		TMRemoveScarLoadoutIconCaptureArtifacts(AssetData, OutPixels);
 		TMApplyLoadoutWeaponMaterialIconTone(OutPixels, TMIconWidth, TMIconHeight, bActiveVariant);
 		return OutPixels.Num() == TMIconWidth * TMIconHeight * 4;
 	}
@@ -3587,6 +3859,15 @@ namespace
 			return LoadObject<UStaticMesh>(
 				nullptr,
 				TEXT("/Game/MeleeWeapons/Meshes/SM_Bayonet_01.SM_Bayonet_01"));
+		}
+
+		if (SourceAsset.GetObjectPathString().Equals(
+			TEXT("/Game/MeleeWeapons/Meshes/SK_Cleaver_01.SK_Cleaver_01"),
+			ESearchCase::IgnoreCase))
+		{
+			return LoadObject<UStaticMesh>(
+				nullptr,
+				TEXT("/Game/MeleeWeapons/Meshes/SM_Cleaver_01.SM_Cleaver_01"));
 		}
 
 		if (TMIsTARDataTableMeshSource(SourceAsset))

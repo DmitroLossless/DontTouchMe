@@ -128,19 +128,19 @@ static TAutoConsoleVariable<int32> CVarLoadoutMusicDucking(
 
 static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingVolume(
 	TEXT("tm.LoadoutMusicDucking.Volume"),
-	0.35f,
+	0.78f,
 	TEXT("Target volume multiplier for main menu music while loadout is visible."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingLowPassFrequency(
 	TEXT("tm.LoadoutMusicDucking.LowPassFrequency"),
-	250.0f,
+	450.0f,
 	TEXT("Low-pass cutoff frequency for the muffled barrel-like main menu music while loadout is visible."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarLoadoutMusicDuckingAttachmentsVolume(
 	TEXT("tm.LoadoutMusicDucking.AttachmentsVolume"),
-	0.6f,
+	0.85f,
 	TEXT("Target volume multiplier for main menu music while attachments customization is visible."),
 	ECVF_Default);
 
@@ -188,7 +188,7 @@ static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundPitch(
 
 static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundMuffleVolume(
 	TEXT("tm.LoadoutBackgroundShootingLoop.MuffleVolume"),
-	0.65f,
+	0.325f,
 	TEXT("Target volume multiplier for the background shooting loop while the loadout screen is visible."),
 	ECVF_Default);
 
@@ -200,7 +200,7 @@ static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundMuffleL
 
 static TAutoConsoleVariable<float> CVarLoadoutBackgroundShootingLoopSoundAttachmentsMuffleVolume(
 	TEXT("tm.LoadoutBackgroundShootingLoop.AttachmentsMuffleVolume"),
-	0.35f,
+	0.175f,
 	TEXT("Target volume multiplier for the background shooting loop while attachments customization is visible."),
 	ECVF_Default);
 

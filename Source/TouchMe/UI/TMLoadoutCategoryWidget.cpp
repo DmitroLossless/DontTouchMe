@@ -377,7 +377,11 @@ void UTMLoadoutCategoryWidget::ApplyImageTexture(UImage* Image, UTexture2D* Text
 	}
 
 	FSlateBrush Brush = Image->GetBrush();
+	const FVector2D ImageSize = Brush.GetImageSize();
 	Brush.SetResourceObject(Texture);
-	Brush.SetImageSize(FVector2D(Texture->GetSizeX(), Texture->GetSizeY()));
+	if (!ImageSize.IsNearlyZero())
+	{
+		Brush.SetImageSize(ImageSize);
+	}
 	Image->SetBrush(Brush);
 }

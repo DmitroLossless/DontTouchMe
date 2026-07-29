@@ -27,19 +27,14 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
-#include "Components/CanvasPanelSlot.h"
 #include "Components/ContentWidget.h"
-#include "Components/HorizontalBoxSlot.h"
 #include "Components/Image.h"
-#include "Components/SizeBox.h"
 #include "Containers/Ticker.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/TextBlock.h"
-#include "Components/VerticalBoxSlot.h"
 #include "Components/Widget.h"
 #include "Math/InverseRotationMatrix.h"
 #include "UObject/Package.h"
-#include "Engine/Texture2D.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/DataTable.h"
 #include "ParticleHelper.h"
@@ -55,6 +50,7 @@
 #include "GameFramework/Character.h"
 #include "InputCoreTypes.h"
 #include "Sound/DialogueWave.h"
+#include "Sound/SlateSound.h"
 #include "GameFramework/SaveGame.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
@@ -82,8 +78,8 @@
 #include "TMFoliageCollisionPushTester.h"
 #include "TMFoliageExplosionCollisionTester.h"
 #include "TMFoliageImpulseSubsystem.h"
+#include "TMWeaponLayerWidget.h"
 #include "Framework/Application/SlateApplication.h"
-#include "UI/TMWeaponIconResolver.h"
 
 #if WITH_EDITOR
 #include "AnimGraphNode_CopyBone.h"
@@ -111,9 +107,6 @@
 
 namespace TMGameplayStatics
 {
-	constexpr float LoadoutWeaponLayerIconWidth = 288.0f;
-	constexpr float LoadoutWeaponLayerIconHeight = 72.0f;
-	constexpr float LoadoutWeaponLayerIconHoverScale = 1.07f;
 	constexpr float LoadoutGearShimmerPeriod = 7.5f;
 	constexpr float LoadoutGearShimmerDuration = 0.55f;
 	constexpr float LoadoutGearShimmerFirstDelay = 1.5f;
@@ -121,16 +114,14 @@ namespace TMGameplayStatics
 	constexpr float LoadoutReturnShimmerDuration = 0.55f;
 	constexpr float LoadoutReturnShimmerFirstDelay = 3.0f;
 	const FLinearColor LoadoutReturnNormalTint(0.090842f, 0.001214f, 0.002125f, 0.901961f);
-
-	struct FLoadoutWeaponLayerIconHoverState
-	{
-		TWeakObjectPtr<UButton> Button;
-		TWeakObjectPtr<UImage> IconImage;
-		bool bHovered = false;
-	};
-
-	TArray<FLoadoutWeaponLayerIconHoverState> LoadoutWeaponLayerIconHoverStates;
-	FTSTicker::FDelegateHandle LoadoutWeaponLayerIconHoverTickerHandle;
+	const TCHAR* LoadoutGearClickSoundPath =
+		TEXT("/Game/Free_UI/CUE/Wood_Block1_Cue.Wood_Block1_Cue");
+	const TCHAR* LoadoutGearHoverSoundPath =
+		TEXT("/Game/Battle_Royale_Game/Cues/User_Interface/UI_Phone_Screen_Tap_Touch_Click_Pop_1_Cue.UI_Phone_Screen_Tap_Touch_Click_Pop_1_Cue");
+	const TCHAR* LoadoutReturnClickSoundPath =
+		TEXT("/Game/Battle_Royale_Game/Cues/Gun_Foley/Foley/Weapon_Foley_Knife_Small_Pull_Out_Unshealte_1_Cue.Weapon_Foley_Knife_Small_Pull_Out_Unshealte_1_Cue");
+	const TCHAR* LoadoutReturnHoverSoundPath =
+		TEXT("/Game/BallisticsVFX/SFX/Whoosh/Whoosh_1_Cue.Whoosh_1_Cue");
 
 	struct FLoadoutGearShimmerState
 	{
@@ -174,77 +165,138 @@ namespace TMGameplayStatics
 	TArray<FLoadoutImageShimmerState> LoadoutImageShimmerStates;
 	TArray<FLoadoutDeferredImageShimmerRegistration> LoadoutDeferredImageShimmerRegistrations;
 
-	void ApplyLoadoutWeaponLayerIconHoverVisual(UImage* IconImage, const bool bHovered)
+	USoundBase* ResolveLoadoutGearClickSound()
 	{
-		if (!IconImage)
+		return LoadObject<USoundBase>(nullptr, LoadoutGearClickSoundPath);
+	}
+
+	USoundBase* ResolveLoadoutGearHoverSound()
+	{
+		return LoadObject<USoundBase>(nullptr, LoadoutGearHoverSoundPath);
+	}
+
+	USoundBase* ResolveLoadoutReturnClickSound()
+	{
+		return LoadObject<USoundBase>(nullptr, LoadoutReturnClickSoundPath);
+	}
+
+	USoundBase* ResolveLoadoutReturnHoverSound()
+	{
+		return LoadObject<USoundBase>(nullptr, LoadoutReturnHoverSoundPath);
+	}
+
+	bool IsLoadoutGearButton(const UButton* Button)
+	{
+		return Button && Button->GetName().Contains(TEXT("Gear"), ESearchCase::IgnoreCase);
+	}
+
+	void ApplyLoadoutGearButtonSounds(UButton* Button)
+	{
+		if (!IsLoadoutGearButton(Button))
 		{
 			return;
 		}
 
-		IconImage->SetRenderTransformPivot(FVector2D(0.0f, 0.5f));
-		IconImage->SetRenderScale(bHovered
-			? FVector2D(LoadoutWeaponLayerIconHoverScale, LoadoutWeaponLayerIconHoverScale)
-			: FVector2D(1.0f, 1.0f));
-	}
-
-	bool TickLoadoutWeaponLayerIconHover(const float DeltaTime)
-	{
-		for (int32 Index = LoadoutWeaponLayerIconHoverStates.Num() - 1; Index >= 0; --Index)
+		USoundBase* ClickSound = ResolveLoadoutGearClickSound();
+		if (!ClickSound)
 		{
-			FLoadoutWeaponLayerIconHoverState& State = LoadoutWeaponLayerIconHoverStates[Index];
-			UButton* Button = State.Button.Get();
-			UImage* IconImage = State.IconImage.Get();
-			if (!Button || !IconImage)
-			{
-				LoadoutWeaponLayerIconHoverStates.RemoveAtSwap(Index);
-				continue;
-			}
-
-			const bool bHovered = Button->IsHovered();
-			if (State.bHovered != bHovered)
-			{
-				State.bHovered = bHovered;
-				ApplyLoadoutWeaponLayerIconHoverVisual(IconImage, bHovered);
-			}
-		}
-
-		if (LoadoutWeaponLayerIconHoverStates.Num() == 0)
-		{
-			LoadoutWeaponLayerIconHoverTickerHandle.Reset();
-			return false;
-		}
-
-		return true;
-	}
-
-	void RegisterLoadoutWeaponLayerIconHover(UButton* Button, UImage* IconImage)
-	{
-		if (!Button || !IconImage)
-		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMLoadoutGearSound] Missing click sound: %s"), LoadoutGearClickSoundPath);
 			return;
 		}
 
-		for (FLoadoutWeaponLayerIconHoverState& State : LoadoutWeaponLayerIconHoverStates)
+		USoundBase* HoverSound = ResolveLoadoutGearHoverSound();
+		if (!HoverSound)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMLoadoutGearSound] Missing hover sound: %s"), LoadoutGearHoverSoundPath);
+			return;
+		}
+
+		FSlateSound SlateClickSound;
+		SlateClickSound.SetResourceObject(ClickSound);
+
+		FSlateSound SlateHoverSound;
+		SlateHoverSound.SetResourceObject(HoverSound);
+
+		FButtonStyle Style = Button->GetStyle();
+		if (Style.PressedSlateSound.GetResourceObject() != ClickSound
+			|| Style.HoveredSlateSound.GetResourceObject() != HoverSound
+			|| Style.ClickedSlateSound.GetResourceObject() != nullptr)
+		{
+			Style.SetPressedSound(SlateClickSound);
+			Style.SetHoveredSound(SlateHoverSound);
+			Style.SetClickedSound(FSlateSound());
+			Button->SetStyle(Style);
+		}
+
+		for (FLoadoutGearShimmerState& State : LoadoutGearShimmerStates)
 		{
 			if (State.Button.Get() == Button)
 			{
-				State.IconImage = IconImage;
-				State.bHovered = Button->IsHovered();
-				ApplyLoadoutWeaponLayerIconHoverVisual(IconImage, State.bHovered);
-				return;
+				State.BaseStyle = Button->GetStyle();
+				break;
 			}
 		}
+	}
 
-		FLoadoutWeaponLayerIconHoverState& State = LoadoutWeaponLayerIconHoverStates.AddDefaulted_GetRef();
-		State.Button = Button;
-		State.IconImage = IconImage;
-		State.bHovered = Button->IsHovered();
-		ApplyLoadoutWeaponLayerIconHoverVisual(IconImage, State.bHovered);
-
-		if (!LoadoutWeaponLayerIconHoverTickerHandle.IsValid())
+	void ApplyLoadoutGearButtonSounds(UUserWidget* OwnerWidget)
+	{
+		if (!OwnerWidget || !OwnerWidget->WidgetTree)
 		{
-			LoadoutWeaponLayerIconHoverTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-				FTickerDelegate::CreateStatic(&TickLoadoutWeaponLayerIconHover));
+			return;
+		}
+
+		OwnerWidget->WidgetTree->ForEachWidget(
+			[](UWidget* Widget)
+			{
+				ApplyLoadoutGearButtonSounds(Cast<UButton>(Widget));
+			});
+	}
+
+	void ApplyLoadoutReturnButtonSounds(UButton* Button)
+	{
+		if (!Button)
+		{
+			return;
+		}
+
+		USoundBase* ClickSound = ResolveLoadoutReturnClickSound();
+		if (!ClickSound)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMLoadoutReturnSound] Missing click sound: %s"), LoadoutReturnClickSoundPath);
+			return;
+		}
+
+		USoundBase* HoverSound = ResolveLoadoutReturnHoverSound();
+		if (!HoverSound)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TMLoadoutReturnSound] Missing hover sound: %s"), LoadoutReturnHoverSoundPath);
+			return;
+		}
+
+		FSlateSound SlateClickSound;
+		SlateClickSound.SetResourceObject(ClickSound);
+
+		FSlateSound SlateHoverSound;
+		SlateHoverSound.SetResourceObject(HoverSound);
+
+		FButtonStyle Style = Button->GetStyle();
+		if (Style.PressedSlateSound.GetResourceObject() != ClickSound
+			|| Style.HoveredSlateSound.GetResourceObject() != HoverSound
+			|| Style.ClickedSlateSound.GetResourceObject() != nullptr)
+		{
+			Style.SetPressedSound(SlateClickSound);
+			Style.SetHoveredSound(SlateHoverSound);
+			Style.SetClickedSound(FSlateSound());
+			Button->SetStyle(Style);
+		}
+
+		for (FLoadoutGearShimmerState& State : LoadoutGearShimmerStates)
+		{
+			if (State.Button.Get() == Button)
+			{
+				State.BaseStyle = Button->GetStyle();
+				break;
+			}
 		}
 	}
 
@@ -735,174 +787,6 @@ namespace TMGameplayStatics
 			|| NormalizedName.StartsWith(TEXT("jaw_"))
 			|| NormalizedName.StartsWith(TEXT("eye_"))
 			|| NormalizedName.StartsWith(TEXT("eyeball_"));
-	}
-
-	bool IsLoadoutWeaponLayerName(const UUserWidget* WeaponLayerWidget, const TCHAR* WeaponName)
-	{
-		if (!WeaponLayerWidget || !WeaponName)
-		{
-			return false;
-		}
-
-		const FString WidgetName = WeaponLayerWidget->GetName();
-		return WidgetName.Equals(WeaponName, ESearchCase::IgnoreCase)
-			|| WidgetName.StartsWith(FString::Printf(TEXT("%s_"), WeaponName), ESearchCase::IgnoreCase);
-	}
-
-	FString GetLoadoutWeaponLayerDisplayText(const UUserWidget* WeaponLayerWidget)
-	{
-		if (!WeaponLayerWidget)
-		{
-			return FString();
-		}
-
-		const UTextBlock* NameText = Cast<UTextBlock>(WeaponLayerWidget->GetWidgetFromName(TEXT("NameText")));
-		if (NameText)
-		{
-			const FString Text = NameText->GetText().ToString().TrimStartAndEnd();
-			if (!Text.IsEmpty())
-			{
-				return Text;
-			}
-		}
-
-		FString FirstText;
-		if (WeaponLayerWidget->WidgetTree)
-		{
-			WeaponLayerWidget->WidgetTree->ForEachWidget(
-				[&FirstText](UWidget* Widget)
-				{
-					if (!FirstText.IsEmpty())
-					{
-						return;
-					}
-
-					const UTextBlock* TextBlock = Cast<UTextBlock>(Widget);
-					if (!TextBlock)
-					{
-						return;
-					}
-
-					FirstText = TextBlock->GetText().ToString().TrimStartAndEnd();
-				});
-		}
-
-		return FirstText;
-	}
-
-	FString GetLoadoutWeaponLayerIdentifier(const UUserWidget* WeaponLayerWidget)
-	{
-		if (!WeaponLayerWidget)
-		{
-			return FString();
-		}
-
-		static const FName IdentifierPropertyNames[] =
-		{
-			TEXT("WeaponIdentifier"),
-			TEXT("Weapon Identifier"),
-			TEXT("WeaponID")
-		};
-
-		for (const FName& IdentifierPropertyName : IdentifierPropertyNames)
-		{
-			if (const FNameProperty* IdentifierNameProperty =
-				FindFProperty<FNameProperty>(WeaponLayerWidget->GetClass(), IdentifierPropertyName))
-			{
-				return IdentifierNameProperty->GetPropertyValue_InContainer(WeaponLayerWidget).ToString();
-			}
-		}
-
-		return FString();
-	}
-
-	bool IsLoadoutWeaponLayerIdentity(const UUserWidget* WeaponLayerWidget, const TCHAR* WeaponName, const TCHAR* DisplayAlias = nullptr)
-	{
-		if (IsLoadoutWeaponLayerName(WeaponLayerWidget, WeaponName))
-		{
-			return true;
-		}
-
-		const FString WeaponIdentifier = GetLoadoutWeaponLayerIdentifier(WeaponLayerWidget);
-		if (WeaponIdentifier.Equals(WeaponName, ESearchCase::IgnoreCase))
-		{
-			return true;
-		}
-
-		const FString DisplayText = GetLoadoutWeaponLayerDisplayText(WeaponLayerWidget);
-		return DisplayText.Equals(WeaponName, ESearchCase::IgnoreCase)
-			|| (DisplayAlias && DisplayText.Equals(DisplayAlias, ESearchCase::IgnoreCase));
-	}
-
-	bool ShouldHideLoadoutWeaponLayer(const UUserWidget* WeaponLayerWidget)
-	{
-		return TMWeaponIconResolver::ShouldCollapseWeaponRow(WeaponLayerWidget);
-	}
-
-	UTexture2D* GetLoadoutWeaponLayerIconTexture(const UUserWidget* WeaponLayerWidget)
-	{
-		return TMWeaponIconResolver::ResolveIconTexture(WeaponLayerWidget, false);
-	}
-
-	FLinearColor GetLoadoutWeaponLayerIconTint(const UTextBlock* NameText)
-	{
-		if (!NameText)
-		{
-			return FLinearColor::White;
-		}
-
-		FLinearColor Tint = NameText->GetColorAndOpacity().GetSpecifiedColor();
-		if (Tint.A <= 0.01f)
-		{
-			Tint = FLinearColor::White;
-		}
-
-		Tint.A = 1.0f;
-		return Tint;
-	}
-
-	FSlateBrush MakeLoadoutWeaponLayerIconBrush(UTexture2D* IconTexture)
-	{
-		FSlateBrush Brush;
-		Brush.DrawAs = IconTexture ? ESlateBrushDrawType::Image : ESlateBrushDrawType::NoDrawType;
-		if (IconTexture)
-		{
-			Brush.SetResourceObject(IconTexture);
-		}
-		Brush.SetImageSize(FVector2D(LoadoutWeaponLayerIconWidth, LoadoutWeaponLayerIconHeight));
-		return Brush;
-	}
-
-	void ApplyLoadoutWeaponLayerSlotSize(UWidget* Widget)
-	{
-		if (!Widget || !Widget->Slot)
-		{
-			return;
-		}
-
-		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Widget->Slot))
-		{
-			CanvasSlot->SetAutoSize(false);
-			CanvasSlot->SetSize(FVector2D(LoadoutWeaponLayerIconWidth, LoadoutWeaponLayerIconHeight));
-			return;
-		}
-
-		if (UVerticalBoxSlot* VerticalSlot = Cast<UVerticalBoxSlot>(Widget->Slot))
-		{
-			VerticalSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
-			VerticalSlot->SetPadding(FMargin(0.0f));
-			VerticalSlot->SetHorizontalAlignment(HAlign_Left);
-			VerticalSlot->SetVerticalAlignment(VAlign_Center);
-			return;
-		}
-
-		if (UHorizontalBoxSlot* HorizontalSlot = Cast<UHorizontalBoxSlot>(Widget->Slot))
-		{
-			HorizontalSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
-			HorizontalSlot->SetPadding(FMargin(0.0f));
-			HorizontalSlot->SetHorizontalAlignment(HAlign_Left);
-			HorizontalSlot->SetVerticalAlignment(VAlign_Center);
-		}
 	}
 
 #if WITH_EDITOR
@@ -3292,114 +3176,14 @@ void UTMGameplayStatics::CleanupLoadoutPreview(UUserWidget* OwnerWidget)
 
 bool UTMGameplayStatics::ApplyLoadoutWeaponLayerIcon(UUserWidget* WeaponLayerWidget)
 {
-	if (!WeaponLayerWidget)
+	UTMWeaponLayerWidget* TypedWeaponLayerWidget = Cast<UTMWeaponLayerWidget>(WeaponLayerWidget);
+	if (!TypedWeaponLayerWidget)
 	{
 		return false;
 	}
 
-	TMRegisterLoadoutPreviewShoot(WeaponLayerWidget);
-
-	if (TMGameplayStatics::ShouldHideLoadoutWeaponLayer(WeaponLayerWidget))
-	{
-		WeaponLayerWidget->SetVisibility(ESlateVisibility::Collapsed);
-		return true;
-	}
-
-	UTexture2D* IconTexture = TMGameplayStatics::GetLoadoutWeaponLayerIconTexture(WeaponLayerWidget);
-	const bool bHasIconTexture = IconTexture != nullptr;
-
-	UButton* WeaponButton = Cast<UButton>(WeaponLayerWidget->GetWidgetFromName(TEXT("B_Weapon")));
-	UTextBlock* NameText = Cast<UTextBlock>(WeaponLayerWidget->GetWidgetFromName(TEXT("NameText")));
-	if (!WeaponButton)
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[TMLoadoutWeaponIcon] %s has no B_Weapon button."),
-			*WeaponLayerWidget->GetName());
-		return false;
-	}
-
-	UImage* IconImage = Cast<UImage>(WeaponLayerWidget->GetWidgetFromName(TEXT("TM_LoadoutWeaponIcon")));
-	if (!IconImage && WeaponLayerWidget->WidgetTree)
-	{
-		IconImage = WeaponLayerWidget->WidgetTree->ConstructWidget<UImage>(
-			UImage::StaticClass(),
-			TEXT("TM_LoadoutWeaponIcon"));
-	}
-
-	if (!IconImage)
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[TMLoadoutWeaponIcon] Failed to create icon image for %s."),
-			*WeaponLayerWidget->GetName());
-		return false;
-	}
-
-	USizeBox* IconBox = Cast<USizeBox>(WeaponLayerWidget->GetWidgetFromName(TEXT("TM_LoadoutWeaponIconBox")));
-	if (!IconBox && WeaponLayerWidget->WidgetTree)
-	{
-		IconBox = WeaponLayerWidget->WidgetTree->ConstructWidget<USizeBox>(
-			USizeBox::StaticClass(),
-			TEXT("TM_LoadoutWeaponIconBox"));
-	}
-
-	if (!IconBox)
-	{
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("[TMLoadoutWeaponIcon] Failed to create icon size box for %s."),
-			*WeaponLayerWidget->GetName());
-		return false;
-	}
-
-	FSlateBrush IconBrush = TMGameplayStatics::MakeLoadoutWeaponLayerIconBrush(IconTexture);
-	IconImage->SetBrush(IconBrush);
-	IconImage->SetDesiredSizeOverride(FVector2D(
-		TMGameplayStatics::LoadoutWeaponLayerIconWidth,
-		TMGameplayStatics::LoadoutWeaponLayerIconHeight));
-	IconImage->SetColorAndOpacity(FLinearColor::White);
-	IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
-
-	IconBox->SetWidthOverride(TMGameplayStatics::LoadoutWeaponLayerIconWidth);
-	IconBox->SetHeightOverride(TMGameplayStatics::LoadoutWeaponLayerIconHeight);
-	IconBox->SetVisibility(ESlateVisibility::HitTestInvisible);
-	if (IconBox->GetContent() != IconImage)
-	{
-		IconBox->SetContent(IconImage);
-	}
-
-	TMGameplayStatics::ApplyLoadoutWeaponLayerSlotSize(WeaponLayerWidget);
-	TMGameplayStatics::ApplyLoadoutWeaponLayerSlotSize(WeaponButton);
-	TMGameplayStatics::ApplyLoadoutWeaponLayerSlotSize(IconBox);
-	TMGameplayStatics::RegisterLoadoutWeaponLayerIconHover(WeaponButton, IconImage);
-
-	if (WeaponButton->GetContent() != IconBox)
-	{
-		WeaponButton->SetContent(IconBox);
-	}
-
-	if (NameText)
-	{
-		NameText->SetVisibility(ESlateVisibility::Collapsed);
-	}
-
-	if (WeaponLayerWidget->WidgetTree)
-	{
-		WeaponLayerWidget->WidgetTree->ForEachWidget(
-			[](UWidget* Widget)
-			{
-				if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
-				{
-					TextBlock->SetVisibility(ESlateVisibility::Collapsed);
-				}
-			});
-	}
-
-	return bHasIconTexture;
+	TypedWeaponLayerWidget->RefreshWeaponIcon();
+	return true;
 }
 
 void UTMGameplayStatics::StartLoadoutGearShimmer(UUserWidget* OwnerWidget)
@@ -3410,6 +3194,7 @@ void UTMGameplayStatics::StartLoadoutGearShimmer(UUserWidget* OwnerWidget)
 	}
 
 	TMRegisterLoadoutPreviewShoot(OwnerWidget);
+	TMGameplayStatics::ApplyLoadoutGearButtonSounds(OwnerWidget);
 
 	if (UButton* GearButton = Cast<UButton>(OwnerWidget->GetWidgetFromName(TEXT("B_Gear"))))
 	{
@@ -3421,6 +3206,7 @@ void UTMGameplayStatics::StartLoadoutGearShimmer(UUserWidget* OwnerWidget)
 	{
 		if (UButton* ReturnButton = Cast<UButton>(OwnerWidget->GetWidgetFromName(ReturnButtonName)))
 		{
+			TMGameplayStatics::ApplyLoadoutReturnButtonSounds(ReturnButton);
 			TMGameplayStatics::RegisterLoadoutGearShimmer(
 				ReturnButton,
 				TMGameplayStatics::LoadoutReturnShimmerPeriod,
