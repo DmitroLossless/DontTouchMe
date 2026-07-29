@@ -249,7 +249,8 @@ void UTMWeaponLayerWidget::ApplyHoverScale() const
 	if (UOverlay* Overlay = IconOverlay.Get())
 	{
 		const UButton* Button = WeaponButton.Get();
-		const float HoverScale = Button && Button->IsHovered() ? 1.07f : 1.0f;
+		const bool bCanClickWeapon = Button && Button->GetIsEnabled() && !bWeaponIconSelected;
+		const float HoverScale = bCanClickWeapon && Button->IsHovered() ? 1.07f : 1.0f;
 		Overlay->SetRenderScale(FVector2D(HoverScale, HoverScale));
 	}
 }
