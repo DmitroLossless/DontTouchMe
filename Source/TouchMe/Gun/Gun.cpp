@@ -102,6 +102,52 @@ namespace
 			false);
 	}
 
+	void SpawnImpactFX(
+		UObject* WorldContextObject,
+		UWorld* World,
+		UFXSystemAsset* ImpactFX,
+		const FTransform& Transform)
+	{
+		if (!World || !ImpactFX)
+		{
+			return;
+		}
+
+		if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(ImpactFX))
+		{
+			UParticleSystemComponent* ParticleComponent = UGameplayStatics::SpawnEmitterAtLocation(
+				World,
+				CascadeSystem,
+				Transform,
+				true,
+				EPSCPoolMethod::None,
+				true);
+			if (ParticleComponent)
+			{
+				ParticleComponent->bAutoDestroy = true;
+				ScheduleImpactFXCleanup(World, ParticleComponent);
+			}
+		}
+		else if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(ImpactFX))
+		{
+			UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				WorldContextObject,
+				NiagaraSystem,
+				Transform.GetLocation(),
+				Transform.Rotator(),
+				Transform.GetScale3D(),
+				true,
+				true,
+				ENCPoolMethod::None,
+				true);
+			if (NiagaraComponent)
+			{
+				NiagaraComponent->SetAutoDestroy(true);
+				ScheduleImpactFXCleanup(World, NiagaraComponent);
+			}
+		}
+	}
+
 	void SpawnLoadoutFeedbackFX(
 		UObject* WorldContextObject,
 		UWorld* World,
@@ -3839,41 +3885,7 @@ void AGun::ImpactInternal(
 
 	if (Effects.Particle)
 	{
-		const FTransform ParticleTransform = Effects.ParticleTransformOffset * ImpactTransform;
-
-		if (UParticleSystem* CascadeSystem = Cast<UParticleSystem>(Effects.Particle))
-		{
-			UParticleSystemComponent* ParticleComponent = UGameplayStatics::SpawnEmitterAtLocation(
-				GetWorld(),
-				CascadeSystem,
-				ParticleTransform,
-				true,
-				EPSCPoolMethod::None,
-				true);
-			if (ParticleComponent)
-			{
-				ParticleComponent->bAutoDestroy = true;
-				ScheduleImpactFXCleanup(GetWorld(), ParticleComponent);
-			}
-		}
-		else if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(Effects.Particle))
-		{
-			UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-				this,
-				NiagaraSystem,
-				ParticleTransform.GetLocation(),
-				ParticleTransform.Rotator(),
-				ParticleTransform.GetScale3D(),
-				true,
-				true,
-				ENCPoolMethod::None,
-				true);
-			if (NiagaraComponent)
-			{
-				NiagaraComponent->SetAutoDestroy(true);
-				ScheduleImpactFXCleanup(GetWorld(), NiagaraComponent);
-			}
-		}
+		SpawnImpactFX(this, GetWorld(), Effects.Particle, Effects.ParticleTransformOffset * ImpactTransform);
 	}
 
 	USoundBase* BodyHitSound = nullptr;

@@ -160,14 +160,32 @@ namespace
 		}
 	}
 
-	TArray<FString> CollectWidgetWeaponLookupTokens(const UUserWidget* Widget, const FString& FallbackLookupToken)
+	void AddWidgetObjectLookupTokens(const UUserWidget* Widget, TArray<FString>& OutTokens)
 	{
-		TArray<FString> Tokens;
-		AddWeaponLookupToken(Tokens, FallbackLookupToken);
-
 		if (!Widget)
 		{
-			return Tokens;
+			return;
+		}
+
+		static const FName ObjectPropertyNames[] =
+		{
+			TEXT("ActiveWeapon"),
+			TEXT("WeaponClass"),
+			TEXT("WeaponActor"),
+			TEXT("Weapon")
+		};
+
+		for (const FName PropertyName : ObjectPropertyNames)
+		{
+			AddObjectPropertyToken(Widget, PropertyName, OutTokens);
+		}
+	}
+
+	void AddWidgetTextLookupTokens(const UUserWidget* Widget, TArray<FString>& OutTokens)
+	{
+		if (!Widget)
+		{
+			return;
 		}
 
 		static const FName TextPropertyNames[] =
@@ -184,27 +202,21 @@ namespace
 
 		for (const FName PropertyName : TextPropertyNames)
 		{
-			AddTextPropertyToken(Widget, PropertyName, Tokens);
-		}
-
-		static const FName ObjectPropertyNames[] =
-		{
-			TEXT("ActiveWeapon"),
-			TEXT("WeaponClass"),
-			TEXT("WeaponActor"),
-			TEXT("Weapon")
-		};
-
-		for (const FName PropertyName : ObjectPropertyNames)
-		{
-			AddObjectPropertyToken(Widget, PropertyName, Tokens);
+			AddTextPropertyToken(Widget, PropertyName, OutTokens);
 		}
 
 		if (const UTextBlock* NameText = Cast<UTextBlock>(Widget->GetWidgetFromName(TEXT("NameText"))))
 		{
-			AddWeaponLookupToken(Tokens, NameText->GetText().ToString());
+			AddWeaponLookupToken(OutTokens, NameText->GetText().ToString());
 		}
+	}
 
+	TArray<FString> CollectWidgetWeaponLookupTokens(const UUserWidget* Widget, const FString& FallbackLookupToken)
+	{
+		TArray<FString> Tokens;
+		AddWidgetObjectLookupTokens(Widget, Tokens);
+		AddWidgetTextLookupTokens(Widget, Tokens);
+		AddWeaponLookupToken(Tokens, FallbackLookupToken);
 		return Tokens;
 	}
 
@@ -587,7 +599,9 @@ namespace
 			return nullptr;
 		}
 
-		if (bSelected)
+		const FString MeshName = Mesh->GetName();
+		const bool bUseSelectedIcon = bSelected && !MeshName.Equals(TEXT("Frag"), ESearchCase::IgnoreCase);
+		if (bUseSelectedIcon)
 		{
 			const FString ActiveIconPath = MakeWeaponIconObjectPath(Mesh, true);
 			if (UTexture2D* ActiveIconTexture = LoadObject<UTexture2D>(nullptr, *ActiveIconPath))
@@ -598,6 +612,110 @@ namespace
 
 		const FString IconPath = MakeWeaponIconObjectPath(Mesh, false);
 		return LoadObject<UTexture2D>(nullptr, *IconPath);
+	}
+
+	UTexture2D* LoadGeneratedIconByMeshName(const TCHAR* MeshName, const bool bSelected)
+	{
+		if (!MeshName || !*MeshName)
+		{
+			return nullptr;
+		}
+
+		const FString IconName = FString::Printf(TEXT("T_%s_Icon%s"), MeshName, bSelected ? TEXT("_Active") : TEXT(""));
+		const FString IconPath = FString::Printf(TEXT("/Game/UI/Generated/Icons/%s.%s"), *IconName, *IconName);
+		if (UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, *IconPath))
+		{
+			return Texture;
+		}
+
+		if (bSelected)
+		{
+			return LoadGeneratedIconByMeshName(MeshName, false);
+		}
+
+		return nullptr;
+	}
+
+	const TCHAR* ResolveKnownGeneratedIconMeshName(const FString& Token)
+	{
+		const FString NormalizedToken = TMWeaponIconResolver::NormalizeWeaponToken(Token);
+		if (NormalizedToken.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		if (NormalizedToken.Equals(TEXT("Bayonet"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SKBayonet01"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SK_Bayonet_01");
+		}
+
+		if (NormalizedToken.Equals(TEXT("Cleaver"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SKCleaver01"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SK_Cleaver_01");
+		}
+
+		if (NormalizedToken.Equals(TEXT("Kunai"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SKKunai01"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SK_Kunai_01");
+		}
+
+		if (NormalizedToken.Equals(TEXT("Knife"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("Knife1"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SKKnife1"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SK_Knife1");
+		}
+
+		if (NormalizedToken.Equals(TEXT("PipeWrench"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("BPPipeWrench"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SMPipeWrench01"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SM_PipeWrench_01");
+		}
+
+		if (NormalizedToken.Equals(TEXT("VerticleTypeB"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("VerticalTypeB"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SMVerticleTypeBGrip"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SMVerticalTypeBGrip"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SM_VerticleTypeB_Grip");
+		}
+
+		if (NormalizedToken.Equals(TEXT("VerticleTypeC"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("VerticalTypeC"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SMVerticleTypeCGrip"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SMVerticalTypeCGrip"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SM_VerticleTypeC_Grip");
+		}
+
+		if (NormalizedToken.Equals(TEXT("FragRed"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("BPFragRed"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SMGrenadeRed"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SM_Grenade_Red");
+		}
+
+		return nullptr;
+	}
+
+	UTexture2D* LoadKnownGeneratedIconForTokens(const TArray<FString>& Tokens, const bool bSelected)
+	{
+		for (const FString& Token : Tokens)
+		{
+			if (const TCHAR* MeshName = ResolveKnownGeneratedIconMeshName(Token))
+			{
+				if (UTexture2D* Texture = LoadGeneratedIconByMeshName(MeshName, bSelected))
+				{
+					return Texture;
+				}
+			}
+		}
+
+		return nullptr;
 	}
 }
 
@@ -625,7 +743,21 @@ FName TMWeaponIconResolver::ResolveKnownWeaponRowName(const FString& Token)
 	if (NormalizedToken.Equals(TEXT("M9"), ESearchCase::IgnoreCase)) return FName(TEXT("M9"));
 	if (NormalizedToken.Equals(TEXT("SciFiSyringe"), ESearchCase::IgnoreCase)) return FName(TEXT("SciFi_Syringe"));
 	if (NormalizedToken.Equals(TEXT("Knife"), ESearchCase::IgnoreCase)) return FName(TEXT("Knife"));
+	if (NormalizedToken.Equals(TEXT("Knife1"), ESearchCase::IgnoreCase)) return FName(TEXT("Knife"));
+	if (NormalizedToken.Equals(TEXT("SKKnife1"), ESearchCase::IgnoreCase)) return FName(TEXT("Knife"));
+	if (NormalizedToken.Equals(TEXT("Bayonet"), ESearchCase::IgnoreCase)) return FName(TEXT("Bayonet"));
+	if (NormalizedToken.Equals(TEXT("SKBayonet01"), ESearchCase::IgnoreCase)) return FName(TEXT("Bayonet"));
+	if (NormalizedToken.Equals(TEXT("Cleaver"), ESearchCase::IgnoreCase)) return FName(TEXT("Cleaver"));
+	if (NormalizedToken.Equals(TEXT("SKCleaver01"), ESearchCase::IgnoreCase)) return FName(TEXT("Cleaver"));
+	if (NormalizedToken.Equals(TEXT("Kunai"), ESearchCase::IgnoreCase)) return FName(TEXT("Kunai"));
+	if (NormalizedToken.Equals(TEXT("SKKunai01"), ESearchCase::IgnoreCase)) return FName(TEXT("Kunai"));
+	if (NormalizedToken.Equals(TEXT("PipeWrench"), ESearchCase::IgnoreCase)) return FName(TEXT("PipeWrench"));
+	if (NormalizedToken.Equals(TEXT("BPPipeWrench"), ESearchCase::IgnoreCase)) return FName(TEXT("PipeWrench"));
+	if (NormalizedToken.Equals(TEXT("SMPipeWrench01"), ESearchCase::IgnoreCase)) return FName(TEXT("PipeWrench"));
 	if (NormalizedToken.Equals(TEXT("Frag"), ESearchCase::IgnoreCase)) return FName(TEXT("Frag"));
+	if (NormalizedToken.Equals(TEXT("FragRed"), ESearchCase::IgnoreCase)) return FName(TEXT("Frag_Red"));
+	if (NormalizedToken.Equals(TEXT("BPFragRed"), ESearchCase::IgnoreCase)) return FName(TEXT("Frag_Red"));
+	if (NormalizedToken.Equals(TEXT("SMGrenadeRed"), ESearchCase::IgnoreCase)) return FName(TEXT("Frag_Red"));
 	if (NormalizedToken.Equals(TEXT("Sniper"), ESearchCase::IgnoreCase)) return FName(TEXT("Sniper"));
 	return NAME_None;
 }
@@ -704,6 +836,11 @@ UTexture2D* TMWeaponIconResolver::ResolveIconTexture(
 		return nullptr;
 	}
 
+	if (UTexture2D* KnownIconTexture = LoadKnownGeneratedIconForTokens(Tokens, bSelected))
+	{
+		return KnownIconTexture;
+	}
+
 	UDataTable* WeaponTable = LoadObject<UDataTable>(nullptr, WeaponTablePath);
 	if (!WeaponTable || !WeaponTable->GetRowStruct())
 	{
@@ -725,5 +862,5 @@ UTexture2D* TMWeaponIconResolver::ResolveIconTexture(
 		}
 	}
 
-	return nullptr;
+	return LoadKnownGeneratedIconForTokens(Tokens, bSelected);
 }

@@ -41,6 +41,7 @@ private:
 	void ApplySelectionFrame() const;
 	void ApplyHoverScale() const;
 	void HideNameText() const;
+	void ShowNameTextFallback() const;
 
 	TWeakObjectPtr<UButton> WeaponButton;
 	TWeakObjectPtr<USizeBox> IconBox;
@@ -49,5 +50,6 @@ private:
 	TWeakObjectPtr<UImage> IconImage;
 	TWeakObjectPtr<UImage> IconFrame;
 	TWeakObjectPtr<UTextBlock> NameText;
+	FString LastAppliedLookupToken;
 	bool bWeaponIconSelected = false;
 };

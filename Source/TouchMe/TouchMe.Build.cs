@@ -19,6 +19,7 @@ public class TouchMe : ModuleRules
 				"AnimGraph",
 				"AnimGraphRuntime",
 				"AssetRegistry",
+				"AssetTools",
 				"BlueprintGraph",
 				"ImageWrapper",
 				"Kismet",

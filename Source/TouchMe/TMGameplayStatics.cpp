@@ -2392,6 +2392,63 @@ void UTMGameplayStatics::PlayWeaponSpawnFeedbackForActor(AActor* WeaponActor)
 	Gun->PlayWeaponSpawnFeedback();
 }
 
+namespace
+{
+	const FRotator LoadoutMeleeSideRelativeRotation(90.0f, 0.0f, 90.0f);
+
+	bool TMIsLoadoutMeleeWeapon(const AActor* WeaponActor)
+	{
+		if (!IsValid(WeaponActor))
+		{
+			return false;
+		}
+
+		const FString ActorName = WeaponActor->GetName();
+		const FString ActorPath = WeaponActor->GetPathName();
+		const FString ClassPath = GetPathNameSafe(WeaponActor->GetClass());
+		const auto MatchesMeleeToken = [](const FString& Text)
+		{
+			return Text.Contains(TEXT("/Weapons/Melee/"), ESearchCase::IgnoreCase)
+				|| Text.Contains(TEXT("BP_Knife"), ESearchCase::IgnoreCase)
+				|| Text.Contains(TEXT("BP_Bayonet"), ESearchCase::IgnoreCase)
+				|| Text.Contains(TEXT("BP_Kunai"), ESearchCase::IgnoreCase)
+				|| Text.Contains(TEXT("BP_Cleaver"), ESearchCase::IgnoreCase);
+		};
+
+		return MatchesMeleeToken(ActorName)
+			|| MatchesMeleeToken(ActorPath)
+			|| MatchesMeleeToken(ClassPath);
+	}
+
+	FTransform TMResolveLoadoutPreviewTransformOffset(const AActor* WeaponActor)
+	{
+		if (const AGun* Gun = Cast<AGun>(WeaponActor))
+		{
+			if (Gun->HasLoadoutPreviewTransformOffsetOverride())
+			{
+				return Gun->GetLoadoutPreviewTransformOffset();
+			}
+		}
+
+		if (TMIsLoadoutMeleeWeapon(WeaponActor))
+		{
+			return FTransform(LoadoutMeleeSideRelativeRotation);
+		}
+
+		return FTransform::Identity;
+	}
+
+	FTransform TMResolveLoadoutPreviewWorldTransform(const AActor* WeaponActor, const AActor* Transformator)
+	{
+		if (!IsValid(Transformator))
+		{
+			return FTransform::Identity;
+		}
+
+		return TMResolveLoadoutPreviewTransformOffset(WeaponActor) * Transformator->GetActorTransform();
+	}
+}
+
 void UTMGameplayStatics::LogLoadoutPreviewOffsetApplied(
 	AActor* WeaponActor,
 	USceneComponent* TargetComponent,
@@ -2486,9 +2543,9 @@ void UTMGameplayStatics::LogLoadoutPreviewOffsetApplied(
 		return;
 	}
 
-	TargetComponent->SetWorldLocationAndRotation(
-		Transformator->GetActorLocation(),
-		Transformator->GetActorRotation(),
+	const FTransform TargetTransform = TMResolveLoadoutPreviewWorldTransform(WeaponActor, Transformator);
+	TargetComponent->SetWorldTransform(
+		TargetTransform,
 		false,
 		nullptr,
 		ETeleportType::TeleportPhysics);
@@ -2502,7 +2559,7 @@ void UTMGameplayStatics::LogLoadoutPreviewOffsetApplied(
 		*TargetComponent->GetComponentLocation().ToString(),
 		*TargetComponent->GetComponentRotation().ToString(),
 		*Transformator->GetActorLocation().ToString(),
-		*Transformator->GetActorRotation().ToString());
+		*TargetTransform.GetRotation().Rotator().ToString());
 }
 
 namespace
@@ -3302,8 +3359,11 @@ bool UTMGameplayStatics::AttachActiveLoadoutWeaponToTransformator(AActor* Weapon
 	const bool bAttached = WeaponActor->AttachToActor(Transformator, AttachRules);
 	if (bAttached)
 	{
-		WeaponActor->SetActorRelativeLocation(FVector::ZeroVector, false, nullptr, ETeleportType::TeleportPhysics);
-		WeaponActor->SetActorRelativeRotation(FRotator::ZeroRotator, false, nullptr, ETeleportType::TeleportPhysics);
+		WeaponActor->SetActorRelativeTransform(
+			TMResolveLoadoutPreviewTransformOffset(WeaponActor),
+			false,
+			nullptr,
+			ETeleportType::TeleportPhysics);
 	}
 
 	const USceneComponent* WeaponRoot = WeaponActor->GetRootComponent();

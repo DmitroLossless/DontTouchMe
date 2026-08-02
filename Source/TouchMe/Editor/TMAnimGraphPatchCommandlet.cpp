@@ -15,6 +15,7 @@
 #include "AnimGraphNode_UseCachedPose.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/Skeleton.h"
+#include "AssetToolsModule.h"
 #include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -25,12 +26,17 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "HAL/PlatformFileManager.h"
+#include "IAssetTools.h"
 #include "../Gun/FakeGunAnimInstance.h"
 #include "../Gun/Gun.h"
 #include "../TMGameplayStatics.h"
+#include "../TMWeaponLayerWidget.h"
 #include "Engine/Blueprint.h"
 #include "Engine/DataTable.h"
+#include "Engine/SCS_Node.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/Texture2D.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/AudioComponent.h"
@@ -46,7 +52,9 @@
 #include "Components/ProgressBar.h"
 #include "Components/RichTextBlock.h"
 #include "Components/ScaleBox.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SizeBox.h"
+#include "Components/StaticMeshComponent.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBoxSlot.h"
 #include "Components/Widget.h"
@@ -5538,16 +5546,16 @@ namespace
 			OutSilencercoValue);
 	}
 
-	bool TMEnsureAttachmentEnumHasSuppressor(UUserDefinedEnum*& OutEnum, int64& OutSuppressorValue)
+	bool TMEnsureAttachmentEnumHasACWISuppressor(UUserDefinedEnum*& OutEnum, int64& OutSuppressorValue)
 	{
 		return TMEnsureAttachmentEnumHasDisplayName(
-			TEXT("Suppressor"),
+			TEXT("ACWI_Suppressor"),
 			TEXT("TMACWISuppressor"),
 			OutEnum,
 			OutSuppressorValue);
 	}
 
-	bool TMEnsureMuzzleEnumHasSuppressor()
+	bool TMEnsureMuzzleEnumHasACWISuppressor()
 	{
 		UUserDefinedEnum* MuzzleEnum = LoadObject<UUserDefinedEnum>(
 			nullptr,
@@ -5561,9 +5569,26 @@ namespace
 		int64 IgnoredValue = 0;
 		return TMEnsureUserDefinedEnumHasDisplayName(
 			MuzzleEnum,
-			TEXT("Suppressor"),
+			TEXT("ACWI_Suppressor"),
 			TEXT("TMACWISuppressor"),
 			IgnoredValue);
+	}
+
+	bool TMEnsureUnderbarrelEnumHasDisplayName(
+		const TCHAR* DisplayName,
+		const TCHAR* LogPrefix,
+		int64& OutValue)
+	{
+		UUserDefinedEnum* UnderbarrelEnum = LoadObject<UUserDefinedEnum>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Enums/Attachments/ENUM_Underbarrel.ENUM_Underbarrel"));
+		if (!UnderbarrelEnum)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load ENUM_Underbarrel."), LogPrefix);
+			return false;
+		}
+
+		return TMEnsureUserDefinedEnumHasDisplayName(UnderbarrelEnum, DisplayName, LogPrefix, OutValue);
 	}
 
 	FArrayProperty* TMFindArrayPropertyByName(UClass* Class, const TCHAR* ExpectedName)
@@ -5845,7 +5870,7 @@ namespace
 
 	bool TMPatchACWISuppressorMuzzleRow()
 	{
-		const FName SuppressorRowName(TEXT("Suppressor"));
+		const FName SuppressorRowName(TEXT("ACWI_Suppressor"));
 		const TCHAR* LogPrefix = TEXT("TMACWISuppressor");
 
 		UDataTable* MuzzleTable = LoadObject<UDataTable>(
@@ -5872,15 +5897,23 @@ namespace
 			return false;
 		}
 
-		if (uint8* const* TemplateRowPtr = MuzzleTable->GetRowMap().Find(TEXT("Silencerco")))
+		if (uint8* const* ExistingRowPtr = MuzzleTable->GetRowMap().Find(SuppressorRowName))
 		{
-			RowStruct->CopyScriptStruct(RowData, *TemplateRowPtr);
+			RowStruct->CopyScriptStruct(RowData, *ExistingRowPtr);
+		}
+		else if (uint8* const* SuppressorTemplateRowPtr = MuzzleTable->GetRowMap().Find(TEXT("Suppressor")))
+		{
+			RowStruct->CopyScriptStruct(RowData, *SuppressorTemplateRowPtr);
+		}
+		else if (uint8* const* SilencercoTemplateRowPtr = MuzzleTable->GetRowMap().Find(TEXT("Silencerco")))
+		{
+			RowStruct->CopyScriptStruct(RowData, *SilencercoTemplateRowPtr);
 		}
 
 		FProperty* EnumProperty = TMFindStructPropertyByAuthoredName(RowStruct, TEXT("EnumMuzzle"));
-		if (!EnumProperty || !TMSetEnumPropertyByDisplayName(EnumProperty, RowData, TEXT("Suppressor")))
+		if (!EnumProperty || !TMSetEnumPropertyByDisplayName(EnumProperty, RowData, TEXT("ACWI_Suppressor")))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to set EnumMuzzle=Suppressor."), LogPrefix);
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to set EnumMuzzle=ACWI_Suppressor."), LogPrefix);
 			return false;
 		}
 
@@ -5936,11 +5969,11 @@ namespace
 	{
 		UUserDefinedEnum* AttachmentEnum = nullptr;
 		int64 SuppressorValue = 0;
-		if (!TMEnsureAttachmentEnumHasSuppressor(AttachmentEnum, SuppressorValue))
+		if (!TMEnsureAttachmentEnumHasACWISuppressor(AttachmentEnum, SuppressorValue))
 		{
 			return false;
 		}
-		if (!TMEnsureMuzzleEnumHasSuppressor())
+		if (!TMEnsureMuzzleEnumHasACWISuppressor())
 		{
 			return false;
 		}
@@ -5961,7 +5994,7 @@ namespace
 				Blueprint,
 				AttachmentEnum,
 				SuppressorValue,
-				TEXT("Suppressor"),
+				TEXT("ACWI_Suppressor"),
 				TEXT("TMACWISuppressor"));
 		}
 
@@ -5978,6 +6011,173 @@ namespace
 			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
 			TEXT("TMACWISuppressor"));
 
+		return bSuccess;
+	}
+
+	bool TMPatchUnderbarrelGripRow(
+		const FName RowName,
+		const TCHAR* EnumDisplayName,
+		const TCHAR* MeshPath,
+		const TCHAR* LogPrefix)
+	{
+		UDataTable* UnderbarrelTable = LoadObject<UDataTable>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Underbarrel.DT_Underbarrel"));
+		if (!UnderbarrelTable)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load DT_Underbarrel."), LogPrefix);
+			return false;
+		}
+
+		UScriptStruct* RowStruct = const_cast<UScriptStruct*>(UnderbarrelTable->GetRowStruct());
+		if (!RowStruct)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] DT_Underbarrel has no row struct."), LogPrefix);
+			return false;
+		}
+
+		FStructOnScope RowScope(RowStruct);
+		uint8* RowData = RowScope.GetStructMemory();
+		if (!RowData)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to allocate DT_Underbarrel row memory."), LogPrefix);
+			return false;
+		}
+
+		if (uint8* const* ExistingRowPtr = UnderbarrelTable->GetRowMap().Find(RowName))
+		{
+			RowStruct->CopyScriptStruct(RowData, *ExistingRowPtr);
+		}
+		else if (uint8* const* TemplateRowPtr = UnderbarrelTable->GetRowMap().Find(TEXT("V_Grip")))
+		{
+			RowStruct->CopyScriptStruct(RowData, *TemplateRowPtr);
+		}
+		else if (uint8* const* ForeGripTemplateRowPtr = UnderbarrelTable->GetRowMap().Find(TEXT("ForeGrip")))
+		{
+			RowStruct->CopyScriptStruct(RowData, *ForeGripTemplateRowPtr);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] DT_Underbarrel has no V_Grip or ForeGrip template row."), LogPrefix);
+			return false;
+		}
+
+		FProperty* EnumProperty = TMFindStructPropertyByAuthoredName(RowStruct, TEXT("EnumUnderbarrel"));
+		if (!EnumProperty || !TMSetEnumPropertyByDisplayName(EnumProperty, RowData, EnumDisplayName))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to set EnumUnderbarrel=%s."), LogPrefix, EnumDisplayName);
+			return false;
+		}
+
+		if (!TMSetObjectStructPropertyValue(RowStruct, RowData, TEXT("Mesh"), MeshPath, LogPrefix))
+		{
+			return false;
+		}
+
+		FString RowText;
+		RowStruct->ExportText(RowText, RowData, nullptr, nullptr, PPF_None, nullptr);
+
+		UnderbarrelTable->Modify();
+		UnderbarrelTable->RemoveRow(RowName);
+		UnderbarrelTable->AddRow(RowName, RowData, RowStruct);
+		UnderbarrelTable->HandleDataTableChanged(RowName);
+		UnderbarrelTable->MarkPackageDirty();
+
+		UE_LOG(LogTemp, Display, TEXT("[%s] Patched DT_Underbarrel row %s: %s"), LogPrefix, *RowName.ToString(), *RowText);
+		return TMSavePackageForAsset(UnderbarrelTable, LogPrefix);
+	}
+
+	bool TMPatchWeaponAttachmentCompatibility(
+		const TCHAR* BlueprintPath,
+		UEnum* AttachmentEnum,
+		const int64 AttachmentValue,
+		const TCHAR* DisplayName,
+		const TCHAR* LogPrefix)
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load blueprint: %s"), LogPrefix, BlueprintPath);
+			return false;
+		}
+
+		return TMAddEnumValueToCompatibleAttachment(Blueprint, AttachmentEnum, AttachmentValue, DisplayName, LogPrefix);
+	}
+
+	bool TMPatchRequestedGripCompatibility()
+	{
+		const TCHAR* LogPrefix = TEXT("TMGripCompat");
+		UUserDefinedEnum* AttachmentEnum = nullptr;
+		int64 GripBValue = 0;
+		int64 GripCValue = 0;
+		int64 IgnoredUnderbarrelValue = 0;
+
+		bool bSuccess = true;
+		bSuccess &= TMEnsureAttachmentEnumHasDisplayName(TEXT("VerticleTypeB"), LogPrefix, AttachmentEnum, GripBValue);
+		bSuccess &= TMEnsureAttachmentEnumHasDisplayName(TEXT("VerticleTypeC"), LogPrefix, AttachmentEnum, GripCValue);
+		bSuccess &= TMEnsureUnderbarrelEnumHasDisplayName(TEXT("VerticleTypeB"), LogPrefix, IgnoredUnderbarrelValue);
+		bSuccess &= TMEnsureUnderbarrelEnumHasDisplayName(TEXT("VerticleTypeC"), LogPrefix, IgnoredUnderbarrelValue);
+		if (!bSuccess || !AttachmentEnum)
+		{
+			return false;
+		}
+
+		bSuccess &= TMPatchUnderbarrelGripRow(
+			TEXT("VerticleTypeB"),
+			TEXT("VerticleTypeB"),
+			TEXT("/Game/Weapons/Mesh/Attachment/SM_VerticleTypeB_Grip.SM_VerticleTypeB_Grip"),
+			LogPrefix);
+		bSuccess &= TMPatchUnderbarrelGripRow(
+			TEXT("VerticleTypeC"),
+			TEXT("VerticleTypeC"),
+			TEXT("/Game/Weapons/Mesh/Attachment/SM_VerticleTypeC_Grip.SM_VerticleTypeC_Grip"),
+			LogPrefix);
+
+		bSuccess &= TMPatchWeaponAttachmentCompatibility(
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/TAR/BP_TAR.BP_TAR"),
+			AttachmentEnum,
+			GripCValue,
+			TEXT("VerticleTypeC"),
+			LogPrefix);
+		bSuccess &= TMPatchWeaponAttachmentCompatibility(
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Scar/BP_Scar.BP_Scar"),
+			AttachmentEnum,
+			GripCValue,
+			TEXT("VerticleTypeC"),
+			LogPrefix);
+		bSuccess &= TMPatchWeaponAttachmentCompatibility(
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Scar/BP_Scar.BP_Scar"),
+			AttachmentEnum,
+			GripBValue,
+			TEXT("VerticleTypeB"),
+			LogPrefix);
+		bSuccess &= TMPatchWeaponAttachmentCompatibility(
+			TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Kriss/BP_Kriss.BP_Kriss"),
+			AttachmentEnum,
+			GripBValue,
+			TEXT("VerticleTypeB"),
+			LogPrefix);
+
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/BP_Weapon_Master.BP_Weapon_Master"),
+			LogPrefix);
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Core/MainMenuPawn/BP_MenuViewer.BP_MenuViewer"),
+			LogPrefix);
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachments.W_Attachments"),
+			LogPrefix);
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			LogPrefix);
+
+		return bSuccess;
+	}
+
+	bool TMPatchRequestedAttachmentCompatibility()
+	{
+		bool bSuccess = TMPatchRequestedGripCompatibility();
+		bSuccess &= TMPatchACWISuppressorOnly();
 		return bSuccess;
 	}
 
@@ -11104,6 +11304,179 @@ namespace
 		return TMSavePackageForAsset(Blueprint, TEXT("TMLoadoutWeaponIcon"));
 	}
 
+	bool TMPatchAttachmentLayerIconWidgets()
+	{
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Attachment_Layer.W_Attachment_Layer"));
+		UWidgetTree* WidgetTree = TMFindWidgetTree(Blueprint);
+		if (!Blueprint || !WidgetTree)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[TMAttachmentLayerIcon] Failed to load W_Attachment_Layer or its WidgetTree. Blueprint=%d WidgetTree=%d"),
+				Blueprint ? 1 : 0,
+				WidgetTree ? 1 : 0);
+			return false;
+		}
+
+		bool bChanged = false;
+		if (Blueprint->ParentClass != UTMWeaponLayerWidget::StaticClass())
+		{
+			Blueprint->Modify();
+			Blueprint->ParentClass = UTMWeaponLayerWidget::StaticClass();
+			bChanged = true;
+			UE_LOG(LogTemp, Display, TEXT("[TMAttachmentLayerIcon] Reparented W_Attachment_Layer to UTMWeaponLayerWidget."));
+		}
+
+		UButton* Button = Cast<UButton>(WidgetTree->FindWidget(TEXT("B_Attachment")));
+		if (!Button)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentLayerIcon] B_Attachment not found in W_Attachment_Layer."));
+			return false;
+		}
+
+		UWidget* LegacyContent = Button->GetContent();
+
+		UOverlay* ButtonOverlay = Cast<UOverlay>(TMFindWidgetTreeSourceWidget(WidgetTree, TEXT("TM_WeaponIconOverlay")));
+		if (!ButtonOverlay)
+		{
+			ButtonOverlay = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("TM_WeaponIconOverlay"));
+			bChanged = true;
+		}
+		TMEnsureWidgetBlueprintVariable(Blueprint, ButtonOverlay);
+
+		USizeBox* IconBox = Cast<USizeBox>(TMFindWidgetTreeSourceWidget(WidgetTree, TEXT("TM_WeaponIconBox")));
+		if (!IconBox)
+		{
+			IconBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("TM_WeaponIconBox"));
+			bChanged = true;
+		}
+		TMEnsureWidgetBlueprintVariable(Blueprint, IconBox);
+
+		UOverlay* IconOverlay = Cast<UOverlay>(TMFindWidgetTreeSourceWidget(WidgetTree, TEXT("TM_WeaponIconInnerOverlay")));
+		if (!IconOverlay)
+		{
+			IconOverlay = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("TM_WeaponIconInnerOverlay"));
+			bChanged = true;
+		}
+		TMEnsureWidgetBlueprintVariable(Blueprint, IconOverlay);
+
+		UScaleBox* IconScaleBox = Cast<UScaleBox>(TMFindWidgetTreeSourceWidget(WidgetTree, TEXT("TM_WeaponIconScaleBox")));
+		if (!IconScaleBox)
+		{
+			IconScaleBox = WidgetTree->ConstructWidget<UScaleBox>(UScaleBox::StaticClass(), TEXT("TM_WeaponIconScaleBox"));
+			bChanged = true;
+		}
+		TMEnsureWidgetBlueprintVariable(Blueprint, IconScaleBox);
+
+		UImage* IconImage = Cast<UImage>(TMFindWidgetTreeSourceWidget(WidgetTree, TEXT("TM_WeaponIconImage")));
+		if (!IconImage)
+		{
+			IconImage = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("TM_WeaponIconImage"));
+			bChanged = true;
+		}
+		TMEnsureWidgetBlueprintVariable(Blueprint, IconImage);
+
+		UImage* IconFrame = Cast<UImage>(TMFindWidgetTreeSourceWidget(WidgetTree, TEXT("TM_WeaponIconFrame")));
+		if (!IconFrame)
+		{
+			IconFrame = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("TM_WeaponIconFrame"));
+			bChanged = true;
+		}
+		TMEnsureWidgetBlueprintVariable(Blueprint, IconFrame);
+
+		UTextBlock* NameText = Cast<UTextBlock>(WidgetTree->FindWidget(TEXT("NameText")));
+		if (NameText)
+		{
+			NameText->Modify();
+			NameText->SetVisibility(ESlateVisibility::Visible);
+			NameText->SetRenderOpacity(1.0f);
+			bChanged = true;
+		}
+
+		IconImage->Modify();
+		IconImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+		IconImage->SetColorAndOpacity(FLinearColor::White);
+
+		IconFrame->Modify();
+		IconFrame->SetVisibility(ESlateVisibility::HitTestInvisible);
+		IconFrame->SetColorAndOpacity(FLinearColor::Transparent);
+
+		IconScaleBox->Modify();
+		IconScaleBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		IconScaleBox->SetStretch(EStretch::ScaleToFit);
+		IconScaleBox->SetStretchDirection(EStretchDirection::Both);
+		if (IconScaleBox->GetContent() != IconImage)
+		{
+			IconScaleBox->SetContent(IconImage);
+			bChanged = true;
+		}
+
+		IconOverlay->Modify();
+		IconOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+		TMAttachHiddenWidgetToCategoryOverlay(IconOverlay, IconScaleBox);
+		TMAttachHiddenWidgetToCategoryOverlay(IconOverlay, IconFrame);
+
+		IconBox->Modify();
+		IconBox->SetWidthOverride(120.0f);
+		IconBox->SetHeightOverride(72.0f);
+		IconBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		if (IconBox->GetContent() != IconOverlay)
+		{
+			IconBox->SetContent(IconOverlay);
+			bChanged = true;
+		}
+
+		ButtonOverlay->Modify();
+		ButtonOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+
+		Button->Modify();
+		if (Button->GetContent() != ButtonOverlay)
+		{
+			Button->SetContent(ButtonOverlay);
+			bChanged = true;
+		}
+
+		if (LegacyContent && LegacyContent != ButtonOverlay && LegacyContent->GetParent() != ButtonOverlay)
+		{
+			TMAttachHiddenWidgetToCategoryOverlay(ButtonOverlay, LegacyContent);
+			bChanged = true;
+		}
+		if (LegacyContent && LegacyContent != ButtonOverlay)
+		{
+			LegacyContent->Modify();
+			LegacyContent->SetVisibility(ESlateVisibility::Visible);
+			LegacyContent->SetRenderOpacity(1.0f);
+			bChanged = true;
+		}
+		TMAttachHiddenWidgetToCategoryOverlay(ButtonOverlay, IconBox);
+
+		if (UButtonSlot* ButtonSlot = Cast<UButtonSlot>(ButtonOverlay->Slot))
+		{
+			ButtonSlot->SetHorizontalAlignment(HAlign_Center);
+			ButtonSlot->SetVerticalAlignment(VAlign_Center);
+			ButtonSlot->SetPadding(FMargin(0.0f));
+		}
+
+		UE_LOG(LogTemp, Display, TEXT("[TMAttachmentLayerIcon] W_Attachment_Layer Changed=%d"), bChanged ? 1 : 0);
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[TMAttachmentLayerIcon] W_Attachment_Layer failed to compile after patch."));
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, TEXT("TMAttachmentLayerIcon"));
+	}
+
 	bool TMIsMainMenuLoadoutCleanupTargetComponent(const FString& ComponentName)
 	{
 		static const TCHAR* TargetComponents[] =
@@ -13452,6 +13825,831 @@ namespace
 
 		return true;
 	}
+
+	bool TMCopyTextureSourceArt(UTexture2D* SourceTexture, UTexture2D* TargetTexture, const TCHAR* LogPrefix)
+	{
+		if (!SourceTexture || !TargetTexture)
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[%s] Missing source or target texture. Source=%s Target=%s"),
+				LogPrefix,
+				*GetPathNameSafe(SourceTexture),
+				*GetPathNameSafe(TargetTexture));
+			return false;
+		}
+
+		if (!SourceTexture->Source.IsValid())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Source texture has no source art: %s"), LogPrefix, *SourceTexture->GetPathName());
+			return false;
+		}
+
+		TArray64<uint8> SourceMipData;
+		if (!SourceTexture->Source.GetMipData(SourceMipData, 0))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to read source mip data: %s"), LogPrefix, *SourceTexture->GetPathName());
+			return false;
+		}
+
+		TargetTexture->Modify();
+		TargetTexture->PreEditChange(nullptr);
+		TargetTexture->Source.Init(
+			SourceTexture->Source.GetSizeX(),
+			SourceTexture->Source.GetSizeY(),
+			SourceTexture->Source.GetNumSlices(),
+			1,
+			SourceTexture->Source.GetFormat(),
+			SourceMipData.GetData());
+
+		TargetTexture->SRGB = SourceTexture->SRGB;
+		TargetTexture->CompressionSettings = SourceTexture->CompressionSettings;
+		TargetTexture->MipGenSettings = SourceTexture->MipGenSettings;
+		TargetTexture->LODGroup = SourceTexture->LODGroup;
+		TargetTexture->NeverStream = SourceTexture->NeverStream;
+		TargetTexture->Filter = SourceTexture->Filter;
+		TargetTexture->AddressX = SourceTexture->AddressX;
+		TargetTexture->AddressY = SourceTexture->AddressY;
+		TargetTexture->PostEditChange();
+		TargetTexture->MarkPackageDirty();
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[%s] Copied real Frag icon source art %s -> %s (%dx%d Format=%d)"),
+			LogPrefix,
+			*SourceTexture->GetPathName(),
+			*TargetTexture->GetPathName(),
+			SourceTexture->Source.GetSizeX(),
+			SourceTexture->Source.GetSizeY(),
+			static_cast<int32>(SourceTexture->Source.GetFormat()));
+
+		return TMSavePackageForAsset(TargetTexture, LogPrefix);
+	}
+
+	bool TMExportTextureSourceArtToPng(UTexture2D* Texture, const FString& Filename, const TCHAR* LogPrefix)
+	{
+		if (!Texture || !Texture->Source.IsValid())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Cannot export missing texture/source art: %s"), LogPrefix, *GetPathNameSafe(Texture));
+			return false;
+		}
+
+		if (Texture->Source.GetFormat() != TSF_BGRA8)
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("[%s] PNG export supports BGRA8 source art only. Texture=%s Format=%d"),
+				LogPrefix,
+				*Texture->GetPathName(),
+				static_cast<int32>(Texture->Source.GetFormat()));
+			return false;
+		}
+
+		TArray64<uint8> SourceMipData;
+		if (!Texture->Source.GetMipData(SourceMipData, 0))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to read source mip data for PNG export: %s"), LogPrefix, *Texture->GetPathName());
+			return false;
+		}
+
+		IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+		const TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+		if (!ImageWrapper.IsValid()
+			|| !ImageWrapper->SetRaw(
+				SourceMipData.GetData(),
+				SourceMipData.Num(),
+				Texture->Source.GetSizeX(),
+				Texture->Source.GetSizeY(),
+				ERGBFormat::BGRA,
+				8))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to encode PNG preview: %s"), LogPrefix, *Texture->GetPathName());
+			return false;
+		}
+
+		const TArray64<uint8> PngData = ImageWrapper->GetCompressed();
+		TArray<uint8> PngData32;
+		PngData32.Append(PngData.GetData(), PngData.Num());
+		if (!FFileHelper::SaveArrayToFile(PngData32, *Filename))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to save PNG preview: %s"), LogPrefix, *Filename);
+			return false;
+		}
+
+		UE_LOG(LogTemp, Display, TEXT("[%s] Exported PNG preview: %s"), LogPrefix, *Filename);
+		return true;
+	}
+
+	bool TMPatchFragSelectedUiIconsFromRealIcon()
+	{
+		const TCHAR* LogPrefix = TEXT("TMFragSelectedIcon");
+		UTexture2D* SourceTexture = LoadObject<UTexture2D>(
+			nullptr,
+			TEXT("/Game/UI/Generated/Icons/T_Frag_Icon.T_Frag_Icon"));
+		if (!SourceTexture)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load real Frag icon source texture."), LogPrefix);
+			return false;
+		}
+
+		const TCHAR* TargetTexturePaths[] =
+		{
+			TEXT("/Game/UI/Generated/Icons/T_Frag_Icon_Active.T_Frag_Icon_Active"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/Images/I_Frag.I_Frag")
+		};
+
+		bool bSuccess = true;
+		for (const TCHAR* TargetTexturePath : TargetTexturePaths)
+		{
+			UTexture2D* TargetTexture = LoadObject<UTexture2D>(nullptr, TargetTexturePath);
+			if (!TargetTexture)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[%s] Target is not a texture or failed to load: %s"), LogPrefix, TargetTexturePath);
+				bSuccess = false;
+				continue;
+			}
+
+			bSuccess &= TMCopyTextureSourceArt(SourceTexture, TargetTexture, LogPrefix);
+
+			const FString PreviewFilename = FPaths::ProjectSavedDir() / TEXT("Codex") / FString::Printf(
+				TEXT("%s_after_patch.png"),
+				TargetTexture->GetName().Equals(TEXT("I_Frag"), ESearchCase::IgnoreCase)
+					? TEXT("frag_legacy_icon")
+					: TEXT("frag_active_icon"));
+			IFileManager::Get().MakeDirectory(*FPaths::GetPath(PreviewFilename), true);
+			bSuccess &= TMExportTextureSourceArtToPng(TargetTexture, PreviewFilename, LogPrefix);
+		}
+
+		return bSuccess;
+	}
+
+	bool TMObjectPathLooksLikeFragGrenade(const UObject* Object)
+	{
+		if (!Object)
+		{
+			return false;
+		}
+
+		const FString Path = Object->GetPathName();
+		const FString Name = Object->GetName();
+		return Path.Contains(TEXT("/Weapons/Explosives/Frag/"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("/GrenadesAndMine/"), ESearchCase::IgnoreCase)
+			|| Path.Contains(TEXT("SM_Grenade_Green"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Frag"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Grenade"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMPropertyNameLooksLikeMesh(const FProperty* Property)
+	{
+		if (!Property)
+		{
+			return false;
+		}
+
+		const FString Name = Property->GetName() + TEXT(" ") + Property->GetAuthoredName() + TEXT(" ") + Property->GetMetaData(TEXT("DisplayName"));
+		return Name.Contains(TEXT("Mesh"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Visual"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Icon"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMOwnerLabelLooksLikeAttachmentData(const FString& OwnerLabel)
+	{
+		return OwnerLabel.Contains(TEXT("UnderbarrelData"), ESearchCase::IgnoreCase)
+			|| OwnerLabel.Contains(TEXT("SideRail_Data"), ESearchCase::IgnoreCase)
+			|| OwnerLabel.Contains(TEXT("MuzzleData"), ESearchCase::IgnoreCase)
+			|| OwnerLabel.Contains(TEXT("OpticsData"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMClassPathIsSourceFragActorClass(const UClass* Class)
+	{
+		if (!Class)
+		{
+			return false;
+		}
+
+		const FString Path = Class->GetPathName();
+		return Path.Contains(TEXT("/Weapons/Explosives/Frag/BP_Frag.BP_Frag_C"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMSetObjectPropertyIfCompatible(
+		FObjectPropertyBase* Property,
+		void* ValuePtr,
+		UObject* NewObject,
+		const TCHAR* LogPrefix,
+		const FString& OwnerLabel,
+		bool& bChanged)
+	{
+		if (!Property || !ValuePtr || !NewObject || !NewObject->IsA(Property->PropertyClass))
+		{
+			return false;
+		}
+
+		UObject* OldObject = Property->GetObjectPropertyValue(ValuePtr);
+		if (OldObject == NewObject)
+		{
+			return true;
+		}
+
+		if (!TMObjectPathLooksLikeFragGrenade(OldObject))
+		{
+			return false;
+		}
+
+		Property->SetObjectPropertyValue(ValuePtr, NewObject);
+		bChanged = true;
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[%s] Set object property %s on %s: %s -> %s"),
+			LogPrefix,
+			*Property->GetName(),
+			*OwnerLabel,
+			*GetPathNameSafe(OldObject),
+			*GetPathNameSafe(NewObject));
+		return true;
+	}
+
+	bool TMSetClassPropertyIfCompatible(
+		FClassProperty* Property,
+		void* ValuePtr,
+		UClass* NewClass,
+		const TCHAR* LogPrefix,
+		const FString& OwnerLabel,
+		bool& bChanged)
+	{
+		if (!Property || !ValuePtr || !NewClass || !NewClass->IsChildOf(Property->MetaClass))
+		{
+			return false;
+		}
+
+		UClass* OldClass = Cast<UClass>(Property->GetObjectPropertyValue(ValuePtr));
+		if (OldClass == NewClass)
+		{
+			return true;
+		}
+
+		const bool bIsRedFragWeaponRow = OwnerLabel.Contains(TEXT("DT_Weapons.Frag_Red"), ESearchCase::IgnoreCase);
+		const bool bCanReplaceFragRowClass = bIsRedFragWeaponRow
+			&& OldClass
+			&& OldClass->GetPathName().Contains(TEXT("/Weapons/Explosives/Frag/"), ESearchCase::IgnoreCase);
+		if (!TMClassPathIsSourceFragActorClass(OldClass) && !bCanReplaceFragRowClass)
+		{
+			return false;
+		}
+
+		Property->SetObjectPropertyValue(ValuePtr, NewClass);
+		bChanged = true;
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[%s] Set class property %s on %s: %s -> %s"),
+			LogPrefix,
+			*Property->GetName(),
+			*OwnerLabel,
+			*GetPathNameSafe(OldClass),
+			*GetPathNameSafe(NewClass));
+		return true;
+	}
+
+	void TMReplaceFragRefsInProperty(
+		FProperty* Property,
+		void* ValuePtr,
+		UStaticMesh* RedMesh,
+		UClass* RedClass,
+		const TCHAR* LogPrefix,
+		const FString& OwnerLabel,
+		bool& bChanged)
+	{
+		if (!Property || !ValuePtr)
+		{
+			return;
+		}
+
+		if (FClassProperty* ClassProperty = CastField<FClassProperty>(Property))
+		{
+			TMSetClassPropertyIfCompatible(ClassProperty, ValuePtr, RedClass, LogPrefix, OwnerLabel, bChanged);
+			return;
+		}
+
+		if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			TMSetObjectPropertyIfCompatible(ObjectProperty, ValuePtr, RedMesh, LogPrefix, OwnerLabel, bChanged);
+			return;
+		}
+
+		if (FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+		{
+			const FSoftObjectPtr SoftObject = SoftObjectProperty->GetPropertyValue(ValuePtr);
+			const FString OldPath = SoftObject.ToSoftObjectPath().ToString();
+			if (RedMesh
+				&& RedMesh->IsA(SoftObjectProperty->PropertyClass)
+				&& (OldPath.Contains(TEXT("Frag"), ESearchCase::IgnoreCase) || OldPath.Contains(TEXT("Grenade"), ESearchCase::IgnoreCase)))
+			{
+				SoftObjectProperty->SetPropertyValue(ValuePtr, FSoftObjectPtr(RedMesh));
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set soft object property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldPath, *RedMesh->GetPathName());
+			}
+			return;
+		}
+
+		if (FSoftClassProperty* SoftClassProperty = CastField<FSoftClassProperty>(Property))
+		{
+			const FSoftObjectPtr SoftClass = SoftClassProperty->GetPropertyValue(ValuePtr);
+			const FString OldPath = SoftClass.ToSoftObjectPath().ToString();
+			if (RedClass
+				&& RedClass->IsChildOf(SoftClassProperty->MetaClass)
+				&& OldPath.Contains(TEXT("BP_Frag"), ESearchCase::IgnoreCase))
+			{
+				SoftClassProperty->SetPropertyValue(ValuePtr, FSoftObjectPtr(RedClass));
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set soft class property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldPath, *RedClass->GetPathName());
+			}
+			return;
+		}
+
+		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (!StructProperty->Struct)
+			{
+				return;
+			}
+
+			for (TFieldIterator<FProperty> ChildIt(StructProperty->Struct); ChildIt; ++ChildIt)
+			{
+				FProperty* ChildProperty = *ChildIt;
+				TMReplaceFragRefsInProperty(
+					ChildProperty,
+					ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr),
+					RedMesh,
+					RedClass,
+					LogPrefix,
+					OwnerLabel + TEXT(".") + Property->GetName(),
+					bChanged);
+			}
+			return;
+		}
+
+		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+			for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+			{
+				TMReplaceFragRefsInProperty(
+					ArrayProperty->Inner,
+					ArrayHelper.GetRawPtr(Index),
+					RedMesh,
+					RedClass,
+					LogPrefix,
+					OwnerLabel + FString::Printf(TEXT(".%s[%d]"), *Property->GetName(), Index),
+					bChanged);
+			}
+		}
+	}
+
+	void TMClearBadRedFragClassRefsInProperty(
+		FProperty* Property,
+		void* ValuePtr,
+		UClass* RedClass,
+		const TCHAR* LogPrefix,
+		const FString& OwnerLabel,
+		bool& bChanged)
+	{
+		if (!Property || !ValuePtr || !RedClass)
+		{
+			return;
+		}
+
+		if (FClassProperty* ClassProperty = CastField<FClassProperty>(Property))
+		{
+			UClass* CurrentClass = Cast<UClass>(ClassProperty->GetObjectPropertyValue(ValuePtr));
+			if (CurrentClass == RedClass)
+			{
+				ClassProperty->SetObjectPropertyValue(ValuePtr, nullptr);
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Cleared accidental class property %s on %s."), LogPrefix, *Property->GetName(), *OwnerLabel);
+			}
+			return;
+		}
+
+		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (!StructProperty->Struct)
+			{
+				return;
+			}
+
+			for (TFieldIterator<FProperty> ChildIt(StructProperty->Struct); ChildIt; ++ChildIt)
+			{
+				FProperty* ChildProperty = *ChildIt;
+				TMClearBadRedFragClassRefsInProperty(
+					ChildProperty,
+					ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr),
+					RedClass,
+					LogPrefix,
+					OwnerLabel + TEXT(".") + Property->GetName(),
+					bChanged);
+			}
+			return;
+		}
+
+		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+			for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+			{
+				TMClearBadRedFragClassRefsInProperty(
+					ArrayProperty->Inner,
+					ArrayHelper.GetRawPtr(Index),
+					RedClass,
+					LogPrefix,
+					OwnerLabel + FString::Printf(TEXT(".%s[%d]"), *Property->GetName(), Index),
+					bChanged);
+			}
+		}
+	}
+
+	void TMClearBadRedFragClassRefs(UBlueprint* RedBlueprint, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!RedBlueprint || !RedBlueprint->GeneratedClass)
+		{
+			return;
+		}
+
+		UObject* DefaultObject = RedBlueprint->GeneratedClass->GetDefaultObject();
+		if (!DefaultObject)
+		{
+			return;
+		}
+
+		DefaultObject->Modify();
+		for (TFieldIterator<FProperty> It(DefaultObject->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			FProperty* Property = *It;
+			TMClearBadRedFragClassRefsInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(DefaultObject),
+				RedBlueprint->GeneratedClass,
+				LogPrefix,
+				DefaultObject->GetPathName(),
+				bChanged);
+		}
+	}
+
+	void TMClearBadRedFragAttachmentMeshRefsInProperty(
+		FProperty* Property,
+		void* ValuePtr,
+		UStaticMesh* RedMesh,
+		const TCHAR* LogPrefix,
+		const FString& OwnerLabel,
+		bool& bChanged)
+	{
+		if (!Property || !ValuePtr || !RedMesh)
+		{
+			return;
+		}
+
+		if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			if (!TMOwnerLabelLooksLikeAttachmentData(OwnerLabel))
+			{
+				return;
+			}
+
+			UObject* CurrentObject = ObjectProperty->GetObjectPropertyValue(ValuePtr);
+			if (CurrentObject == RedMesh)
+			{
+				ObjectProperty->SetObjectPropertyValue(ValuePtr, nullptr);
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Cleared accidental attachment mesh %s on %s."), LogPrefix, *Property->GetName(), *OwnerLabel);
+			}
+			return;
+		}
+
+		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (!StructProperty->Struct)
+			{
+				return;
+			}
+
+			for (TFieldIterator<FProperty> ChildIt(StructProperty->Struct); ChildIt; ++ChildIt)
+			{
+				FProperty* ChildProperty = *ChildIt;
+				TMClearBadRedFragAttachmentMeshRefsInProperty(
+					ChildProperty,
+					ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr),
+					RedMesh,
+					LogPrefix,
+					OwnerLabel + TEXT(".") + Property->GetName(),
+					bChanged);
+			}
+			return;
+		}
+
+		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+			for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+			{
+				TMClearBadRedFragAttachmentMeshRefsInProperty(
+					ArrayProperty->Inner,
+					ArrayHelper.GetRawPtr(Index),
+					RedMesh,
+					LogPrefix,
+					OwnerLabel + FString::Printf(TEXT(".%s[%d]"), *Property->GetName(), Index),
+					bChanged);
+			}
+		}
+	}
+
+	void TMClearBadRedFragAttachmentMeshRefs(UBlueprint* RedBlueprint, UStaticMesh* RedMesh, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!RedBlueprint || !RedBlueprint->GeneratedClass || !RedMesh)
+		{
+			return;
+		}
+
+		UObject* DefaultObject = RedBlueprint->GeneratedClass->GetDefaultObject();
+		if (!DefaultObject)
+		{
+			return;
+		}
+
+		DefaultObject->Modify();
+		for (TFieldIterator<FProperty> It(DefaultObject->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			FProperty* Property = *It;
+			TMClearBadRedFragAttachmentMeshRefsInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(DefaultObject),
+				RedMesh,
+				LogPrefix,
+				DefaultObject->GetPathName(),
+				bChanged);
+		}
+	}
+
+	bool TMEnsureRedFragStaticMeshComponent(UBlueprint* RedBlueprint, UStaticMesh* RedMesh, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!RedBlueprint || !RedBlueprint->SimpleConstructionScript || !RedMesh)
+		{
+			return false;
+		}
+
+		static const FName RedVisualComponentName(TEXT("RedGrenadeVisual"));
+		USCS_Node* VisualNode = nullptr;
+		for (USCS_Node* Node : RedBlueprint->SimpleConstructionScript->GetAllNodes())
+		{
+			if (Node && Node->GetVariableName() == RedVisualComponentName)
+			{
+				VisualNode = Node;
+				break;
+			}
+		}
+
+		if (!VisualNode)
+		{
+			RedBlueprint->Modify();
+			RedBlueprint->SimpleConstructionScript->Modify();
+			VisualNode = RedBlueprint->SimpleConstructionScript->CreateNode(UStaticMeshComponent::StaticClass(), RedVisualComponentName);
+			USCS_Node* ParentNode = RedBlueprint->SimpleConstructionScript->FindSCSNode(TEXT("Item"));
+			if (!ParentNode)
+			{
+				const TArray<USCS_Node*>& RootNodes = RedBlueprint->SimpleConstructionScript->GetRootNodes();
+				ParentNode = RootNodes.Num() > 0 ? RootNodes[0] : nullptr;
+			}
+
+			if (ParentNode)
+			{
+				ParentNode->AddChildNode(VisualNode);
+			}
+			else
+			{
+				RedBlueprint->SimpleConstructionScript->AddNode(VisualNode);
+			}
+
+			bChanged = true;
+			UE_LOG(LogTemp, Display, TEXT("[%s] Added %s static mesh component to BP_Frag_Red."), LogPrefix, *RedVisualComponentName.ToString());
+		}
+
+		UStaticMeshComponent* VisualTemplate = VisualNode ? Cast<UStaticMeshComponent>(VisualNode->ComponentTemplate) : nullptr;
+		if (!VisualTemplate)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to resolve %s component template."), LogPrefix, *RedVisualComponentName.ToString());
+			return false;
+		}
+
+		if (VisualTemplate->GetStaticMesh() != RedMesh)
+		{
+			VisualTemplate->Modify();
+			VisualTemplate->SetStaticMesh(RedMesh);
+			bChanged = true;
+		}
+
+		VisualTemplate->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		VisualTemplate->SetGenerateOverlapEvents(false);
+		VisualTemplate->SetVisibility(true, false);
+		VisualTemplate->SetRelativeTransform(FTransform::Identity);
+		VisualTemplate->SetHiddenInGame(false);
+		return true;
+	}
+
+	void TMPatchRedFragBlueprintDefaults(UBlueprint* RedBlueprint, UStaticMesh* RedMesh, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!RedBlueprint || !RedBlueprint->GeneratedClass || !RedMesh)
+		{
+			return;
+		}
+
+		UObject* DefaultObject = RedBlueprint->GeneratedClass->GetDefaultObject();
+		if (!DefaultObject)
+		{
+			return;
+		}
+
+		DefaultObject->Modify();
+		for (TFieldIterator<FProperty> It(DefaultObject->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			FProperty* Property = *It;
+			TMReplaceFragRefsInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(DefaultObject),
+				RedMesh,
+				RedBlueprint->GeneratedClass,
+				LogPrefix,
+				DefaultObject->GetPathName(),
+				bChanged);
+		}
+
+		TArray<UObject*> DefaultSubobjects;
+		DefaultObject->GetDefaultSubobjects(DefaultSubobjects);
+		for (UObject* Subobject : DefaultSubobjects)
+		{
+			if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Subobject))
+			{
+				UStaticMesh* OldMesh = StaticMeshComponent->GetStaticMesh();
+				if (OldMesh != RedMesh && TMObjectPathLooksLikeFragGrenade(OldMesh))
+				{
+					StaticMeshComponent->Modify();
+					StaticMeshComponent->SetStaticMesh(RedMesh);
+					bChanged = true;
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[%s] Set static mesh component %s: %s -> %s"),
+						LogPrefix,
+						*StaticMeshComponent->GetPathName(),
+						*GetPathNameSafe(OldMesh),
+						*RedMesh->GetPathName());
+				}
+			}
+			else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Subobject))
+			{
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[%s] Skeletal mesh component kept on %s: %s"),
+					LogPrefix,
+					*GetPathNameSafe(SkeletalMeshComponent),
+					*GetPathNameSafe(SkeletalMeshComponent->GetSkeletalMeshAsset()));
+			}
+		}
+	}
+
+	bool TMPatchRedFragWeaponRow(UStaticMesh* RedMesh, UClass* RedClass)
+	{
+		const TCHAR* LogPrefix = TEXT("TMRedFrag");
+		UDataTable* WeaponsTable = LoadObject<UDataTable>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons"));
+		if (!WeaponsTable || !WeaponsTable->GetRowStruct())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load DT_Weapons or its row struct."), LogPrefix);
+			return false;
+		}
+
+		UScriptStruct* RowStruct = const_cast<UScriptStruct*>(WeaponsTable->GetRowStruct());
+		uint8* SourceRow = WeaponsTable->FindRowUnchecked(TEXT("Frag"));
+		if (!SourceRow)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] DT_Weapons has no Frag row to clone."), LogPrefix);
+			return false;
+		}
+
+		FStructOnScope RowScope(RowStruct);
+		uint8* RowData = RowScope.GetStructMemory();
+		RowStruct->CopyScriptStruct(RowData, SourceRow);
+
+		bool bChanged = false;
+		for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+		{
+			FProperty* Property = *It;
+			TMReplaceFragRefsInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(RowData),
+				RedMesh,
+				RedClass,
+				LogPrefix,
+				TEXT("DT_Weapons.Frag_Red"),
+				bChanged);
+		}
+
+		WeaponsTable->Modify();
+		WeaponsTable->RemoveRow(TEXT("Frag_Red"));
+		WeaponsTable->AddRow(TEXT("Frag_Red"), RowData, RowStruct);
+		WeaponsTable->HandleDataTableChanged(TEXT("Frag_Red"));
+		WeaponsTable->MarkPackageDirty();
+
+		FString RowText;
+		RowStruct->ExportText(RowText, RowData, nullptr, nullptr, PPF_None, nullptr);
+		UE_LOG(LogTemp, Display, TEXT("[%s] Patched DT_Weapons row Frag_Red ChangedRefs=%d: %s"), LogPrefix, bChanged ? 1 : 0, *RowText);
+		return TMSavePackageForAsset(WeaponsTable, LogPrefix);
+	}
+
+	bool TMPatchRedFragGrenade()
+	{
+		const TCHAR* LogPrefix = TEXT("TMRedFrag");
+		UBlueprint* SourceBlueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Frag.BP_Frag"));
+		if (!SourceBlueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load BP_Frag."), LogPrefix);
+			return false;
+		}
+
+		UStaticMesh* RedMesh = LoadObject<UStaticMesh>(
+			nullptr,
+			TEXT("/Game/UrbanMilChar/Mesh/SM/SM_Grenade_Red.SM_Grenade_Red"));
+		if (!RedMesh)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load SM_Grenade_Red."), LogPrefix);
+			return false;
+		}
+
+		UBlueprint* RedBlueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Frag_Red.BP_Frag_Red"));
+		if (!RedBlueprint)
+		{
+			UObject* DuplicatedObject = FAssetToolsModule::GetModule().Get().DuplicateAsset(
+				TEXT("BP_Frag_Red"),
+				TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag"),
+				SourceBlueprint);
+			RedBlueprint = Cast<UBlueprint>(DuplicatedObject);
+			if (!RedBlueprint)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[%s] Failed to duplicate BP_Frag to BP_Frag_Red."), LogPrefix);
+				return false;
+			}
+
+			UE_LOG(LogTemp, Display, TEXT("[%s] Duplicated BP_Frag -> %s."), LogPrefix, *RedBlueprint->GetPathName());
+		}
+		else
+		{
+			UE_LOG(LogTemp, Display, TEXT("[%s] BP_Frag_Red already exists: %s."), LogPrefix, *RedBlueprint->GetPathName());
+		}
+
+		FKismetEditorUtilities::CompileBlueprint(RedBlueprint);
+		if (RedBlueprint->Status == BS_Error || !RedBlueprint->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] BP_Frag_Red compile failed before patch."), LogPrefix);
+			return false;
+		}
+
+		bool bBlueprintChanged = false;
+		TMClearBadRedFragClassRefs(RedBlueprint, LogPrefix, bBlueprintChanged);
+		TMClearBadRedFragAttachmentMeshRefs(RedBlueprint, RedMesh, LogPrefix, bBlueprintChanged);
+		TMPatchRedFragBlueprintDefaults(RedBlueprint, RedMesh, LogPrefix, bBlueprintChanged);
+		if (!TMEnsureRedFragStaticMeshComponent(RedBlueprint, RedMesh, LogPrefix, bBlueprintChanged))
+		{
+			return false;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(RedBlueprint);
+		FKismetEditorUtilities::CompileBlueprint(RedBlueprint);
+		if (RedBlueprint->Status == BS_Error || !RedBlueprint->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] BP_Frag_Red compile failed after patch."), LogPrefix);
+			return false;
+		}
+
+		if (!TMSavePackageForAsset(RedBlueprint, LogPrefix))
+		{
+			return false;
+		}
+
+		bool bSuccess = TMPatchRedFragWeaponRow(RedMesh, RedBlueprint->GeneratedClass);
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			LogPrefix);
+
+		UE_LOG(LogTemp, Display, TEXT("[%s] Summary: BlueprintChanged=%d Success=%d"), LogPrefix, bBlueprintChanged ? 1 : 0, bSuccess ? 1 : 0);
+		return bSuccess;
+	}
 }
 
 int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
@@ -13501,6 +14699,11 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 		return TMPatchACWISuppressorOnly() ? 0 : 1;
 	}
 
+	if (Params.Contains(TEXT("PatchRequestedAttachmentCompatibility"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchRequestedAttachmentCompatibility() ? 0 : 1;
+	}
+
 	if (Params.Contains(TEXT("TintYellowUI"), ESearchCase::IgnoreCase))
 	{
 		return TMTintYellowUI() ? 0 : 1;
@@ -13514,6 +14717,16 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	if (Params.Contains(TEXT("DumpYellowUIGraphColors"), ESearchCase::IgnoreCase))
 	{
 		return TMDumpYellowUIGraphColors() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchFragSelectedUiIconsFromRealIcon"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchFragSelectedUiIconsFromRealIcon() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchRedFragGrenade"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchRedFragGrenade() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("DumpLoadoutOffsetGraph"), ESearchCase::IgnoreCase))
@@ -13575,7 +14788,13 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 	{
 		const bool bLayerPatched = TMPatchLoadoutWeaponLayerIcons();
 		const bool bLoadoutPatched = TMPatchLoadoutCreatedWeaponLayerIcons();
-		return (bLayerPatched && bLoadoutPatched) ? 0 : 1;
+		const bool bAttachmentLayerPatched = TMPatchAttachmentLayerIconWidgets();
+		return (bLayerPatched && bLoadoutPatched && bAttachmentLayerPatched) ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchAttachmentLayerIcons"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchAttachmentLayerIconWidgets() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("PatchLoadoutGearShimmer"), ESearchCase::IgnoreCase))

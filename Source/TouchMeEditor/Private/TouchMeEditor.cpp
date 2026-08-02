@@ -1172,6 +1172,29 @@ namespace
 		}
 	}
 
+	const TCHAR* TMGetStaticProjectedDiffuseTexturePath(const UStaticMesh* StaticMesh, const TCHAR*& OutWeaponName);
+	bool TMReadTextureSourceBgra8(UTexture2D* Texture, TArray<uint8>& OutPixels, int32& OutWidth, int32& OutHeight);
+	void TMRasterizeTexturedProjectedTriangle(
+		TArray<uint8>& Pixels,
+		TArray<float>& DepthBuffer,
+		int32 Width,
+		int32 Height,
+		const FVector2D& A,
+		const FVector2D& B,
+		const FVector2D& C,
+		float DepthA,
+		float DepthB,
+		float DepthC,
+		const FVector2f& UVA,
+		const FVector2f& UVB,
+		const FVector2f& UVC,
+		const TArray<uint8>& DiffusePixels,
+		int32 DiffuseWidth,
+		int32 DiffuseHeight,
+		float Light,
+		float Facing,
+		bool bRepairTransparentDiffuseSamples);
+
 	bool TMBuildStaticMeshProjectedIconPixels(UStaticMesh* StaticMesh, TArray<uint8>& OutPixels)
 	{
 		OutPixels.Reset();
@@ -1182,10 +1205,31 @@ namespace
 
 		const FStaticMeshLODResources& LODResources = StaticMesh->GetRenderData()->LODResources[0];
 		const FPositionVertexBuffer& PositionBuffer = LODResources.VertexBuffers.PositionVertexBuffer;
+		const FStaticMeshVertexBuffer& StaticMeshVertexBuffer = LODResources.VertexBuffers.StaticMeshVertexBuffer;
 		const int32 VertexCount = static_cast<int32>(PositionBuffer.GetNumVertices());
 		if (VertexCount <= 0)
 		{
 			return false;
+		}
+
+		const TCHAR* DiffuseWeaponName = nullptr;
+		const TCHAR* DiffuseTexturePath = TMGetStaticProjectedDiffuseTexturePath(StaticMesh, DiffuseWeaponName);
+		TArray<uint8> DiffusePixels;
+		int32 DiffuseWidth = 0;
+		int32 DiffuseHeight = 0;
+		if (DiffuseTexturePath && StaticMeshVertexBuffer.GetNumTexCoords() > 0)
+		{
+			UTexture2D* DiffuseTexture = LoadObject<UTexture2D>(nullptr, DiffuseTexturePath);
+			if (DiffuseTexture
+				&& TMReadTextureSourceBgra8(DiffuseTexture, DiffusePixels, DiffuseWidth, DiffuseHeight))
+			{
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[TMIconGenerator] Using %s diffuse material texture %s for static geometry projection."),
+					DiffuseWeaponName ? DiffuseWeaponName : TEXT("static mesh"),
+					*DiffuseTexture->GetPathName());
+			}
 		}
 
 		const FBoxSphereBounds MeshBounds = StaticMesh->GetBounds();
@@ -1260,6 +1304,31 @@ namespace
 				CenteredVertices[IndexC] - CenteredVertices[IndexA]).GetSafeNormal();
 			const float Light = FMath::Abs(FVector::DotProduct(TriangleNormal, LightDirection));
 			const float Facing = FMath::Abs(FVector::DotProduct(TriangleNormal, ViewForward));
+			if (!DiffusePixels.IsEmpty())
+			{
+				TMRasterizeTexturedProjectedTriangle(
+					OutPixels,
+					DepthBuffer,
+					TMIconWidth,
+					TMIconHeight,
+					ProjectedVertices[IndexA],
+					ProjectedVertices[IndexB],
+					ProjectedVertices[IndexC],
+					ProjectedDepths[IndexA],
+					ProjectedDepths[IndexB],
+					ProjectedDepths[IndexC],
+					StaticMeshVertexBuffer.GetVertexUV(IndexA, 0),
+					StaticMeshVertexBuffer.GetVertexUV(IndexB, 0),
+					StaticMeshVertexBuffer.GetVertexUV(IndexC, 0),
+					DiffusePixels,
+					DiffuseWidth,
+					DiffuseHeight,
+					Light,
+					Facing,
+					false);
+				continue;
+			}
+
 			const float Shade = FMath::Clamp(0.24f + Light * 0.32f + Facing * 0.10f, 0.22f, 0.68f);
 			const FColor TriangleColor(
 				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(145.0f * Shade), 0, 255)),
@@ -1490,7 +1559,8 @@ namespace
 		const FString ObjectPath = SourceAsset.GetObjectPathString();
 		return ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Kunai_01.SK_Kunai_01"), ESearchCase::IgnoreCase)
 			|| ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Bayonet_01.SK_Bayonet_01"), ESearchCase::IgnoreCase)
-			|| ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Cleaver_01.SK_Cleaver_01"), ESearchCase::IgnoreCase);
+			|| ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SK_Cleaver_01.SK_Cleaver_01"), ESearchCase::IgnoreCase)
+			|| ObjectPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SM_PipeWrench_01.SM_PipeWrench_01"), ESearchCase::IgnoreCase);
 	}
 
 	bool TMIsSkeletalVisualMeshPath(const USkeletalMesh* SkeletalMesh, const TCHAR* MeshPath)
@@ -1559,6 +1629,12 @@ namespace
 			return TEXT("/Game/Weapons/Textures/T_ACWI_BaseColor.T_ACWI_BaseColor");
 		}
 
+		if (TMIsSkeletalVisualMeshPath(SkeletalMesh, TEXT("/Game/Weapons/Mesh/GrenadesAndMine/SK_Frag_Grenade.SK_Frag_Grenade")))
+		{
+			OutWeaponName = TEXT("Frag");
+			return TEXT("/Game/Weapons/Textures/T_Frag_Grenade_BaseColor.T_Frag_Grenade_BaseColor");
+		}
+
 		return nullptr;
 	}
 
@@ -1593,6 +1669,42 @@ namespace
 		{
 			OutWeaponName = TEXT("Cleaver");
 			return TEXT("/Game/MeleeWeapons/Textures/T_Cleaver_BC.T_Cleaver_BC");
+		}
+
+		if (MeshPath.Equals(TEXT("/Game/MeleeWeapons/Meshes/SM_PipeWrench_01.SM_PipeWrench_01"), ESearchCase::IgnoreCase))
+		{
+			OutWeaponName = TEXT("PipeWrench");
+			return TEXT("/Game/MeleeWeapons/Textures/T_PipeWrench_BC.T_PipeWrench_BC");
+		}
+
+		return nullptr;
+	}
+
+	const TCHAR* TMGetStaticProjectedDiffuseTexturePath(const UStaticMesh* StaticMesh, const TCHAR*& OutWeaponName)
+	{
+		OutWeaponName = nullptr;
+		if (!StaticMesh)
+		{
+			return nullptr;
+		}
+
+		const FString MeshPath = StaticMesh->GetPathName();
+		if (MeshPath.Equals(TEXT("/Game/UrbanMilChar/Mesh/SM/SM_Grenade_Red.SM_Grenade_Red"), ESearchCase::IgnoreCase))
+		{
+			OutWeaponName = TEXT("Red grenade");
+			return TEXT("/Game/UrbanMilChar/Textures/Weapon/Granade/T_Grenade_Red_BaseColor.T_Grenade_Red_BaseColor");
+		}
+
+		if (MeshPath.Equals(TEXT("/Game/UrbanMilChar/Mesh/SM/SM_Grenade_Green.SM_Grenade_Green"), ESearchCase::IgnoreCase))
+		{
+			OutWeaponName = TEXT("Green grenade");
+			return TEXT("/Game/UrbanMilChar/Textures/Weapon/Granade/T_Grenade_BC.T_Grenade_BC");
+		}
+
+		if (MeshPath.Equals(TEXT("/Game/UrbanMilChar/Mesh/SM/SM_Grenade_Blue.SM_Grenade_Blue"), ESearchCase::IgnoreCase))
+		{
+			OutWeaponName = TEXT("Blue grenade");
+			return TEXT("/Game/UrbanMilChar/Textures/Weapon/Granade/T_Grenade_Blue_BC.T_Grenade_Blue_BC");
 		}
 
 		return nullptr;
@@ -3185,7 +3297,10 @@ namespace
 			if (bSceneFitted)
 			{
 				TMNormalizeSceneCaptureIconExposure(OutPixels, TMIconWidth, TMIconHeight);
-				if (!TMRealMaterialIconHasUsableDetail(OutPixels, TMIconWidth, TMIconHeight))
+				const bool bAllowDarkRealMaterialIcon = SkeletalMesh->GetPathName().Equals(
+					TEXT("/Game/Weapons/Mesh/GrenadesAndMine/SK_Frag_Grenade.SK_Frag_Grenade"),
+					ESearchCase::IgnoreCase);
+				if (!bAllowDarkRealMaterialIcon && !TMRealMaterialIconHasUsableDetail(OutPixels, TMIconWidth, TMIconHeight))
 				{
 					UE_LOG(
 						LogTemp,
@@ -3391,32 +3506,6 @@ namespace
 		}
 	}
 
-	void TMApplyFragLoadoutIconColor(TArray<uint8>& PixelData, const int32 Width, const int32 Height)
-	{
-		if (Width <= 0 || Height <= 0 || PixelData.Num() != Width * Height * 4)
-		{
-			return;
-		}
-
-		for (int32 PixelIndex = 0; PixelIndex < Width * Height; ++PixelIndex)
-		{
-			const int32 DataIndex = PixelIndex * 4;
-			if (PixelData[DataIndex + 3] <= 16)
-			{
-				continue;
-			}
-
-			const float Luminance =
-				(static_cast<float>(PixelData[DataIndex + 2]) * 0.2126f
-					+ static_cast<float>(PixelData[DataIndex + 1]) * 0.7152f
-					+ static_cast<float>(PixelData[DataIndex]) * 0.0722f) / 255.0f;
-			const float Shade = FMath::Clamp(Luminance * 1.25f + 0.10f, 0.0f, 1.0f);
-			PixelData[DataIndex] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(44.0f + Shade * 50.0f), 0, 255));
-			PixelData[DataIndex + 1] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(62.0f + Shade * 84.0f), 0, 255));
-			PixelData[DataIndex + 2] = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(38.0f + Shade * 62.0f), 0, 255));
-		}
-	}
-
 	bool TMBuildLoadoutWeaponMaterialIconPixels(
 		const FAssetData& AssetData,
 		UObject* RenderSourceObject,
@@ -3551,11 +3640,14 @@ namespace
 		}
 		if (bIsFrag)
 		{
-			TMApplyFragLoadoutIconColor(OutPixels, TMIconWidth, TMIconHeight);
+			// Keep Frag in its captured material colors; the old UI tint made it a flat green silhouette.
 		}
 		TMApplyLoadoutWeaponRowIconAlignment(AssetData, OutPixels);
 		TMRemoveScarLoadoutIconCaptureArtifacts(AssetData, OutPixels);
-		TMApplyLoadoutWeaponMaterialIconTone(OutPixels, TMIconWidth, TMIconHeight, bActiveVariant);
+		if (!bIsFrag)
+		{
+			TMApplyLoadoutWeaponMaterialIconTone(OutPixels, TMIconWidth, TMIconHeight, bActiveVariant);
+		}
 		return OutPixels.Num() == TMIconWidth * TMIconHeight * 4;
 	}
 
@@ -3584,6 +3676,16 @@ namespace
 			{
 				TEXT("ForeGrip"),
 				TEXT("/Game/AdvanceWeaponPack/Texture/UI/T_GripA_Icon.T_GripA_Icon"),
+				true
+			},
+			{
+				TEXT("SM_VerticleTypeB_Grip"),
+				TEXT("/Game/Weapons/Textures/UI/T_VerticalB_Grip_HUD.T_VerticalB_Grip_HUD"),
+				true
+			},
+			{
+				TEXT("SM_VerticleTypeC_Grip"),
+				TEXT("/Game/Weapons/Textures/UI/T_VerticalC_Grip_HUD.T_VerticalC_Grip_HUD"),
 				true
 			},
 			{
@@ -3647,6 +3749,11 @@ namespace
 				true
 			},
 			{
+				TEXT("RDS"),
+				TEXT("/Game/Weapons/Textures/UI/T_RedDot_Sight_HUD.T_RedDot_Sight_HUD"),
+				true
+			},
+			{
 				TEXT("SM_DemoOptic"),
 				TEXT("/Game/Fps/Textures/Widgets/GunCustomization/T_ThumbDemoOptics.T_ThumbDemoOptics"),
 				true
@@ -3674,9 +3781,26 @@ namespace
 			|| AssetName.Equals(TEXT("SM_Laser"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("ForeGrip"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("V_Grip"), ESearchCase::IgnoreCase)
+			|| AssetName.Contains(TEXT("Grip"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("SM_Suppressor_Barrel"), ESearchCase::IgnoreCase)
+			|| AssetName.Contains(TEXT("Suppressor"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("Silencer"), ESearchCase::IgnoreCase)
 			|| AssetName.Equals(TEXT("Compensator"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMShouldKeepRealMaterialStaticAttachmentIcon(const FAssetData& SourceAsset)
+	{
+		const FString ObjectPath = SourceAsset.GetObjectPathString();
+		if (!ObjectPath.Contains(TEXT("/Mesh/Attachment/"), ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+
+		const FString AssetName = SourceAsset.AssetName.ToString();
+		return AssetName.Contains(TEXT("Grip"), ESearchCase::IgnoreCase)
+			|| AssetName.Contains(TEXT("Suppressor"), ESearchCase::IgnoreCase)
+			|| AssetName.Contains(TEXT("Silencer"), ESearchCase::IgnoreCase)
+			|| AssetName.Contains(TEXT("Compensator"), ESearchCase::IgnoreCase);
 	}
 
 	bool TMShouldUseSkeletalMeshFallbackRender(const FAssetData& SourceAsset)
@@ -3751,7 +3875,8 @@ namespace
 			|| TMIsScarDataTableMeshSource(SourceAsset)
 			|| TMIsShotgunDataTableMeshSource(SourceAsset)
 			|| TMIsKrissDataTableMeshSource(SourceAsset)
-			|| TMIsACWIDataTableMeshSource(SourceAsset);
+			|| TMIsACWIDataTableMeshSource(SourceAsset)
+			|| TMIsFragDataTableMeshSource(SourceAsset);
 	}
 
 	bool TMIsAttachmentLikeWeaponVisualMesh(const USkeletalMesh* VisualMesh)
@@ -4557,7 +4682,9 @@ void FTouchMeEditorModule::GenerateIconsForAssets(TArray<FAssetData> SelectedAss
 					{
 						TMNormalizeSceneCaptureIconExposure(NormalPixels, TMIconWidth, TMIconHeight);
 					}
-					const bool bSceneReadable = bSceneFitted && TMIconHasReadableColor(NormalPixels, TMIconWidth, TMIconHeight);
+					const bool bSceneReadable = bSceneFitted
+						&& (TMIconHasReadableColor(NormalPixels, TMIconWidth, TMIconHeight)
+							|| TMShouldKeepRealMaterialStaticAttachmentIcon(AssetData));
 					if (bSceneReadable)
 					{
 						bBuiltNormalPixels = true;

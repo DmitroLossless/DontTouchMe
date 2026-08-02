@@ -85,15 +85,19 @@ void UTMWeaponLayerWidget::NativeConstruct()
 void UTMWeaponLayerWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	if (!GetWeaponLookupToken().Equals(LastAppliedLookupToken, ESearchCase::CaseSensitive))
+	{
+		RefreshWeaponIcon();
+	}
 	ApplyHoverScale();
 }
 
 void UTMWeaponLayerWidget::RefreshWeaponIcon()
 {
 	ResolveIconWidgets();
-	HideNameText();
 
 	const FString LookupToken = GetWeaponLookupToken();
+	LastAppliedLookupToken = LookupToken;
 	if (ShouldCollapseWeaponRow(LookupToken))
 	{
 		SetVisibility(ESlateVisibility::Collapsed);
@@ -103,10 +107,27 @@ void UTMWeaponLayerWidget::RefreshWeaponIcon()
 	UTexture2D* IconTexture = ResolveWeaponIconTexture(LookupToken, bWeaponIconSelected);
 	if (!IconTexture)
 	{
+		SetVisibility(ESlateVisibility::Visible);
+		if (USizeBox* Box = IconBox.Get())
+		{
+			Box->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		if (UImage* Image = IconImage.Get())
+		{
+			Image->SetBrush(MakeWeaponIconBrush(nullptr));
+			Image->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		if (UImage* Frame = IconFrame.Get())
+		{
+			Frame->SetBrush(MakeWeaponFrameBrush(false, FVector2D::ZeroVector));
+			Frame->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		ShowNameTextFallback();
 		return;
 	}
 
 	SetVisibility(ESlateVisibility::Visible);
+	HideNameText();
 	const FVector2D TextureSize = GetWeaponIconTextureSize(IconTexture);
 	const FVector2D WidgetSize = GetWeaponIconWidgetSize(IconTexture);
 
@@ -176,6 +197,10 @@ void UTMWeaponLayerWidget::ResolveIconWidgets()
 	if (!WeaponButton.IsValid())
 	{
 		WeaponButton = Cast<UButton>(GetWidgetFromName(TEXT("B_Weapon")));
+		if (!WeaponButton.IsValid())
+		{
+			WeaponButton = Cast<UButton>(GetWidgetFromName(TEXT("B_Attachment")));
+		}
 	}
 	if (!IconBox.IsValid())
 	{
@@ -261,5 +286,14 @@ void UTMWeaponLayerWidget::HideNameText() const
 	{
 		TextBlock->SetRenderOpacity(0.0f);
 		TextBlock->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
+void UTMWeaponLayerWidget::ShowNameTextFallback() const
+{
+	if (UTextBlock* TextBlock = NameText.Get())
+	{
+		TextBlock->SetRenderOpacity(1.0f);
+		TextBlock->SetVisibility(ESlateVisibility::Visible);
 	}
 }

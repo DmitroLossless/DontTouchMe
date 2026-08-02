@@ -105,6 +105,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Gun|Camera")
 	FTransform GetCameraWeaponOffsetAiming() const { return CameraWeaponOffsetAiming; }
 
+	UFUNCTION(BlueprintPure, Category = "Gun|Loadout", meta = (DisplayName = "Get Loadout Preview Transform Offset"))
+	FTransform GetLoadoutPreviewTransformOffset() const { return LoadoutPreviewTransformOffset; }
+
+	UFUNCTION(BlueprintPure, Category = "Gun|Loadout", meta = (DisplayName = "Has Loadout Preview Transform Offset Override"))
+	bool HasLoadoutPreviewTransformOffsetOverride() const { return bOverrideLoadoutPreviewTransformOffset; }
+
 	virtual void ProcessEvent(UFunction* Function, void* Parameters) override;
 
 protected:
@@ -163,6 +169,12 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout", meta = (DisplayName = "Can Loadout Shoot"))
 	bool bCanLoadoutShoot = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout", meta = (DisplayName = "Override Loadout Preview Transform Offset"))
+	bool bOverrideLoadoutPreviewTransformOffset = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout", meta = (DisplayName = "Loadout Preview Transform Offset", EditCondition = "bOverrideLoadoutPreviewTransformOffset"))
+	FTransform LoadoutPreviewTransformOffset = FTransform::Identity;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gun|Loadout|Recoil", meta = (DisplayName = "Loadout Recoil Offset"))
 	FVector LoadoutRecoilOffset = FVector(-3.25f, 0.0f, 0.55f);
