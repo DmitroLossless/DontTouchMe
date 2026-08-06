@@ -304,7 +304,7 @@ FName UTMLoadoutCategoryWidget::ResolveCategoryFromActiveWeapon() const
 		return MeleeCategory;
 	}
 
-	if (ClassPathMatchesAny(ClassPath, { TEXT("/Weapons/Explosives/"), TEXT("BP_Frag") }))
+	if (ClassPathMatchesAny(ClassPath, { TEXT("/Weapons/Explosives/"), TEXT("BP_Frag"), TEXT("BP_Tripmine") }))
 	{
 		return ExplosiveCategory;
 	}

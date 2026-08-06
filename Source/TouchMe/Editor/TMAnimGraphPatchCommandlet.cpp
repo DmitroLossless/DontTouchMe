@@ -33,11 +33,13 @@
 #include "../TMWeaponLayerWidget.h"
 #include "Engine/Blueprint.h"
 #include "Engine/DataTable.h"
+#include "Engine/InheritableComponentHandler.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/AudioComponent.h"
 #include "Components/Border.h"
@@ -52,6 +54,7 @@
 #include "Components/ProgressBar.h"
 #include "Components/RichTextBlock.h"
 #include "Components/ScaleBox.h"
+#include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SizeBox.h"
 #include "Components/StaticMeshComponent.h"
@@ -10502,139 +10505,6 @@ namespace
 			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, PlayWeaponSpawnFeedbackForActor));
 	}
 
-	bool TMSpawnNodeAlreadyCleansLoadoutPreviewBeforeSpawn(const UK2Node_SpawnActorFromClass* SpawnNode)
-	{
-		const UEdGraphPin* ExecutePin = TMFindPinByNameConst(SpawnNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
-		if (!ExecutePin)
-		{
-			return false;
-		}
-
-		for (const UEdGraphPin* LinkedPin : ExecutePin->LinkedTo)
-		{
-			const UK2Node_CallFunction* CallNode = LinkedPin ? Cast<UK2Node_CallFunction>(LinkedPin->GetOwningNode()) : nullptr;
-			if (CallNode
-				&& CallNode->FunctionReference.GetMemberName() == GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, CleanupLoadoutPreview))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	bool TMInsertLoadoutPreviewCleanupBeforeSpawn(UEdGraph* Graph, UK2Node_SpawnActorFromClass* SpawnNode)
-	{
-		if (!Graph || !SpawnNode)
-		{
-			return false;
-		}
-
-		if (TMSpawnNodeAlreadyCleansLoadoutPreviewBeforeSpawn(SpawnNode))
-		{
-			UE_LOG(
-				LogTemp,
-				Display,
-				TEXT("[TMLoadoutPreviewCleanup] Spawn node already has pre-spawn cleanup: %s"),
-				*SpawnNode->GetName());
-			return false;
-		}
-
-		const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema());
-		UEdGraphPin* SpawnExecPin = TMFindPinByName(SpawnNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
-		if (!Schema || !SpawnExecPin)
-		{
-			UE_LOG(
-				LogTemp,
-				Warning,
-				TEXT("[TMLoadoutPreviewCleanup] Spawn node missing exec pin: %s Exec=%d"),
-				*GetNameSafe(SpawnNode),
-				SpawnExecPin ? 1 : 0);
-			return false;
-		}
-
-		TArray<UEdGraphPin*> PreviousExecSources = SpawnExecPin->LinkedTo;
-		if (PreviousExecSources.IsEmpty())
-		{
-			UE_LOG(
-				LogTemp,
-				Warning,
-				TEXT("[TMLoadoutPreviewCleanup] Spawn node has no incoming exec links: %s"),
-				*GetNameSafe(SpawnNode));
-			return false;
-		}
-
-		FGraphNodeCreator<UK2Node_CallFunction> CleanupCreator(*Graph);
-		UK2Node_CallFunction* CleanupNode = CleanupCreator.CreateNode();
-		CleanupNode->FunctionReference.SetExternalMember(
-			GET_FUNCTION_NAME_CHECKED(UTMGameplayStatics, CleanupLoadoutPreview),
-			UTMGameplayStatics::StaticClass());
-		CleanupNode->NodePosX = SpawnNode->NodePosX - 360;
-		CleanupNode->NodePosY = SpawnNode->NodePosY - 80;
-		CleanupNode->NodeComment = TEXT("TM: cleanup previous loadout weapon preview before spawning another");
-		CleanupCreator.Finalize();
-
-		FGraphNodeCreator<UK2Node_Self> SelfCreator(*Graph);
-		UK2Node_Self* SelfNode = SelfCreator.CreateNode();
-		SelfNode->NodePosX = CleanupNode->NodePosX - 180;
-		SelfNode->NodePosY = CleanupNode->NodePosY + 160;
-		SelfCreator.Finalize();
-
-		UEdGraphPin* CleanupExecPin = TMFindPinByName(CleanupNode, UEdGraphSchema_K2::PN_Execute, EGPD_Input);
-		UEdGraphPin* CleanupThenPin = TMFindPinByName(CleanupNode, UEdGraphSchema_K2::PN_Then, EGPD_Output);
-		UEdGraphPin* OwnerWidgetPin = TMFindPinByName(CleanupNode, TEXT("OwnerWidget"), EGPD_Input);
-		if (!OwnerWidgetPin)
-		{
-			OwnerWidgetPin = TMFindFirstDataPin(CleanupNode, EGPD_Input);
-		}
-
-		UEdGraphPin* SelfOutputPin = TMFindPinByName(SelfNode, UEdGraphSchema_K2::PN_Self, EGPD_Output);
-		if (!SelfOutputPin)
-		{
-			SelfOutputPin = TMFindFirstDataPin(SelfNode, EGPD_Output);
-		}
-
-		if (!CleanupExecPin || !CleanupThenPin || !OwnerWidgetPin || !SelfOutputPin)
-		{
-			UE_LOG(
-				LogTemp,
-				Error,
-				TEXT("[TMLoadoutPreviewCleanup] Failed to create cleanup pins in graph %s Exec=%d Then=%d Owner=%d Self=%d"),
-				*Graph->GetName(),
-				CleanupExecPin ? 1 : 0,
-				CleanupThenPin ? 1 : 0,
-				OwnerWidgetPin ? 1 : 0,
-				SelfOutputPin ? 1 : 0);
-			Graph->RemoveNode(CleanupNode);
-			Graph->RemoveNode(SelfNode);
-			return false;
-		}
-
-		SpawnExecPin->Modify();
-		SpawnExecPin->BreakAllPinLinks(false);
-
-		bool bSuccess = true;
-		for (UEdGraphPin* PreviousExecSource : PreviousExecSources)
-		{
-			if (PreviousExecSource)
-			{
-				bSuccess &= Schema->TryCreateConnection(PreviousExecSource, CleanupExecPin);
-			}
-		}
-		bSuccess &= Schema->TryCreateConnection(CleanupThenPin, SpawnExecPin);
-		bSuccess &= Schema->TryCreateConnection(SelfOutputPin, OwnerWidgetPin);
-
-		UE_LOG(
-			LogTemp,
-			Display,
-			TEXT("[TMLoadoutPreviewCleanup] Inserted CleanupLoadoutPreview before %s in graph %s. OldExecSources=%d Success=%d"),
-			*SpawnNode->GetName(),
-			*Graph->GetName(),
-			PreviousExecSources.Num(),
-			bSuccess ? 1 : 0);
-		return bSuccess;
-	}
-
 	bool TMInsertLoadoutWeaponSpawnFeedbackAfterSpawn(UEdGraph* Graph, UK2Node_SpawnActorFromClass* SpawnNode)
 	{
 		if (!Graph || !SpawnNode)
@@ -10796,10 +10666,6 @@ namespace
 		for (UK2Node_SpawnActorFromClass* SpawnNode : CandidateSpawnNodes)
 		{
 			UEdGraph* SpawnGraph = SpawnNode ? SpawnNode->GetGraph() : nullptr;
-			if (TMInsertLoadoutPreviewCleanupBeforeSpawn(SpawnGraph, SpawnNode))
-			{
-				bChanged = true;
-			}
 			if (TMInsertLoadoutWeaponSpawnFeedbackAfterSpawn(SpawnGraph, SpawnNode))
 			{
 				bChanged = true;
@@ -11302,6 +11168,618 @@ namespace
 		}
 
 		return TMSavePackageForAsset(Blueprint, TEXT("TMLoadoutWeaponIcon"));
+	}
+
+	bool TMLoadoutPinLooksRelevant(const UEdGraphPin* Pin)
+	{
+		if (!Pin)
+		{
+			return false;
+		}
+
+		const FString RelevantText =
+			Pin->PinName.ToString()
+			+ TEXT(" ")
+			+ Pin->PinType.PinCategory.ToString()
+			+ TEXT(" ")
+			+ GetNameSafe(Pin->PinType.PinSubCategoryObject.Get())
+			+ TEXT(" ")
+			+ Pin->DefaultValue
+			+ TEXT(" ")
+			+ Pin->DefaultTextValue.ToString()
+			+ TEXT(" ")
+			+ GetPathNameSafe(Pin->DefaultObject);
+		return RelevantText.Contains(TEXT("Frag"), ESearchCase::IgnoreCase)
+			|| RelevantText.Contains(TEXT("Tripmine"), ESearchCase::IgnoreCase)
+			|| RelevantText.Contains(TEXT("Weapon"), ESearchCase::IgnoreCase)
+			|| RelevantText.Contains(TEXT("DataTable"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMLoadoutNodeLooksRelevant(UEdGraphNode* Node)
+	{
+		if (!Node)
+		{
+			return false;
+		}
+
+		const FString NodeText =
+			Node->GetName()
+			+ TEXT(" ")
+			+ Node->GetClass()->GetName()
+			+ TEXT(" ")
+			+ Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString()
+			+ TEXT(" ")
+			+ Node->NodeComment;
+		if (NodeText.Contains(TEXT("Frag"), ESearchCase::IgnoreCase)
+			|| NodeText.Contains(TEXT("Tripmine"), ESearchCase::IgnoreCase)
+			|| NodeText.Contains(TEXT("Weapon"), ESearchCase::IgnoreCase)
+			|| NodeText.Contains(TEXT("DataTable"), ESearchCase::IgnoreCase)
+			|| TMIsLoadoutWeaponLayerCreateWidgetNode(Node))
+		{
+			return true;
+		}
+
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (TMLoadoutPinLooksRelevant(Pin))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void TMDumpWidgetDefaultArrays(UBlueprint* Blueprint, const TCHAR* LogPrefix);
+
+	void TMDumpLoadoutNodePins(UEdGraphNode* Node, const TCHAR* LogPrefix)
+	{
+		if (!Node)
+		{
+			return;
+		}
+
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[%s] Node Graph=%s Class=%s Name=%s Title=\"%s\" Pos=(%d,%d) Comment=\"%s\""),
+			LogPrefix,
+			*GetNameSafe(Node->GetGraph()),
+			*GetNameSafe(Node->GetClass()),
+			*GetNameSafe(Node),
+			*Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString(),
+			Node->NodePosX,
+			Node->NodePosY,
+			*Node->NodeComment);
+
+		if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s]   Function=%s Owner=%s"),
+				LogPrefix,
+				*CallNode->FunctionReference.GetMemberName().ToString(),
+				*GetNameSafe(CallNode->FunctionReference.GetMemberParentClass()));
+		}
+
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin)
+			{
+				continue;
+			}
+
+			FString LinksText;
+			for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (!LinkedPin)
+				{
+					continue;
+				}
+				if (!LinksText.IsEmpty())
+				{
+					LinksText += TEXT(", ");
+				}
+				LinksText += FString::Printf(
+					TEXT("%s.%s"),
+					*GetNameSafe(LinkedPin->GetOwningNode()),
+					*LinkedPin->PinName.ToString());
+			}
+
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s]   Pin Dir=%s Name=%s Cat=%s Sub=%s Default=\"%s\" Text=\"%s\" Obj=%s Links=[%s]"),
+				LogPrefix,
+				Pin->Direction == EGPD_Input ? TEXT("In") : TEXT("Out"),
+				*Pin->PinName.ToString(),
+				*Pin->PinType.PinCategory.ToString(),
+				*GetNameSafe(Pin->PinType.PinSubCategoryObject.Get()),
+				*Pin->DefaultValue,
+				*Pin->DefaultTextValue.ToString(),
+				*GetPathNameSafe(Pin->DefaultObject),
+				*LinksText);
+		}
+	}
+
+	bool TMDumpLoadoutWeaponLayerPayloads()
+	{
+		const TCHAR* LogPrefix = TEXT("TMLoadoutPayloadDump");
+		const TCHAR* BlueprintPaths[] =
+		{
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Weapon_Layer.W_Weapon_Layer")
+		};
+
+		int32 DumpedNodeCount = 0;
+		for (const TCHAR* BlueprintPath : BlueprintPaths)
+		{
+			UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, BlueprintPath);
+			if (!Blueprint)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load %s."), LogPrefix, BlueprintPath);
+				continue;
+			}
+
+			UE_LOG(LogTemp, Display, TEXT("[%s] Blueprint=%s"), LogPrefix, *Blueprint->GetPathName());
+			TMDumpWidgetDefaultArrays(Blueprint, LogPrefix);
+
+			TArray<UEdGraph*> Graphs;
+			Blueprint->GetAllGraphs(Graphs);
+			for (UEdGraph* Graph : Graphs)
+			{
+				if (!Graph)
+				{
+					continue;
+				}
+
+				for (UEdGraphNode* Node : Graph->Nodes)
+				{
+					if (!TMLoadoutNodeLooksRelevant(Node))
+					{
+						continue;
+					}
+
+					++DumpedNodeCount;
+					TMDumpLoadoutNodePins(Node, LogPrefix);
+				}
+			}
+		}
+
+		UE_LOG(LogTemp, Display, TEXT("[%s] Summary: DumpedNodes=%d"), LogPrefix, DumpedNodeCount);
+		return DumpedNodeCount > 0;
+	}
+
+	FString TMDescribeArrayElementValue(const FProperty* InnerProperty, const void* ElementPtr)
+	{
+		if (!InnerProperty || !ElementPtr)
+		{
+			return TEXT("<invalid>");
+		}
+
+		if (const FClassProperty* ClassProperty = CastField<FClassProperty>(InnerProperty))
+		{
+			return GetPathNameSafe(Cast<UClass>(ClassProperty->GetObjectPropertyValue(ElementPtr)));
+		}
+
+		if (const FSoftClassProperty* SoftClassProperty = CastField<FSoftClassProperty>(InnerProperty))
+		{
+			return SoftClassProperty->GetPropertyValue(ElementPtr).ToString();
+		}
+
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(InnerProperty))
+		{
+			return GetPathNameSafe(ObjectProperty->GetObjectPropertyValue(ElementPtr));
+		}
+
+		if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(InnerProperty))
+		{
+			const FSoftObjectPtr* Value = SoftObjectProperty->GetPropertyValuePtr(ElementPtr);
+			return Value ? Value->ToString() : FString(TEXT("<null>"));
+		}
+
+		if (const FStrProperty* StringProperty = CastField<FStrProperty>(InnerProperty))
+		{
+			return StringProperty->GetPropertyValue(ElementPtr);
+		}
+
+		if (const FNameProperty* NameProperty = CastField<FNameProperty>(InnerProperty))
+		{
+			return NameProperty->GetPropertyValue(ElementPtr).ToString();
+		}
+
+		if (const FTextProperty* TextProperty = CastField<FTextProperty>(InnerProperty))
+		{
+			return TextProperty->GetPropertyValue(ElementPtr).ToString();
+		}
+
+		FString ValueText;
+		InnerProperty->ExportTextItem_Direct(ValueText, ElementPtr, nullptr, nullptr, PPF_None);
+		return ValueText;
+	}
+
+	void TMDumpWidgetDefaultArrays(UBlueprint* Blueprint, const TCHAR* LogPrefix)
+	{
+		if (!Blueprint || !Blueprint->GeneratedClass)
+		{
+			return;
+		}
+
+		UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+		if (!DefaultObject)
+		{
+			return;
+		}
+
+		for (TFieldIterator<FArrayProperty> It(DefaultObject->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			FArrayProperty* ArrayProperty = *It;
+			if (!ArrayProperty || !ArrayProperty->Inner)
+			{
+				continue;
+			}
+
+			void* ArrayPtr = ArrayProperty->ContainerPtrToValuePtr<void>(DefaultObject);
+			FScriptArrayHelper Helper(ArrayProperty, ArrayPtr);
+			FString ValuesText;
+			for (int32 Index = 0; Index < Helper.Num(); ++Index)
+			{
+				if (!ValuesText.IsEmpty())
+				{
+					ValuesText += TEXT(" | ");
+				}
+				ValuesText += FString::Printf(
+					TEXT("%d=%s"),
+					Index,
+					*TMDescribeArrayElementValue(ArrayProperty->Inner, Helper.GetRawPtr(Index)));
+			}
+
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s] DefaultArray Blueprint=%s Property=%s Inner=%s Num=%d Values=[%s]"),
+				LogPrefix,
+				*Blueprint->GetPathName(),
+				*ArrayProperty->GetName(),
+				*ArrayProperty->Inner->GetClass()->GetName(),
+				Helper.Num(),
+				*ValuesText);
+		}
+	}
+
+	bool TMClassArrayContains(FArrayProperty* ArrayProperty, FScriptArrayHelper& Helper, UClass* Class)
+	{
+		const FClassProperty* ClassProperty = ArrayProperty ? CastField<FClassProperty>(ArrayProperty->Inner) : nullptr;
+		if (!ClassProperty || !Class)
+		{
+			return false;
+		}
+
+		for (int32 Index = 0; Index < Helper.Num(); ++Index)
+		{
+			if (Cast<UClass>(ClassProperty->GetObjectPropertyValue(Helper.GetRawPtr(Index))) == Class)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMAddClassToArray(FArrayProperty* ArrayProperty, FScriptArrayHelper& Helper, UClass* Class)
+	{
+		FClassProperty* ClassProperty = ArrayProperty ? CastField<FClassProperty>(ArrayProperty->Inner) : nullptr;
+		if (!ClassProperty || !Class || TMClassArrayContains(ArrayProperty, Helper, Class))
+		{
+			return false;
+		}
+
+		const int32 NewIndex = Helper.AddValue();
+		ClassProperty->SetPropertyValue(Helper.GetRawPtr(NewIndex), Class);
+		return true;
+	}
+
+	bool TMStringLikeArrayContains(FArrayProperty* ArrayProperty, FScriptArrayHelper& Helper, const FString& Value)
+	{
+		if (!ArrayProperty || !ArrayProperty->Inner)
+		{
+			return false;
+		}
+
+		for (int32 Index = 0; Index < Helper.Num(); ++Index)
+		{
+			if (TMDescribeArrayElementValue(ArrayProperty->Inner, Helper.GetRawPtr(Index)).Equals(Value, ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool TMAddStringLikeValueToArray(FArrayProperty* ArrayProperty, FScriptArrayHelper& Helper, const FString& Value)
+	{
+		if (!ArrayProperty || !ArrayProperty->Inner || Value.IsEmpty() || TMStringLikeArrayContains(ArrayProperty, Helper, Value))
+		{
+			return false;
+		}
+
+		if (FStrProperty* StringProperty = CastField<FStrProperty>(ArrayProperty->Inner))
+		{
+			const int32 NewIndex = Helper.AddValue();
+			StringProperty->SetPropertyValue(Helper.GetRawPtr(NewIndex), Value);
+			return true;
+		}
+
+		if (FNameProperty* NameProperty = CastField<FNameProperty>(ArrayProperty->Inner))
+		{
+			const int32 NewIndex = Helper.AddValue();
+			NameProperty->SetPropertyValue(Helper.GetRawPtr(NewIndex), FName(*Value));
+			return true;
+		}
+
+		if (FTextProperty* TextProperty = CastField<FTextProperty>(ArrayProperty->Inner))
+		{
+			const int32 NewIndex = Helper.AddValue();
+			TextProperty->SetPropertyValue(Helper.GetRawPtr(NewIndex), FText::FromString(Value));
+			return true;
+		}
+
+		return false;
+	}
+
+	bool TMObjectPathLooksLikeFragGrenade(const UObject* Object);
+	bool TMPropertyNameLooksLikeMesh(const FProperty* Property);
+	void TMSetFragLikeDisplayNameInProperty(
+		FProperty* Property,
+		void* ValuePtr,
+		const TCHAR* NewDisplayName,
+		const TCHAR* LogPrefix,
+		const FString& OwnerLabel,
+		bool& bChanged);
+
+	UClass* TMLoadWeaponClassForRowName(const FName RowName)
+	{
+		const FString Row = RowName.ToString();
+		const TCHAR* ClassPath = nullptr;
+		if (Row.Equals(TEXT("Shotgun"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Shotgun/BP_Shotgun.BP_Shotgun_C");
+		else if (Row.Equals(TEXT("Sniper"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Sniper/BP_Sniper.BP_Sniper_C");
+		else if (Row.Equals(TEXT("Special"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Special/BP_Special.BP_Special_C");
+		else if (Row.Equals(TEXT("Knife"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Melee/Knife/BP_Knife.BP_Knife_C");
+		else if (Row.Equals(TEXT("Frag"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Frag.BP_Frag_C");
+		else if (Row.Equals(TEXT("Kriss"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Kriss/BP_Kriss.BP_Kriss_C");
+		else if (Row.Equals(TEXT("DE"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/DE/BP_DE.BP_DE_C");
+		else if (Row.Equals(TEXT("Scar"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Primary/Scar/BP_Scar.BP_Scar_C");
+		else if (Row.Equals(TEXT("M9"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Secondary/M9/BP_M9.BP_M9_C");
+		else if (Row.Equals(TEXT("TAR"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Primary/TAR/BP_TAR.BP_TAR_C");
+		else if (Row.Equals(TEXT("ACWI"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Primary/ACWI/BP_ACWI.BP_ACWI_C");
+		else if (Row.Equals(TEXT("Kunai"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Melee/Kunai/BP_Kunai.BP_Kunai_C");
+		else if (Row.Equals(TEXT("Bayonet"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Melee/Bayonet/BP_Bayonet.BP_Bayonet_C");
+		else if (Row.Equals(TEXT("Cleaver"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Melee/Cleaver/BP_Cleaver.BP_Cleaver_C");
+		else if (Row.Equals(TEXT("Frag_Red"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Frag_Red.BP_Frag_Red_C");
+		else if (Row.Equals(TEXT("Tripmine"), ESearchCase::IgnoreCase)) ClassPath = TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Tripmine.BP_Tripmine_C");
+
+		return ClassPath ? LoadClass<AActor>(nullptr, ClassPath) : nullptr;
+	}
+
+	void TMClearIncompatibleFragMeshRefsInProperty(
+		FProperty* Property,
+		void* ValuePtr,
+		UObject* ReplacementMesh,
+		const TCHAR* LogPrefix,
+		const FString& OwnerLabel,
+		bool& bChanged)
+	{
+		if (!Property || !ValuePtr)
+		{
+			return;
+		}
+
+		if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			UObject* OldObject = ObjectProperty->GetObjectPropertyValue(ValuePtr);
+			const bool bReplacementFits = ReplacementMesh && ReplacementMesh->IsA(ObjectProperty->PropertyClass);
+			const bool bCanClearMesh =
+				!bReplacementFits
+				&& ObjectProperty->PropertyClass
+				&& ObjectProperty->PropertyClass->IsChildOf(USkeletalMesh::StaticClass())
+				&& TMPropertyNameLooksLikeMesh(Property)
+				&& TMObjectPathLooksLikeFragGrenade(OldObject);
+			if (bCanClearMesh)
+			{
+				ObjectProperty->SetObjectPropertyValue(ValuePtr, nullptr);
+				bChanged = true;
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[%s] Cleared incompatible mesh property %s on %s: %s"),
+					LogPrefix,
+					*Property->GetName(),
+					*OwnerLabel,
+					*GetPathNameSafe(OldObject));
+			}
+			return;
+		}
+
+		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (!StructProperty->Struct)
+			{
+				return;
+			}
+
+			for (TFieldIterator<FProperty> ChildIt(StructProperty->Struct); ChildIt; ++ChildIt)
+			{
+				FProperty* ChildProperty = *ChildIt;
+				TMClearIncompatibleFragMeshRefsInProperty(
+					ChildProperty,
+					ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr),
+					ReplacementMesh,
+					LogPrefix,
+					OwnerLabel + TEXT(".") + Property->GetName(),
+					bChanged);
+			}
+			return;
+		}
+
+		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FScriptArrayHelper Helper(ArrayProperty, ValuePtr);
+			for (int32 Index = 0; Index < Helper.Num(); ++Index)
+			{
+				TMClearIncompatibleFragMeshRefsInProperty(
+					ArrayProperty->Inner,
+					Helper.GetRawPtr(Index),
+					ReplacementMesh,
+					LogPrefix,
+					OwnerLabel + FString::Printf(TEXT(".%s[%d]"), *Property->GetName(), Index),
+					bChanged);
+			}
+		}
+	}
+
+	bool TMSetWeaponLayerArrayFromDataTableRows(UObject* DefaultObject, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!DefaultObject)
+		{
+			return false;
+		}
+
+		FArrayProperty* WeaponsArrayProperty = FindFProperty<FArrayProperty>(DefaultObject->GetClass(), TEXT("WeaponsArray"));
+		FClassProperty* WeaponsClassProperty = WeaponsArrayProperty ? CastField<FClassProperty>(WeaponsArrayProperty->Inner) : nullptr;
+		if (!WeaponsArrayProperty || !WeaponsClassProperty)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] W_Weapon_Layer.WeaponsArray class array was not found."), LogPrefix);
+			return false;
+		}
+
+		UDataTable* WeaponsTable = LoadObject<UDataTable>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons"));
+		if (!WeaponsTable || !WeaponsTable->GetRowStruct())
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[%s] Failed to load DT_Weapons. Table=%s RowStruct=%s"),
+				LogPrefix,
+				*GetPathNameSafe(WeaponsTable),
+				*GetNameSafe(WeaponsTable ? WeaponsTable->GetRowStruct() : nullptr));
+			return false;
+		}
+
+		TArray<UClass*> OrderedWeaponClasses;
+		for (const FName RowName : WeaponsTable->GetRowNames())
+		{
+			UClass* RowClass = TMLoadWeaponClassForRowName(RowName);
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s] DT row order %d %s -> %s"),
+				LogPrefix,
+				OrderedWeaponClasses.Num(),
+				*RowName.ToString(),
+				*GetPathNameSafe(RowClass));
+			if (RowClass)
+			{
+				OrderedWeaponClasses.Add(RowClass);
+			}
+		}
+
+		if (OrderedWeaponClasses.IsEmpty())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] No weapon classes resolved from DT_Weapons."), LogPrefix);
+			return false;
+		}
+
+		void* ArrayPtr = WeaponsArrayProperty->ContainerPtrToValuePtr<void>(DefaultObject);
+		FScriptArrayHelper Helper(WeaponsArrayProperty, ArrayPtr);
+		bool bSame = Helper.Num() == OrderedWeaponClasses.Num();
+		if (bSame)
+		{
+			for (int32 Index = 0; Index < Helper.Num(); ++Index)
+			{
+				UClass* ExistingClass = Cast<UClass>(WeaponsClassProperty->GetObjectPropertyValue(Helper.GetRawPtr(Index)));
+				if (ExistingClass != OrderedWeaponClasses[Index])
+				{
+					bSame = false;
+					break;
+				}
+			}
+		}
+
+		if (bSame)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[%s] W_Weapon_Layer.WeaponsArray already matches DT_Weapons row order."), LogPrefix);
+			return true;
+		}
+
+		DefaultObject->Modify();
+		Helper.EmptyValues(OrderedWeaponClasses.Num());
+		for (UClass* WeaponClass : OrderedWeaponClasses)
+		{
+			const int32 NewIndex = Helper.AddValue();
+			WeaponsClassProperty->SetPropertyValue(Helper.GetRawPtr(NewIndex), WeaponClass);
+		}
+
+		bChanged = true;
+		UE_LOG(
+			LogTemp,
+			Display,
+			TEXT("[%s] Rebuilt W_Weapon_Layer.WeaponsArray from DT_Weapons row order. Num=%d"),
+			LogPrefix,
+			Helper.Num());
+		return true;
+	}
+
+	bool TMPatchWeaponLayerVariantArrays()
+	{
+		const TCHAR* LogPrefix = TEXT("TMWeaponLayerVariants");
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Weapon_Layer.W_Weapon_Layer"));
+		if (!Blueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load W_Weapon_Layer."), LogPrefix);
+			return false;
+		}
+
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (!Blueprint->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] W_Weapon_Layer has no generated class."), LogPrefix);
+			return false;
+		}
+
+		UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+		if (!DefaultObject)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] W_Weapon_Layer has no CDO."), LogPrefix);
+			return false;
+		}
+
+		bool bChanged = false;
+		if (!TMSetWeaponLayerArrayFromDataTableRows(DefaultObject, LogPrefix, bChanged))
+		{
+			return false;
+		}
+
+		TMDumpWidgetDefaultArrays(Blueprint, LogPrefix);
+		if (!bChanged)
+		{
+			return true;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (Blueprint->Status == BS_Error)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] W_Weapon_Layer failed to compile after patch."), LogPrefix);
+			return false;
+		}
+
+		return TMSavePackageForAsset(Blueprint, LogPrefix);
 	}
 
 	bool TMPatchAttachmentLayerIconWidgets()
@@ -13996,7 +14474,6 @@ namespace
 		const FString Path = Object->GetPathName();
 		const FString Name = Object->GetName();
 		return Path.Contains(TEXT("/Weapons/Explosives/Frag/"), ESearchCase::IgnoreCase)
-			|| Path.Contains(TEXT("/GrenadesAndMine/"), ESearchCase::IgnoreCase)
 			|| Path.Contains(TEXT("SM_Grenade_Green"), ESearchCase::IgnoreCase)
 			|| Name.Contains(TEXT("Frag"), ESearchCase::IgnoreCase)
 			|| Name.Contains(TEXT("Grenade"), ESearchCase::IgnoreCase);
@@ -14091,8 +14568,10 @@ namespace
 			return true;
 		}
 
-		const bool bIsRedFragWeaponRow = OwnerLabel.Contains(TEXT("DT_Weapons.Frag_Red"), ESearchCase::IgnoreCase);
-		const bool bCanReplaceFragRowClass = bIsRedFragWeaponRow
+		const bool bIsClonedFragWeaponRow =
+			OwnerLabel.Contains(TEXT("DT_Weapons.Frag_Red"), ESearchCase::IgnoreCase)
+			|| OwnerLabel.Contains(TEXT("DT_Weapons.Tripmine"), ESearchCase::IgnoreCase);
+		const bool bCanReplaceFragRowClass = bIsClonedFragWeaponRow
 			&& OldClass
 			&& OldClass->GetPathName().Contains(TEXT("/Weapons/Explosives/Frag/"), ESearchCase::IgnoreCase);
 		if (!TMClassPathIsSourceFragActorClass(OldClass) && !bCanReplaceFragRowClass)
@@ -14117,8 +14596,8 @@ namespace
 	void TMReplaceFragRefsInProperty(
 		FProperty* Property,
 		void* ValuePtr,
-		UStaticMesh* RedMesh,
-		UClass* RedClass,
+		UObject* VisualMesh,
+		UClass* WeaponClass,
 		const TCHAR* LogPrefix,
 		const FString& OwnerLabel,
 		bool& bChanged)
@@ -14130,13 +14609,13 @@ namespace
 
 		if (FClassProperty* ClassProperty = CastField<FClassProperty>(Property))
 		{
-			TMSetClassPropertyIfCompatible(ClassProperty, ValuePtr, RedClass, LogPrefix, OwnerLabel, bChanged);
+			TMSetClassPropertyIfCompatible(ClassProperty, ValuePtr, WeaponClass, LogPrefix, OwnerLabel, bChanged);
 			return;
 		}
 
 		if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
 		{
-			TMSetObjectPropertyIfCompatible(ObjectProperty, ValuePtr, RedMesh, LogPrefix, OwnerLabel, bChanged);
+			TMSetObjectPropertyIfCompatible(ObjectProperty, ValuePtr, VisualMesh, LogPrefix, OwnerLabel, bChanged);
 			return;
 		}
 
@@ -14144,13 +14623,13 @@ namespace
 		{
 			const FSoftObjectPtr SoftObject = SoftObjectProperty->GetPropertyValue(ValuePtr);
 			const FString OldPath = SoftObject.ToSoftObjectPath().ToString();
-			if (RedMesh
-				&& RedMesh->IsA(SoftObjectProperty->PropertyClass)
+			if (VisualMesh
+				&& VisualMesh->IsA(SoftObjectProperty->PropertyClass)
 				&& (OldPath.Contains(TEXT("Frag"), ESearchCase::IgnoreCase) || OldPath.Contains(TEXT("Grenade"), ESearchCase::IgnoreCase)))
 			{
-				SoftObjectProperty->SetPropertyValue(ValuePtr, FSoftObjectPtr(RedMesh));
+				SoftObjectProperty->SetPropertyValue(ValuePtr, FSoftObjectPtr(VisualMesh));
 				bChanged = true;
-				UE_LOG(LogTemp, Display, TEXT("[%s] Set soft object property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldPath, *RedMesh->GetPathName());
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set soft object property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldPath, *VisualMesh->GetPathName());
 			}
 			return;
 		}
@@ -14159,13 +14638,13 @@ namespace
 		{
 			const FSoftObjectPtr SoftClass = SoftClassProperty->GetPropertyValue(ValuePtr);
 			const FString OldPath = SoftClass.ToSoftObjectPath().ToString();
-			if (RedClass
-				&& RedClass->IsChildOf(SoftClassProperty->MetaClass)
+			if (WeaponClass
+				&& WeaponClass->IsChildOf(SoftClassProperty->MetaClass)
 				&& OldPath.Contains(TEXT("BP_Frag"), ESearchCase::IgnoreCase))
 			{
-				SoftClassProperty->SetPropertyValue(ValuePtr, FSoftObjectPtr(RedClass));
+				SoftClassProperty->SetPropertyValue(ValuePtr, FSoftObjectPtr(WeaponClass));
 				bChanged = true;
-				UE_LOG(LogTemp, Display, TEXT("[%s] Set soft class property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldPath, *RedClass->GetPathName());
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set soft class property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldPath, *WeaponClass->GetPathName());
 			}
 			return;
 		}
@@ -14183,8 +14662,8 @@ namespace
 				TMReplaceFragRefsInProperty(
 					ChildProperty,
 					ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr),
-					RedMesh,
-					RedClass,
+					VisualMesh,
+					WeaponClass,
 					LogPrefix,
 					OwnerLabel + TEXT(".") + Property->GetName(),
 					bChanged);
@@ -14200,8 +14679,8 @@ namespace
 				TMReplaceFragRefsInProperty(
 					ArrayProperty->Inner,
 					ArrayHelper.GetRawPtr(Index),
-					RedMesh,
-					RedClass,
+					VisualMesh,
+					WeaponClass,
 					LogPrefix,
 					OwnerLabel + FString::Printf(TEXT(".%s[%d]"), *Property->GetName(), Index),
 					bChanged);
@@ -14415,7 +14894,15 @@ namespace
 			RedBlueprint->Modify();
 			RedBlueprint->SimpleConstructionScript->Modify();
 			VisualNode = RedBlueprint->SimpleConstructionScript->CreateNode(UStaticMeshComponent::StaticClass(), RedVisualComponentName);
-			USCS_Node* ParentNode = RedBlueprint->SimpleConstructionScript->FindSCSNode(TEXT("Item"));
+			USCS_Node* ParentNode = nullptr;
+			for (USCS_Node* RootNode : RedBlueprint->SimpleConstructionScript->GetRootNodes())
+			{
+				if (RootNode && RootNode->GetVariableName() != TEXT("Item"))
+				{
+					ParentNode = RootNode;
+					break;
+				}
+			}
 			if (!ParentNode)
 			{
 				const TArray<USCS_Node*>& RootNodes = RedBlueprint->SimpleConstructionScript->GetRootNodes();
@@ -14433,6 +14920,36 @@ namespace
 
 			bChanged = true;
 			UE_LOG(LogTemp, Display, TEXT("[%s] Added %s static mesh component to BP_Frag_Red."), LogPrefix, *RedVisualComponentName.ToString());
+		}
+		else
+		{
+			USCS_Node* CurrentParentNode = RedBlueprint->SimpleConstructionScript->FindParentNode(VisualNode);
+			if (CurrentParentNode && CurrentParentNode->GetVariableName() == TEXT("Item"))
+			{
+				USCS_Node* NewParentNode = nullptr;
+				for (USCS_Node* RootNode : RedBlueprint->SimpleConstructionScript->GetRootNodes())
+				{
+					if (RootNode && RootNode->GetVariableName() != TEXT("Item"))
+					{
+						NewParentNode = RootNode;
+						break;
+					}
+				}
+
+				RedBlueprint->Modify();
+				RedBlueprint->SimpleConstructionScript->Modify();
+				CurrentParentNode->RemoveChildNode(VisualNode, false);
+				if (NewParentNode)
+				{
+					NewParentNode->AddChildNode(VisualNode, false);
+				}
+				else
+				{
+					RedBlueprint->SimpleConstructionScript->AddNode(VisualNode);
+				}
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Moved %s away from inherited Item on BP_Frag_Red."), LogPrefix, *RedVisualComponentName.ToString());
+			}
 		}
 
 		UStaticMeshComponent* VisualTemplate = VisualNode ? Cast<UStaticMeshComponent>(VisualNode->ComponentTemplate) : nullptr;
@@ -14455,6 +14972,249 @@ namespace
 		VisualTemplate->SetRelativeTransform(FTransform::Identity);
 		VisualTemplate->SetHiddenInGame(false);
 		return true;
+	}
+
+	bool TMComponentNameMatches(const UActorComponent* Component, const FName Name)
+	{
+		return Component
+			&& (Component->GetFName() == Name || Component->GetName().Equals(Name.ToString(), ESearchCase::IgnoreCase));
+	}
+
+	void TMDisablePrimitiveTemplate(UPrimitiveComponent* PrimitiveComponent)
+	{
+		if (!PrimitiveComponent)
+		{
+			return;
+		}
+
+		PrimitiveComponent->SetVisibility(false, false);
+		PrimitiveComponent->SetHiddenInGame(true, false);
+		PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		PrimitiveComponent->SetGenerateOverlapEvents(false);
+	}
+
+	UActorComponent* TMCreateInheritedComponentOverride(UBlueprint* ChildBlueprint, const USCS_Node* SourceNode)
+	{
+		if (!ChildBlueprint || !ChildBlueprint->GeneratedClass || !SourceNode)
+		{
+			return nullptr;
+		}
+
+		UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(ChildBlueprint->GeneratedClass);
+		UInheritableComponentHandler* Handler = GeneratedClass
+			? GeneratedClass->GetInheritableComponentHandler(true)
+			: nullptr;
+		if (!Handler)
+		{
+			return nullptr;
+		}
+
+		ChildBlueprint->Modify();
+		Handler->Modify();
+		return Handler->CreateOverridenComponentTemplate(FComponentKey(SourceNode));
+	}
+
+	void TMDisableRedFragInheritedSourceVisuals(
+		UBlueprint* RedBlueprint,
+		UBlueprint* SourceBlueprint,
+		UStaticMesh* RedMesh,
+		const TCHAR* LogPrefix,
+		bool& bChanged)
+	{
+		if (!RedBlueprint || !SourceBlueprint || !SourceBlueprint->SimpleConstructionScript)
+		{
+			return;
+		}
+
+		for (USCS_Node* SourceNode : SourceBlueprint->SimpleConstructionScript->GetAllNodes())
+		{
+			if (!SourceNode || !SourceNode->ComponentTemplate)
+			{
+				continue;
+			}
+
+			const FName VariableName = SourceNode->GetVariableName();
+			const bool bIsKnownSourceVisual = VariableName == TEXT("Item") || VariableName == TEXT("Item_Static");
+			if (USkeletalMeshComponent* SourceSkeletal = Cast<USkeletalMeshComponent>(SourceNode->ComponentTemplate))
+			{
+				USkeletalMesh* SourceMesh = SourceSkeletal->GetSkeletalMeshAsset();
+				if (!bIsKnownSourceVisual && !TMObjectPathLooksLikeFragGrenade(SourceMesh))
+				{
+					continue;
+				}
+
+				USkeletalMeshComponent* OverrideComponent = Cast<USkeletalMeshComponent>(
+					TMCreateInheritedComponentOverride(RedBlueprint, SourceNode));
+				if (!OverrideComponent)
+				{
+					continue;
+				}
+
+				const bool bNeedsChange = OverrideComponent->GetSkeletalMeshAsset() != nullptr
+					|| OverrideComponent->IsVisible()
+					|| !OverrideComponent->bHiddenInGame;
+				OverrideComponent->Modify();
+				OverrideComponent->SetSkeletalMesh(nullptr);
+				TMDisablePrimitiveTemplate(OverrideComponent);
+				if (bNeedsChange)
+				{
+					bChanged = true;
+					UE_LOG(LogTemp, Display, TEXT("[%s] Overrode inherited BP_Frag_Red component %s to no skeletal mesh."), LogPrefix, *VariableName.ToString());
+				}
+			}
+			else if (UStaticMeshComponent* SourceStatic = Cast<UStaticMeshComponent>(SourceNode->ComponentTemplate))
+			{
+				UStaticMesh* SourceMesh = SourceStatic->GetStaticMesh();
+				if (!bIsKnownSourceVisual && (!SourceMesh || SourceMesh == RedMesh || !TMObjectPathLooksLikeFragGrenade(SourceMesh)))
+				{
+					continue;
+				}
+
+				UStaticMeshComponent* OverrideComponent = Cast<UStaticMeshComponent>(
+					TMCreateInheritedComponentOverride(RedBlueprint, SourceNode));
+				if (!OverrideComponent)
+				{
+					continue;
+				}
+
+				const bool bNeedsChange = OverrideComponent->GetStaticMesh() != nullptr
+					|| OverrideComponent->IsVisible()
+					|| !OverrideComponent->bHiddenInGame;
+				OverrideComponent->Modify();
+				OverrideComponent->SetStaticMesh(nullptr);
+				TMDisablePrimitiveTemplate(OverrideComponent);
+				if (bNeedsChange)
+				{
+					bChanged = true;
+					UE_LOG(LogTemp, Display, TEXT("[%s] Overrode inherited BP_Frag_Red component %s to no static mesh."), LogPrefix, *VariableName.ToString());
+				}
+			}
+		}
+	}
+
+	void TMDisableRedFragGeneratedVisualTemplates(UBlueprint* RedBlueprint, UStaticMesh* RedMesh, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!RedBlueprint || !RedBlueprint->GeneratedClass)
+		{
+			return;
+		}
+
+		UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(RedBlueprint->GeneratedClass);
+		auto DisableComponent = [&](UActorComponent* Component)
+		{
+			if (!Component || TMComponentNameMatches(Component, TEXT("RedGrenadeVisual")))
+			{
+				return;
+			}
+
+			if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Component))
+			{
+				USkeletalMesh* OldMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
+				const bool bShouldDisable = TMComponentNameMatches(Component, TEXT("Item"))
+					|| TMObjectPathLooksLikeFragGrenade(OldMesh);
+				if (!bShouldDisable)
+				{
+					return;
+				}
+
+				const bool bNeedsChange = OldMesh != nullptr || SkeletalMeshComponent->IsVisible() || !SkeletalMeshComponent->bHiddenInGame;
+				SkeletalMeshComponent->Modify();
+				SkeletalMeshComponent->SetSkeletalMesh(nullptr);
+				TMDisablePrimitiveTemplate(SkeletalMeshComponent);
+				if (bNeedsChange)
+				{
+					bChanged = true;
+					UE_LOG(LogTemp, Display, TEXT("[%s] Disabled generated BP_Frag_Red skeletal template %s: %s"), LogPrefix, *Component->GetName(), *GetPathNameSafe(OldMesh));
+				}
+			}
+			else if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
+			{
+				UStaticMesh* OldMesh = StaticMeshComponent->GetStaticMesh();
+				const bool bShouldDisable = TMComponentNameMatches(Component, TEXT("Item_Static"))
+					|| (OldMesh && OldMesh != RedMesh && TMObjectPathLooksLikeFragGrenade(OldMesh));
+				if (!bShouldDisable)
+				{
+					return;
+				}
+
+				const bool bNeedsChange = OldMesh != nullptr || StaticMeshComponent->IsVisible() || !StaticMeshComponent->bHiddenInGame;
+				StaticMeshComponent->Modify();
+				StaticMeshComponent->SetStaticMesh(nullptr);
+				TMDisablePrimitiveTemplate(StaticMeshComponent);
+				if (bNeedsChange)
+				{
+					bChanged = true;
+					UE_LOG(LogTemp, Display, TEXT("[%s] Disabled generated BP_Frag_Red static template %s: %s"), LogPrefix, *Component->GetName(), *GetPathNameSafe(OldMesh));
+				}
+			}
+		};
+
+		if (GeneratedClass)
+		{
+			DisableComponent(GeneratedClass->FindComponentTemplateByName(TEXT("Item")));
+			DisableComponent(GeneratedClass->FindComponentTemplateByName(TEXT("Item_Static")));
+		}
+
+		if (UObject* DefaultObject = RedBlueprint->GeneratedClass->GetDefaultObject())
+		{
+			TArray<UObject*> DefaultSubobjects;
+			DefaultObject->GetDefaultSubobjects(DefaultSubobjects);
+			for (UObject* Subobject : DefaultSubobjects)
+			{
+				DisableComponent(Cast<UActorComponent>(Subobject));
+			}
+		}
+	}
+
+	void TMDisableRedFragSourceVisualSCS(UBlueprint* RedBlueprint, UStaticMesh* RedMesh, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!RedBlueprint || !RedBlueprint->SimpleConstructionScript)
+		{
+			return;
+		}
+
+		for (USCS_Node* Node : RedBlueprint->SimpleConstructionScript->GetAllNodes())
+		{
+			if (!Node || Node->GetVariableName() == TEXT("RedGrenadeVisual"))
+			{
+				continue;
+			}
+
+			if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Node->ComponentTemplate))
+			{
+				UStaticMesh* OldMesh = StaticMeshComponent->GetStaticMesh();
+				if (!OldMesh || OldMesh == RedMesh || !TMObjectPathLooksLikeFragGrenade(OldMesh))
+				{
+					continue;
+				}
+
+				StaticMeshComponent->Modify();
+				StaticMeshComponent->SetStaticMesh(nullptr);
+				StaticMeshComponent->SetVisibility(false, false);
+				StaticMeshComponent->SetHiddenInGame(true, false);
+				StaticMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+				StaticMeshComponent->SetGenerateOverlapEvents(false);
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Disabled source static frag SCS component %s: %s"), LogPrefix, *Node->GetVariableName().ToString(), *GetPathNameSafe(OldMesh));
+			}
+			else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Node->ComponentTemplate))
+			{
+				USkeletalMesh* OldMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
+				if (!OldMesh && SkeletalMeshComponent->bHiddenInGame)
+				{
+					continue;
+				}
+
+				SkeletalMeshComponent->Modify();
+				SkeletalMeshComponent->SetSkeletalMesh(nullptr);
+				SkeletalMeshComponent->SetVisibility(false, false);
+				SkeletalMeshComponent->SetHiddenInGame(true, false);
+				SkeletalMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+				SkeletalMeshComponent->SetGenerateOverlapEvents(false);
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Disabled source skeletal frag SCS component %s: %s"), LogPrefix, *Node->GetVariableName().ToString(), *GetPathNameSafe(OldMesh));
+			}
+		}
 	}
 
 	void TMPatchRedFragBlueprintDefaults(UBlueprint* RedBlueprint, UStaticMesh* RedMesh, const TCHAR* LogPrefix, bool& bChanged)
@@ -14508,13 +15268,80 @@ namespace
 			}
 			else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Subobject))
 			{
-				UE_LOG(
-					LogTemp,
-					Display,
-					TEXT("[%s] Skeletal mesh component kept on %s: %s"),
-					LogPrefix,
-					*GetPathNameSafe(SkeletalMeshComponent),
-					*GetPathNameSafe(SkeletalMeshComponent->GetSkeletalMeshAsset()));
+				USkeletalMesh* OldMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
+				if (TMObjectPathLooksLikeFragGrenade(OldMesh))
+				{
+					SkeletalMeshComponent->Modify();
+					SkeletalMeshComponent->SetSkeletalMesh(nullptr);
+					SkeletalMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+					SkeletalMeshComponent->SetGenerateOverlapEvents(false);
+					SkeletalMeshComponent->SetVisibility(false, false);
+					SkeletalMeshComponent->SetHiddenInGame(true, false);
+					bChanged = true;
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[%s] Cleared hidden skeletal frag component %s: %s"),
+						LogPrefix,
+						*GetPathNameSafe(SkeletalMeshComponent),
+						*GetPathNameSafe(OldMesh));
+				}
+			}
+		}
+	}
+
+	void TMSetWeaponIdentityDefaults(
+		UBlueprint* Blueprint,
+		const FName RowName,
+		const FText& DisplayName,
+		const TCHAR* LogPrefix,
+		bool& bChanged)
+	{
+		if (!Blueprint || !Blueprint->GeneratedClass || RowName.IsNone())
+		{
+			return;
+		}
+
+		UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+		if (!DefaultObject)
+		{
+			return;
+		}
+
+		if (FNameProperty* NameProperty = FindFProperty<FNameProperty>(DefaultObject->GetClass(), TEXT("Name")))
+		{
+			void* NamePtr = NameProperty->ContainerPtrToValuePtr<void>(DefaultObject);
+			const FName OldName = NameProperty->GetPropertyValue(NamePtr);
+			if (OldName != RowName)
+			{
+				DefaultObject->Modify();
+				NameProperty->SetPropertyValue(NamePtr, RowName);
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set default Name: %s -> %s on %s."), LogPrefix, *OldName.ToString(), *RowName.ToString(), *Blueprint->GetPathName());
+			}
+		}
+
+		static const FName TextPropertyNames[] =
+		{
+			TEXT("ItemName"),
+			TEXT("WeaponDisplayName")
+		};
+		for (const FName TextPropertyName : TextPropertyNames)
+		{
+			FTextProperty* TextProperty = FindFProperty<FTextProperty>(DefaultObject->GetClass(), TextPropertyName);
+			if (!TextProperty)
+			{
+				continue;
+			}
+
+			void* TextPtr = TextProperty->ContainerPtrToValuePtr<void>(DefaultObject);
+			const FText OldText = TextProperty->GetPropertyValue(TextPtr);
+			if (!OldText.EqualTo(DisplayName))
+			{
+				DefaultObject->Modify();
+				TextProperty->SetPropertyValue(TextPtr, DisplayName);
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set default %s: \"%s\" -> \"%s\" on %s."), LogPrefix, *TextPropertyName.ToString(), *OldText.ToString(), *DisplayName.ToString(), *Blueprint->GetPathName());
 			}
 		}
 	}
@@ -14551,7 +15378,21 @@ namespace
 				Property,
 				Property->ContainerPtrToValuePtr<void>(RowData),
 				RedMesh,
-				RedClass,
+				nullptr,
+				LogPrefix,
+				TEXT("DT_Weapons.Frag_Red"),
+				bChanged);
+			TMClearIncompatibleFragMeshRefsInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(RowData),
+				RedMesh,
+				LogPrefix,
+				TEXT("DT_Weapons.Frag_Red"),
+				bChanged);
+			TMSetFragLikeDisplayNameInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(RowData),
+				TEXT("Frag_Red"),
 				LogPrefix,
 				TEXT("DT_Weapons.Frag_Red"),
 				bChanged);
@@ -14624,10 +15465,14 @@ namespace
 		TMClearBadRedFragClassRefs(RedBlueprint, LogPrefix, bBlueprintChanged);
 		TMClearBadRedFragAttachmentMeshRefs(RedBlueprint, RedMesh, LogPrefix, bBlueprintChanged);
 		TMPatchRedFragBlueprintDefaults(RedBlueprint, RedMesh, LogPrefix, bBlueprintChanged);
+		TMSetWeaponIdentityDefaults(RedBlueprint, TEXT("Frag_Red"), FText::FromString(TEXT("Frag_Red")), LogPrefix, bBlueprintChanged);
 		if (!TMEnsureRedFragStaticMeshComponent(RedBlueprint, RedMesh, LogPrefix, bBlueprintChanged))
 		{
 			return false;
 		}
+		TMDisableRedFragInheritedSourceVisuals(RedBlueprint, SourceBlueprint, RedMesh, LogPrefix, bBlueprintChanged);
+		TMDisableRedFragSourceVisualSCS(RedBlueprint, RedMesh, LogPrefix, bBlueprintChanged);
+		TMDisableRedFragGeneratedVisualTemplates(RedBlueprint, RedMesh, LogPrefix, bBlueprintChanged);
 
 		FBlueprintEditorUtils::MarkBlueprintAsModified(RedBlueprint);
 		FKismetEditorUtilities::CompileBlueprint(RedBlueprint);
@@ -14649,6 +15494,860 @@ namespace
 
 		UE_LOG(LogTemp, Display, TEXT("[%s] Summary: BlueprintChanged=%d Success=%d"), LogPrefix, bBlueprintChanged ? 1 : 0, bSuccess ? 1 : 0);
 		return bSuccess;
+	}
+
+	bool TMPropertyLooksLikeWeaponDisplayName(const FProperty* Property)
+	{
+		if (!Property)
+		{
+			return false;
+		}
+
+		const FString Name = Property->GetName() + TEXT(" ") + Property->GetAuthoredName() + TEXT(" ") + Property->GetMetaData(TEXT("DisplayName"));
+		return Name.Contains(TEXT("Display Name"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("DisplayName"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("Weapon Name"), ESearchCase::IgnoreCase)
+			|| Name.Contains(TEXT("WeaponName"), ESearchCase::IgnoreCase)
+			|| Property->GetName().Equals(TEXT("Name"), ESearchCase::IgnoreCase)
+			|| Property->GetAuthoredName().Equals(TEXT("Name"), ESearchCase::IgnoreCase);
+	}
+
+	bool TMTextLooksLikeFragDisplayName(const FString& Text)
+	{
+		const FString Trimmed = Text.TrimStartAndEnd();
+		return Trimmed.Equals(TEXT("Frag"), ESearchCase::IgnoreCase)
+			|| Trimmed.Equals(TEXT("Grenade"), ESearchCase::IgnoreCase)
+			|| Trimmed.Equals(TEXT("Frag Grenade"), ESearchCase::IgnoreCase)
+			|| Trimmed.Equals(TEXT("BP_Frag"), ESearchCase::IgnoreCase);
+	}
+
+	void TMSetFragLikeDisplayNameInProperty(
+		FProperty* Property,
+		void* ValuePtr,
+		const TCHAR* NewDisplayName,
+		const TCHAR* LogPrefix,
+		const FString& OwnerLabel,
+		bool& bChanged)
+	{
+		if (!Property || !ValuePtr || !NewDisplayName)
+		{
+			return;
+		}
+
+		if (FNameProperty* NameProperty = CastField<FNameProperty>(Property))
+		{
+			const FName OldName = NameProperty->GetPropertyValue(ValuePtr);
+			if (TMPropertyLooksLikeWeaponDisplayName(Property) && TMTextLooksLikeFragDisplayName(OldName.ToString()))
+			{
+				NameProperty->SetPropertyValue(ValuePtr, FName(NewDisplayName));
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set name property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldName.ToString(), NewDisplayName);
+			}
+			return;
+		}
+
+		if (FStrProperty* StringProperty = CastField<FStrProperty>(Property))
+		{
+			const FString OldString = StringProperty->GetPropertyValue(ValuePtr);
+			if (TMPropertyLooksLikeWeaponDisplayName(Property) && TMTextLooksLikeFragDisplayName(OldString))
+			{
+				StringProperty->SetPropertyValue(ValuePtr, FString(NewDisplayName));
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set string property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldString, NewDisplayName);
+			}
+			return;
+		}
+
+		if (FTextProperty* TextProperty = CastField<FTextProperty>(Property))
+		{
+			const FText OldText = TextProperty->GetPropertyValue(ValuePtr);
+			if (TMPropertyLooksLikeWeaponDisplayName(Property) && TMTextLooksLikeFragDisplayName(OldText.ToString()))
+			{
+				TextProperty->SetPropertyValue(ValuePtr, FText::FromString(NewDisplayName));
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Set text property %s on %s: %s -> %s"), LogPrefix, *Property->GetName(), *OwnerLabel, *OldText.ToString(), NewDisplayName);
+			}
+			return;
+		}
+
+		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (!StructProperty->Struct)
+			{
+				return;
+			}
+
+			for (TFieldIterator<FProperty> ChildIt(StructProperty->Struct); ChildIt; ++ChildIt)
+			{
+				FProperty* ChildProperty = *ChildIt;
+				TMSetFragLikeDisplayNameInProperty(
+					ChildProperty,
+					ChildProperty->ContainerPtrToValuePtr<void>(ValuePtr),
+					NewDisplayName,
+					LogPrefix,
+					OwnerLabel + TEXT(".") + Property->GetName(),
+					bChanged);
+			}
+			return;
+		}
+
+		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+			for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+			{
+				TMSetFragLikeDisplayNameInProperty(
+					ArrayProperty->Inner,
+					ArrayHelper.GetRawPtr(Index),
+					NewDisplayName,
+					LogPrefix,
+					OwnerLabel + FString::Printf(TEXT(".%s[%d]"), *Property->GetName(), Index),
+					bChanged);
+			}
+		}
+	}
+
+	void TMSetGunDisplayName(UBlueprint* Blueprint, const TCHAR* NewDisplayName, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!Blueprint || !Blueprint->GeneratedClass || !NewDisplayName)
+		{
+			return;
+		}
+
+		UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+		FTextProperty* DisplayNameProperty = DefaultObject
+			? FindFProperty<FTextProperty>(DefaultObject->GetClass(), TEXT("WeaponDisplayName"))
+			: nullptr;
+		if (!DefaultObject || !DisplayNameProperty)
+		{
+			return;
+		}
+
+		const FText OldDisplayName = DisplayNameProperty->GetPropertyValue_InContainer(DefaultObject);
+		if (OldDisplayName.ToString().Equals(NewDisplayName, ESearchCase::CaseSensitive))
+		{
+			return;
+		}
+
+		DefaultObject->Modify();
+		DisplayNameProperty->SetPropertyValue_InContainer(DefaultObject, FText::FromString(NewDisplayName));
+		bChanged = true;
+		UE_LOG(LogTemp, Display, TEXT("[%s] Set WeaponDisplayName on %s: %s -> %s"), LogPrefix, *DefaultObject->GetPathName(), *OldDisplayName.ToString(), NewDisplayName);
+	}
+
+	void TMPatchTripmineBlueprintDefaults(UBlueprint* TripmineBlueprint, USkeletalMesh* TripmineMesh, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!TripmineBlueprint || !TripmineBlueprint->GeneratedClass || !TripmineMesh)
+		{
+			return;
+		}
+
+		UObject* DefaultObject = TripmineBlueprint->GeneratedClass->GetDefaultObject();
+		if (!DefaultObject)
+		{
+			return;
+		}
+
+		TMSetGunDisplayName(TripmineBlueprint, TEXT("Tripmine"), LogPrefix, bChanged);
+
+		DefaultObject->Modify();
+		for (TFieldIterator<FProperty> It(DefaultObject->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			FProperty* Property = *It;
+			TMReplaceFragRefsInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(DefaultObject),
+				TripmineMesh,
+				TripmineBlueprint->GeneratedClass,
+				LogPrefix,
+				DefaultObject->GetPathName(),
+				bChanged);
+		}
+
+		TArray<UObject*> DefaultSubobjects;
+		DefaultObject->GetDefaultSubobjects(DefaultSubobjects);
+		for (UObject* Subobject : DefaultSubobjects)
+		{
+			if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Subobject))
+			{
+				USkeletalMesh* OldMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
+				if (OldMesh != TripmineMesh && TMObjectPathLooksLikeFragGrenade(OldMesh))
+				{
+					SkeletalMeshComponent->Modify();
+					SkeletalMeshComponent->SetSkeletalMesh(TripmineMesh);
+					bChanged = true;
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[%s] Set skeletal mesh component %s: %s -> %s"),
+						LogPrefix,
+						*SkeletalMeshComponent->GetPathName(),
+						*GetPathNameSafe(OldMesh),
+						*TripmineMesh->GetPathName());
+				}
+			}
+		}
+	}
+
+	void TMOverrideTripmineInheritedSourceVisuals(
+		UBlueprint* TripmineBlueprint,
+		UBlueprint* SourceBlueprint,
+		USkeletalMesh* TripmineMesh,
+		const TCHAR* LogPrefix,
+		bool& bChanged)
+	{
+		if (!TripmineBlueprint || !SourceBlueprint || !SourceBlueprint->SimpleConstructionScript || !TripmineMesh)
+		{
+			return;
+		}
+
+		for (USCS_Node* SourceNode : SourceBlueprint->SimpleConstructionScript->GetAllNodes())
+		{
+			if (!SourceNode || !SourceNode->ComponentTemplate)
+			{
+				continue;
+			}
+
+			const FName VariableName = SourceNode->GetVariableName();
+			const bool bIsItem = VariableName == TEXT("Item");
+			const bool bIsKnownSourceVisual = bIsItem || VariableName == TEXT("Item_Static");
+
+			if (USkeletalMeshComponent* SourceSkeletal = Cast<USkeletalMeshComponent>(SourceNode->ComponentTemplate))
+			{
+				USkeletalMesh* SourceMesh = SourceSkeletal->GetSkeletalMeshAsset();
+				if (!bIsKnownSourceVisual && !TMObjectPathLooksLikeFragGrenade(SourceMesh))
+				{
+					continue;
+				}
+
+				USkeletalMeshComponent* OverrideComponent = Cast<USkeletalMeshComponent>(
+					TMCreateInheritedComponentOverride(TripmineBlueprint, SourceNode));
+				if (!OverrideComponent)
+				{
+					continue;
+				}
+
+				if (bIsItem)
+				{
+					const bool bNeedsChange = OverrideComponent->GetSkeletalMeshAsset() != TripmineMesh
+						|| !OverrideComponent->IsVisible()
+						|| OverrideComponent->bHiddenInGame;
+					OverrideComponent->Modify();
+					OverrideComponent->SetSkeletalMesh(TripmineMesh);
+					OverrideComponent->SetVisibility(true, false);
+					OverrideComponent->SetHiddenInGame(false, false);
+					OverrideComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+					OverrideComponent->SetGenerateOverlapEvents(false);
+					if (bNeedsChange)
+					{
+						bChanged = true;
+						UE_LOG(LogTemp, Display, TEXT("[%s] Overrode inherited BP_Tripmine Item mesh to SK_Tripmine."), LogPrefix);
+					}
+				}
+				else
+				{
+					const bool bNeedsChange = OverrideComponent->GetSkeletalMeshAsset() != nullptr
+						|| OverrideComponent->IsVisible()
+						|| !OverrideComponent->bHiddenInGame;
+					OverrideComponent->Modify();
+					OverrideComponent->SetSkeletalMesh(nullptr);
+					TMDisablePrimitiveTemplate(OverrideComponent);
+					if (bNeedsChange)
+					{
+						bChanged = true;
+						UE_LOG(LogTemp, Display, TEXT("[%s] Overrode inherited BP_Tripmine component %s to no skeletal mesh."), LogPrefix, *VariableName.ToString());
+					}
+				}
+			}
+			else if (UStaticMeshComponent* SourceStatic = Cast<UStaticMeshComponent>(SourceNode->ComponentTemplate))
+			{
+				UStaticMesh* SourceMesh = SourceStatic->GetStaticMesh();
+				if (!bIsKnownSourceVisual && !TMObjectPathLooksLikeFragGrenade(SourceMesh))
+				{
+					continue;
+				}
+
+				UStaticMeshComponent* OverrideComponent = Cast<UStaticMeshComponent>(
+					TMCreateInheritedComponentOverride(TripmineBlueprint, SourceNode));
+				if (!OverrideComponent)
+				{
+					continue;
+				}
+
+				const bool bNeedsChange = OverrideComponent->GetStaticMesh() != nullptr
+					|| OverrideComponent->IsVisible()
+					|| !OverrideComponent->bHiddenInGame;
+				OverrideComponent->Modify();
+				OverrideComponent->SetStaticMesh(nullptr);
+				TMDisablePrimitiveTemplate(OverrideComponent);
+				if (bNeedsChange)
+				{
+					bChanged = true;
+					UE_LOG(LogTemp, Display, TEXT("[%s] Overrode inherited BP_Tripmine component %s to no static mesh."), LogPrefix, *VariableName.ToString());
+				}
+			}
+		}
+	}
+
+	void TMPatchTripmineBlueprintSCS(UBlueprint* TripmineBlueprint, USkeletalMesh* TripmineMesh, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!TripmineBlueprint || !TripmineBlueprint->SimpleConstructionScript || !TripmineMesh)
+		{
+			return;
+		}
+
+		static const FName TripmineVisualComponentName(TEXT("TripmineVisual"));
+		TArray<USCS_Node*> Nodes = TripmineBlueprint->SimpleConstructionScript->GetAllNodes();
+		for (USCS_Node* Node : Nodes)
+		{
+			if (!Node)
+			{
+				continue;
+			}
+
+			if (Node->GetVariableName() == TripmineVisualComponentName)
+			{
+				TripmineBlueprint->Modify();
+				TripmineBlueprint->SimpleConstructionScript->Modify();
+				TripmineBlueprint->SimpleConstructionScript->RemoveNode(Node);
+				bChanged = true;
+				UE_LOG(LogTemp, Display, TEXT("[%s] Removed extra BP_Tripmine SCS component %s."), LogPrefix, *TripmineVisualComponentName.ToString());
+				continue;
+			}
+
+			USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Node->ComponentTemplate);
+			if (SkeletalMeshComponent)
+			{
+				USkeletalMesh* OldMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
+				if (Node->GetVariableName() == TEXT("Item"))
+				{
+					SkeletalMeshComponent->Modify();
+					SkeletalMeshComponent->SetSkeletalMesh(TripmineMesh);
+					SkeletalMeshComponent->SetVisibility(true, false);
+					SkeletalMeshComponent->SetHiddenInGame(false, false);
+					SkeletalMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+					SkeletalMeshComponent->SetGenerateOverlapEvents(false);
+					if (OldMesh != TripmineMesh)
+					{
+						bChanged = true;
+						UE_LOG(
+							LogTemp,
+							Display,
+							TEXT("[%s] Set BP_Tripmine SCS Item mesh: %s -> %s"),
+							LogPrefix,
+							*GetPathNameSafe(OldMesh),
+							*TripmineMesh->GetPathName());
+					}
+					continue;
+				}
+
+				if (OldMesh == TripmineMesh || TMObjectPathLooksLikeFragGrenade(OldMesh))
+				{
+					SkeletalMeshComponent->Modify();
+					SkeletalMeshComponent->SetSkeletalMesh(nullptr);
+					TMDisablePrimitiveTemplate(SkeletalMeshComponent);
+					bChanged = true;
+					UE_LOG(
+						LogTemp,
+						Display,
+						TEXT("[%s] Disabled extra BP_Tripmine SCS skeletal component %s: %s"),
+						LogPrefix,
+						*Node->GetVariableName().ToString(),
+						*GetPathNameSafe(OldMesh));
+				}
+				continue;
+			}
+
+			UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Node->ComponentTemplate);
+			UStaticMesh* OldStaticMesh = StaticMeshComponent ? StaticMeshComponent->GetStaticMesh() : nullptr;
+			if (StaticMeshComponent && TMObjectPathLooksLikeFragGrenade(OldStaticMesh))
+			{
+				StaticMeshComponent->Modify();
+				StaticMeshComponent->SetStaticMesh(nullptr);
+				StaticMeshComponent->SetVisibility(false, false);
+				StaticMeshComponent->SetHiddenInGame(true, false);
+				StaticMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+				StaticMeshComponent->SetGenerateOverlapEvents(false);
+				bChanged = true;
+				UE_LOG(
+					LogTemp,
+					Display,
+					TEXT("[%s] Disabled source static frag SCS component %s: %s"),
+					LogPrefix,
+					*Node->GetVariableName().ToString(),
+					*GetPathNameSafe(OldStaticMesh));
+			}
+		}
+	}
+
+	void TMNormalizeTripmineGeneratedVisualTemplates(UBlueprint* TripmineBlueprint, USkeletalMesh* TripmineMesh, const TCHAR* LogPrefix, bool& bChanged)
+	{
+		if (!TripmineBlueprint || !TripmineBlueprint->GeneratedClass || !TripmineMesh)
+		{
+			return;
+		}
+
+		UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(TripmineBlueprint->GeneratedClass);
+		auto NormalizeComponent = [&](UActorComponent* Component)
+		{
+			if (!Component)
+			{
+				return;
+			}
+
+			if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Component))
+			{
+				USkeletalMesh* OldMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
+				if (TMComponentNameMatches(Component, TEXT("Item")))
+				{
+					const bool bNeedsChange = OldMesh != TripmineMesh
+						|| !SkeletalMeshComponent->IsVisible()
+						|| SkeletalMeshComponent->bHiddenInGame;
+					SkeletalMeshComponent->Modify();
+					SkeletalMeshComponent->SetSkeletalMesh(TripmineMesh);
+					SkeletalMeshComponent->SetVisibility(true, false);
+					SkeletalMeshComponent->SetHiddenInGame(false, false);
+					SkeletalMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+					SkeletalMeshComponent->SetGenerateOverlapEvents(false);
+					if (bNeedsChange)
+					{
+						bChanged = true;
+						UE_LOG(LogTemp, Display, TEXT("[%s] Set generated BP_Tripmine Item template: %s -> %s"), LogPrefix, *GetPathNameSafe(OldMesh), *TripmineMesh->GetPathName());
+					}
+					return;
+				}
+
+				const bool bShouldDisable = OldMesh == TripmineMesh || TMObjectPathLooksLikeFragGrenade(OldMesh);
+				if (!bShouldDisable)
+				{
+					return;
+				}
+
+				const bool bNeedsChange = OldMesh != nullptr || SkeletalMeshComponent->IsVisible() || !SkeletalMeshComponent->bHiddenInGame;
+				SkeletalMeshComponent->Modify();
+				SkeletalMeshComponent->SetSkeletalMesh(nullptr);
+				TMDisablePrimitiveTemplate(SkeletalMeshComponent);
+				if (bNeedsChange)
+				{
+					bChanged = true;
+					UE_LOG(LogTemp, Display, TEXT("[%s] Disabled generated BP_Tripmine skeletal template %s: %s"), LogPrefix, *Component->GetName(), *GetPathNameSafe(OldMesh));
+				}
+			}
+			else if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
+			{
+				UStaticMesh* OldMesh = StaticMeshComponent->GetStaticMesh();
+				const bool bShouldDisable = TMComponentNameMatches(Component, TEXT("Item_Static"))
+					|| TMObjectPathLooksLikeFragGrenade(OldMesh);
+				if (!bShouldDisable)
+				{
+					return;
+				}
+
+				const bool bNeedsChange = OldMesh != nullptr || StaticMeshComponent->IsVisible() || !StaticMeshComponent->bHiddenInGame;
+				StaticMeshComponent->Modify();
+				StaticMeshComponent->SetStaticMesh(nullptr);
+				TMDisablePrimitiveTemplate(StaticMeshComponent);
+				if (bNeedsChange)
+				{
+					bChanged = true;
+					UE_LOG(LogTemp, Display, TEXT("[%s] Disabled generated BP_Tripmine static template %s: %s"), LogPrefix, *Component->GetName(), *GetPathNameSafe(OldMesh));
+				}
+			}
+		};
+
+		if (GeneratedClass)
+		{
+			NormalizeComponent(GeneratedClass->FindComponentTemplateByName(TEXT("Item")));
+			NormalizeComponent(GeneratedClass->FindComponentTemplateByName(TEXT("Item_Static")));
+		}
+
+		if (UObject* DefaultObject = TripmineBlueprint->GeneratedClass->GetDefaultObject())
+		{
+			TArray<UObject*> DefaultSubobjects;
+			DefaultObject->GetDefaultSubobjects(DefaultSubobjects);
+			for (UObject* Subobject : DefaultSubobjects)
+			{
+				NormalizeComponent(Cast<UActorComponent>(Subobject));
+			}
+		}
+	}
+
+	bool TMPatchTripmineWeaponRow(USkeletalMesh* TripmineMesh, UClass* TripmineClass)
+	{
+		const TCHAR* LogPrefix = TEXT("TMTripmine");
+		UDataTable* WeaponsTable = LoadObject<UDataTable>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Blueprints/DataTables/DT_Weapons.DT_Weapons"));
+		if (!WeaponsTable || !WeaponsTable->GetRowStruct())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load DT_Weapons or its row struct."), LogPrefix);
+			return false;
+		}
+
+		UScriptStruct* RowStruct = const_cast<UScriptStruct*>(WeaponsTable->GetRowStruct());
+		uint8* SourceRow = WeaponsTable->FindRowUnchecked(TEXT("Frag"));
+		if (!SourceRow)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] DT_Weapons has no Frag row to clone."), LogPrefix);
+			return false;
+		}
+
+		FStructOnScope RowScope(RowStruct);
+		uint8* RowData = RowScope.GetStructMemory();
+		RowStruct->CopyScriptStruct(RowData, SourceRow);
+
+		bool bChanged = false;
+		for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+		{
+			FProperty* Property = *It;
+			TMReplaceFragRefsInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(RowData),
+				TripmineMesh,
+				nullptr,
+				LogPrefix,
+				TEXT("DT_Weapons.Tripmine"),
+				bChanged);
+			TMSetFragLikeDisplayNameInProperty(
+				Property,
+				Property->ContainerPtrToValuePtr<void>(RowData),
+				TEXT("Tripmine"),
+				LogPrefix,
+				TEXT("DT_Weapons.Tripmine"),
+				bChanged);
+		}
+
+		WeaponsTable->Modify();
+		WeaponsTable->RemoveRow(TEXT("Tripmine"));
+		WeaponsTable->AddRow(TEXT("Tripmine"), RowData, RowStruct);
+		WeaponsTable->HandleDataTableChanged(TEXT("Tripmine"));
+		WeaponsTable->MarkPackageDirty();
+
+		FString RowText;
+		RowStruct->ExportText(RowText, RowData, nullptr, nullptr, PPF_None, nullptr);
+		UE_LOG(LogTemp, Display, TEXT("[%s] Patched DT_Weapons row Tripmine ChangedRefs=%d: %s"), LogPrefix, bChanged ? 1 : 0, *RowText);
+		return TMSavePackageForAsset(WeaponsTable, LogPrefix);
+	}
+
+	bool TMPatchTripmineGrenade()
+	{
+		const TCHAR* LogPrefix = TEXT("TMTripmine");
+		UBlueprint* SourceBlueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Frag.BP_Frag"));
+		if (!SourceBlueprint)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load BP_Frag."), LogPrefix);
+			return false;
+		}
+
+		USkeletalMesh* TripmineMesh = LoadObject<USkeletalMesh>(
+			nullptr,
+			TEXT("/Game/Weapons/Mesh/GrenadesAndMine/SK_Tripmine.SK_Tripmine"));
+		if (!TripmineMesh)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to load SK_Tripmine."), LogPrefix);
+			return false;
+		}
+
+		UBlueprint* TripmineBlueprint = LoadObject<UBlueprint>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Tripmine.BP_Tripmine"));
+		if (!TripmineBlueprint)
+		{
+			UObject* DuplicatedObject = FAssetToolsModule::GetModule().Get().DuplicateAsset(
+				TEXT("BP_Tripmine"),
+				TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag"),
+				SourceBlueprint);
+			TripmineBlueprint = Cast<UBlueprint>(DuplicatedObject);
+			if (!TripmineBlueprint)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[%s] Failed to duplicate BP_Frag to BP_Tripmine."), LogPrefix);
+				return false;
+			}
+
+			UE_LOG(LogTemp, Display, TEXT("[%s] Duplicated BP_Frag -> %s."), LogPrefix, *TripmineBlueprint->GetPathName());
+		}
+		else
+		{
+			UE_LOG(LogTemp, Display, TEXT("[%s] BP_Tripmine already exists: %s."), LogPrefix, *TripmineBlueprint->GetPathName());
+		}
+
+		FKismetEditorUtilities::CompileBlueprint(TripmineBlueprint);
+		if (TripmineBlueprint->Status == BS_Error || !TripmineBlueprint->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] BP_Tripmine compile failed before patch."), LogPrefix);
+			return false;
+		}
+
+		bool bBlueprintChanged = false;
+		TMPatchTripmineBlueprintDefaults(TripmineBlueprint, TripmineMesh, LogPrefix, bBlueprintChanged);
+		TMSetWeaponIdentityDefaults(TripmineBlueprint, TEXT("Tripmine"), FText::FromString(TEXT("Tripmine")), LogPrefix, bBlueprintChanged);
+		TMOverrideTripmineInheritedSourceVisuals(TripmineBlueprint, SourceBlueprint, TripmineMesh, LogPrefix, bBlueprintChanged);
+		TMPatchTripmineBlueprintSCS(TripmineBlueprint, TripmineMesh, LogPrefix, bBlueprintChanged);
+		TMNormalizeTripmineGeneratedVisualTemplates(TripmineBlueprint, TripmineMesh, LogPrefix, bBlueprintChanged);
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(TripmineBlueprint);
+		FKismetEditorUtilities::CompileBlueprint(TripmineBlueprint);
+		if (TripmineBlueprint->Status == BS_Error || !TripmineBlueprint->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] BP_Tripmine compile failed after patch."), LogPrefix);
+			return false;
+		}
+
+		if (!TMSavePackageForAsset(TripmineBlueprint, LogPrefix))
+		{
+			return false;
+		}
+
+		bool bSuccess = TMPatchTripmineWeaponRow(TripmineMesh, TripmineBlueprint->GeneratedClass);
+		bSuccess &= TMRefreshCompileAndSaveBlueprint(
+			TEXT("/Game/MP_System_V3/Game/Blueprints/Widgets/W_Loadout.W_Loadout"),
+			LogPrefix);
+
+		UE_LOG(LogTemp, Display, TEXT("[%s] Summary: BlueprintChanged=%d Success=%d"), LogPrefix, bBlueprintChanged ? 1 : 0, bSuccess ? 1 : 0);
+		return bSuccess;
+	}
+
+	bool TMPatchExplosiveLoadoutVariants()
+	{
+		bool bSuccess = true;
+		bSuccess &= TMPatchFragSelectedUiIconsFromRealIcon();
+		bSuccess &= TMPatchRedFragGrenade();
+		bSuccess &= TMPatchTripmineGrenade();
+		bSuccess &= TMPatchWeaponLayerVariantArrays();
+		return bSuccess;
+	}
+
+	bool TMIsVisiblePreviewPrimitive(const UPrimitiveComponent* Component)
+	{
+		return Component && Component->IsVisible() && !Component->bHiddenInGame;
+	}
+
+	FString TMDescribePreviewComponent(const UActorComponent* Component)
+	{
+		if (!Component)
+		{
+			return TEXT("None");
+		}
+
+		if (const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
+		{
+			return FString::Printf(
+				TEXT("Static Name=%s Mesh=%s Visible=%d HiddenInGame=%d Parent=%s"),
+				*StaticMeshComponent->GetName(),
+				*GetPathNameSafe(StaticMeshComponent->GetStaticMesh()),
+				StaticMeshComponent->IsVisible() ? 1 : 0,
+				StaticMeshComponent->bHiddenInGame ? 1 : 0,
+				*GetNameSafe(StaticMeshComponent->GetAttachParent()));
+		}
+
+		if (const USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Component))
+		{
+			return FString::Printf(
+				TEXT("Skeletal Name=%s Mesh=%s Visible=%d HiddenInGame=%d Parent=%s"),
+				*SkeletalMeshComponent->GetName(),
+				*GetPathNameSafe(SkeletalMeshComponent->GetSkeletalMeshAsset()),
+				SkeletalMeshComponent->IsVisible() ? 1 : 0,
+				SkeletalMeshComponent->bHiddenInGame ? 1 : 0,
+				*GetNameSafe(SkeletalMeshComponent->GetAttachParent()));
+		}
+
+		return FString::Printf(TEXT("Component Name=%s Class=%s"), *Component->GetName(), *Component->GetClass()->GetName());
+	}
+
+	bool TMVerifyExplosivePreviewActor(UWorld* World, UClass* ActorClass, const TCHAR* Label)
+	{
+		const TCHAR* LogPrefix = TEXT("TMExplosiveRuntimeVerify");
+		if (!World || !ActorClass || !Label)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Invalid verify input. World=%d Class=%s Label=%s"),
+				LogPrefix,
+				World ? 1 : 0,
+				*GetNameSafe(ActorClass),
+				Label ? Label : TEXT("None"));
+			return false;
+		}
+
+		AActor* Actor = World->SpawnActor<AActor>(ActorClass, FTransform::Identity);
+		if (!Actor)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to spawn %s class %s."), LogPrefix, Label, *GetPathNameSafe(ActorClass));
+			return false;
+		}
+
+		const bool bAttached = UTMGameplayStatics::AttachActiveLoadoutWeaponToTransformator(Actor);
+		USceneComponent* ItemComponent = nullptr;
+		TArray<USceneComponent*> SceneComponents;
+		Actor->GetComponents<USceneComponent>(SceneComponents);
+		for (USceneComponent* SceneComponent : SceneComponents)
+		{
+			if (SceneComponent && SceneComponent->GetFName() == TEXT("Item"))
+			{
+				ItemComponent = SceneComponent;
+				break;
+			}
+		}
+
+		if (ItemComponent)
+		{
+			UTMGameplayStatics::LogLoadoutPreviewOffsetApplied(Actor, ItemComponent, FVector(15.0f, -5.0f, -7.5f));
+		}
+
+		bool bRedVisible = false;
+		bool bTripmineVisible = false;
+		bool bGreenFragVisible = false;
+		int32 VisibleMeshCount = 0;
+
+		TArray<UActorComponent*> Components;
+		Actor->GetComponents(Components);
+		for (UActorComponent* Component : Components)
+		{
+			if (const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
+			{
+				UE_LOG(LogTemp, Display, TEXT("[%s] %s %s"), LogPrefix, Label, *TMDescribePreviewComponent(Component));
+				if (TMIsVisiblePreviewPrimitive(StaticMeshComponent) && StaticMeshComponent->GetStaticMesh())
+				{
+					++VisibleMeshCount;
+					const FString MeshPath = StaticMeshComponent->GetStaticMesh()->GetPathName();
+					bRedVisible |= MeshPath.Contains(TEXT("SM_Grenade_Red"), ESearchCase::IgnoreCase);
+					bGreenFragVisible |= TMObjectPathLooksLikeFragGrenade(StaticMeshComponent->GetStaticMesh())
+						&& !MeshPath.Contains(TEXT("SM_Grenade_Red"), ESearchCase::IgnoreCase);
+				}
+			}
+			else if (const USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Component))
+			{
+				UE_LOG(LogTemp, Display, TEXT("[%s] %s %s"), LogPrefix, Label, *TMDescribePreviewComponent(Component));
+				if (TMIsVisiblePreviewPrimitive(SkeletalMeshComponent) && SkeletalMeshComponent->GetSkeletalMeshAsset())
+				{
+					++VisibleMeshCount;
+					const FString MeshPath = SkeletalMeshComponent->GetSkeletalMeshAsset()->GetPathName();
+					bTripmineVisible |= MeshPath.Contains(TEXT("SK_Tripmine"), ESearchCase::IgnoreCase);
+					bGreenFragVisible |= TMObjectPathLooksLikeFragGrenade(SkeletalMeshComponent->GetSkeletalMeshAsset());
+				}
+			}
+		}
+
+		const bool bExpectRed = FCString::Stristr(Label, TEXT("Red")) != nullptr;
+		const bool bExpectTripmine = FCString::Stristr(Label, TEXT("Tripmine")) != nullptr;
+		const bool bSuccess =
+			bAttached
+			&& !bGreenFragVisible
+			&& ((bExpectRed && bRedVisible && VisibleMeshCount == 1)
+				|| (bExpectTripmine && bTripmineVisible && VisibleMeshCount == 1));
+
+		if (bSuccess)
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s] Result %s Attached=%d VisibleMeshes=%d RedVisible=%d TripmineVisible=%d GreenFragVisible=%d Success=%d"),
+				LogPrefix,
+				Label,
+				bAttached ? 1 : 0,
+				VisibleMeshCount,
+				bRedVisible ? 1 : 0,
+				bTripmineVisible ? 1 : 0,
+				bGreenFragVisible ? 1 : 0,
+				1);
+		}
+		else
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[%s] Result %s Attached=%d VisibleMeshes=%d RedVisible=%d TripmineVisible=%d GreenFragVisible=%d Success=%d"),
+				LogPrefix,
+				Label,
+				bAttached ? 1 : 0,
+				VisibleMeshCount,
+				bRedVisible ? 1 : 0,
+				bTripmineVisible ? 1 : 0,
+				bGreenFragVisible ? 1 : 0,
+				0);
+		}
+
+		return bSuccess;
+	}
+
+	bool TMVerifyExplosiveLoadoutRuntime()
+	{
+		const TCHAR* LogPrefix = TEXT("TMExplosiveRuntimeVerify");
+		const UWorld::InitializationValues InitValues = UWorld::InitializationValues()
+			.AllowAudioPlayback(false)
+			.RequiresHitProxies(false)
+			.CreatePhysicsScene(false)
+			.CreateNavigation(false)
+			.CreateAISystem(false)
+			.ShouldSimulatePhysics(false)
+			.SetTransactional(false);
+		UWorld* World = UWorld::CreateWorld(
+			EWorldType::Game,
+			false,
+			FName(TEXT("TMExplosiveRuntimeVerifyWorld")),
+			nullptr,
+			true,
+			ERHIFeatureLevel::Num,
+			&InitValues);
+		if (!World)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to create transient world."), LogPrefix);
+			return false;
+		}
+
+		AActor* Transformator = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform(FRotator::ZeroRotator, FVector(-45.0f, -30.0f, -5.0f)));
+		if (!Transformator)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[%s] Failed to spawn ActiveWeaponTransformator."), LogPrefix);
+			World->DestroyWorld(false);
+			return false;
+		}
+		USceneComponent* TransformatorRoot = NewObject<USceneComponent>(Transformator, TEXT("Root"));
+		if (TransformatorRoot)
+		{
+			TransformatorRoot->RegisterComponent();
+			Transformator->SetRootComponent(TransformatorRoot);
+			Transformator->SetActorTransform(FTransform(FRotator::ZeroRotator, FVector(-45.0f, -30.0f, -5.0f)));
+		}
+		Transformator->Tags.AddUnique(TEXT("ActiveWeaponTransformator"));
+#if WITH_EDITOR
+		Transformator->SetActorLabel(TEXT("ActiveWeaponTransformator"));
+#endif
+
+		UClass* RedClass = LoadClass<AActor>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Frag_Red.BP_Frag_Red_C"));
+		UClass* TripmineClass = LoadClass<AActor>(
+			nullptr,
+			TEXT("/Game/MP_System_V3/Game/Weapons/Explosives/Frag/BP_Tripmine.BP_Tripmine_C"));
+
+		const bool bRedSuccess = TMVerifyExplosivePreviewActor(World, RedClass, TEXT("Frag_Red"));
+		const bool bTripmineSuccess = TMVerifyExplosivePreviewActor(World, TripmineClass, TEXT("Tripmine"));
+
+		World->DestroyWorld(false);
+		if (bRedSuccess && bTripmineSuccess)
+		{
+			UE_LOG(
+				LogTemp,
+				Display,
+				TEXT("[%s] Summary Red=%d Tripmine=%d Success=%d"),
+				LogPrefix,
+				1,
+				1,
+				1);
+		}
+		else
+		{
+			UE_LOG(
+				LogTemp,
+				Error,
+				TEXT("[%s] Summary Red=%d Tripmine=%d Success=%d"),
+				LogPrefix,
+				bRedSuccess ? 1 : 0,
+				bTripmineSuccess ? 1 : 0,
+				0);
+		}
+		return bRedSuccess && bTripmineSuccess;
 	}
 }
 
@@ -14729,9 +16428,34 @@ int32 UTMAnimGraphPatchCommandlet::Main(const FString& Params)
 		return TMPatchRedFragGrenade() ? 0 : 1;
 	}
 
+	if (Params.Contains(TEXT("PatchTripmineGrenade"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchTripmineGrenade() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchWeaponLayerVariantArrays"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchWeaponLayerVariantArrays() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("PatchExplosiveLoadoutVariants"), ESearchCase::IgnoreCase))
+	{
+		return TMPatchExplosiveLoadoutVariants() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("VerifyExplosiveLoadoutRuntime"), ESearchCase::IgnoreCase))
+	{
+		return TMVerifyExplosiveLoadoutRuntime() ? 0 : 1;
+	}
+
 	if (Params.Contains(TEXT("DumpLoadoutOffsetGraph"), ESearchCase::IgnoreCase))
 	{
 		return TMDumpLoadoutOffsetGraph() ? 0 : 1;
+	}
+
+	if (Params.Contains(TEXT("DumpLoadoutWeaponLayerPayloads"), ESearchCase::IgnoreCase))
+	{
+		return TMDumpLoadoutWeaponLayerPayloads() ? 0 : 1;
 	}
 
 	if (Params.Contains(TEXT("PatchLoadoutOffsetApplyLogging"), ESearchCase::IgnoreCase))

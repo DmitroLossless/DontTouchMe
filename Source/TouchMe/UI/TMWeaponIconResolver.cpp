@@ -600,7 +600,7 @@ namespace
 		}
 
 		const FString MeshName = Mesh->GetName();
-		const bool bUseSelectedIcon = bSelected && !MeshName.Equals(TEXT("Frag"), ESearchCase::IgnoreCase);
+		const bool bUseSelectedIcon = bSelected;
 		if (bUseSelectedIcon)
 		{
 			const FString ActiveIconPath = MakeWeaponIconObjectPath(Mesh, true);
@@ -699,6 +699,13 @@ namespace
 			return TEXT("SM_Grenade_Red");
 		}
 
+		if (NormalizedToken.Equals(TEXT("Tripmine"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("BPTripmine"), ESearchCase::IgnoreCase)
+			|| NormalizedToken.Equals(TEXT("SKTripmine"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("SK_Tripmine");
+		}
+
 		return nullptr;
 	}
 
@@ -758,6 +765,9 @@ FName TMWeaponIconResolver::ResolveKnownWeaponRowName(const FString& Token)
 	if (NormalizedToken.Equals(TEXT("FragRed"), ESearchCase::IgnoreCase)) return FName(TEXT("Frag_Red"));
 	if (NormalizedToken.Equals(TEXT("BPFragRed"), ESearchCase::IgnoreCase)) return FName(TEXT("Frag_Red"));
 	if (NormalizedToken.Equals(TEXT("SMGrenadeRed"), ESearchCase::IgnoreCase)) return FName(TEXT("Frag_Red"));
+	if (NormalizedToken.Equals(TEXT("Tripmine"), ESearchCase::IgnoreCase)) return FName(TEXT("Tripmine"));
+	if (NormalizedToken.Equals(TEXT("BPTripmine"), ESearchCase::IgnoreCase)) return FName(TEXT("Tripmine"));
+	if (NormalizedToken.Equals(TEXT("SKTripmine"), ESearchCase::IgnoreCase)) return FName(TEXT("Tripmine"));
 	if (NormalizedToken.Equals(TEXT("Sniper"), ESearchCase::IgnoreCase)) return FName(TEXT("Sniper"));
 	return NAME_None;
 }

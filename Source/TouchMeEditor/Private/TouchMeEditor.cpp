@@ -1553,6 +1553,7 @@ namespace
 	bool TMReadTextureSourceBgra8(UTexture2D* Texture, TArray<uint8>& OutPixels, int32& OutWidth, int32& OutHeight);
 	bool TMIsWeaponDataTableMeshSourceWithVisualOverride(const FAssetData& SourceAsset);
 	bool TMIsFragDataTableMeshSource(const FAssetData& SourceAsset);
+	bool TMIsTripmineDataTableMeshSource(const FAssetData& SourceAsset);
 
 	bool TMIsMeleeLoadoutMeshSource(const FAssetData& SourceAsset)
 	{
@@ -1635,6 +1636,12 @@ namespace
 			return TEXT("/Game/Weapons/Textures/T_Frag_Grenade_BaseColor.T_Frag_Grenade_BaseColor");
 		}
 
+		if (TMIsSkeletalVisualMeshPath(SkeletalMesh, TEXT("/Game/Weapons/Mesh/GrenadesAndMine/SK_Tripmine.SK_Tripmine")))
+		{
+			OutWeaponName = TEXT("Tripmine");
+			return TEXT("/Game/Weapons/Textures/T_Tripmine_BaseColor.T_Tripmine_BaseColor");
+		}
+
 		return nullptr;
 	}
 
@@ -1689,6 +1696,14 @@ namespace
 		}
 
 		const FString MeshPath = StaticMesh->GetPathName();
+		if (MeshPath.Equals(
+			TEXT("/Game/MP_System_V3/Game/Weapons/Attachments/Optics/RDS/RDS.RDS"),
+			ESearchCase::IgnoreCase))
+		{
+			OutWeaponName = TEXT("RDS");
+			return TEXT("/Game/MP_System_V3/Game/Weapons/Attachments/Optics/RDS/RDS_A.RDS_A");
+		}
+
 		if (MeshPath.Equals(TEXT("/Game/UrbanMilChar/Mesh/SM/SM_Grenade_Red.SM_Grenade_Red"), ESearchCase::IgnoreCase))
 		{
 			OutWeaponName = TEXT("Red grenade");
@@ -3299,7 +3314,10 @@ namespace
 				TMNormalizeSceneCaptureIconExposure(OutPixels, TMIconWidth, TMIconHeight);
 				const bool bAllowDarkRealMaterialIcon = SkeletalMesh->GetPathName().Equals(
 					TEXT("/Game/Weapons/Mesh/GrenadesAndMine/SK_Frag_Grenade.SK_Frag_Grenade"),
-					ESearchCase::IgnoreCase);
+					ESearchCase::IgnoreCase)
+					|| SkeletalMesh->GetPathName().Equals(
+						TEXT("/Game/Weapons/Mesh/GrenadesAndMine/SK_Tripmine.SK_Tripmine"),
+						ESearchCase::IgnoreCase);
 				if (!bAllowDarkRealMaterialIcon && !TMRealMaterialIconHasUsableDetail(OutPixels, TMIconWidth, TMIconHeight))
 				{
 					UE_LOG(
@@ -3749,11 +3767,6 @@ namespace
 				true
 			},
 			{
-				TEXT("RDS"),
-				TEXT("/Game/Weapons/Textures/UI/T_RedDot_Sight_HUD.T_RedDot_Sight_HUD"),
-				true
-			},
-			{
 				TEXT("SM_DemoOptic"),
 				TEXT("/Game/Fps/Textures/Widgets/GunCustomization/T_ThumbDemoOptics.T_ThumbDemoOptics"),
 				true
@@ -3790,13 +3803,18 @@ namespace
 
 	bool TMShouldKeepRealMaterialStaticAttachmentIcon(const FAssetData& SourceAsset)
 	{
+		const FString AssetName = SourceAsset.AssetName.ToString();
+		if (AssetName.Equals(TEXT("RDS"), ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+
 		const FString ObjectPath = SourceAsset.GetObjectPathString();
 		if (!ObjectPath.Contains(TEXT("/Mesh/Attachment/"), ESearchCase::IgnoreCase))
 		{
 			return false;
 		}
 
-		const FString AssetName = SourceAsset.AssetName.ToString();
 		return AssetName.Contains(TEXT("Grip"), ESearchCase::IgnoreCase)
 			|| AssetName.Contains(TEXT("Suppressor"), ESearchCase::IgnoreCase)
 			|| AssetName.Contains(TEXT("Silencer"), ESearchCase::IgnoreCase)
@@ -3869,6 +3887,13 @@ namespace
 			ESearchCase::IgnoreCase);
 	}
 
+	bool TMIsTripmineDataTableMeshSource(const FAssetData& SourceAsset)
+	{
+		return SourceAsset.GetObjectPathString().Equals(
+			TEXT("/Game/Weapons/Mesh/GrenadesAndMine/SK_Tripmine.SK_Tripmine"),
+			ESearchCase::IgnoreCase);
+	}
+
 	bool TMIsWeaponDataTableMeshSourceWithVisualOverride(const FAssetData& SourceAsset)
 	{
 		return TMIsTARDataTableMeshSource(SourceAsset)
@@ -3876,7 +3901,8 @@ namespace
 			|| TMIsShotgunDataTableMeshSource(SourceAsset)
 			|| TMIsKrissDataTableMeshSource(SourceAsset)
 			|| TMIsACWIDataTableMeshSource(SourceAsset)
-			|| TMIsFragDataTableMeshSource(SourceAsset);
+			|| TMIsFragDataTableMeshSource(SourceAsset)
+			|| TMIsTripmineDataTableMeshSource(SourceAsset);
 	}
 
 	bool TMIsAttachmentLikeWeaponVisualMesh(const USkeletalMesh* VisualMesh)
